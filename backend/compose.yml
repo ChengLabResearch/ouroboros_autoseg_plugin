@@ -1,0 +1,17 @@
+services:
+  api:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: plugin-template-backend
+    ports:
+      - '8001:8000'
+    volumes:
+      - ouroboros-volume:/volume
+    extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+volumes:
+  ouroboros-volume:
+    external: true
+    name: ouroboros-volume
