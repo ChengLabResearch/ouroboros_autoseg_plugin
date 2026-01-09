@@ -1,60 +1,85 @@
-import { useEffect, useState } from 'react'
-import styles from './styles.module.css'
+import { useState, useEffect } from 'react';
+import styles from './styles.module.css';
+import OptionsPanel from '../components/OptionsPanel';
+import ProgressPanel, { ProgressItem } from '../components/ProgressPanel';
+import VisualizePanel from '../components/VisualizePanel';
 
-// NOTE: Change the PORT to the port of the server from the backend
-// The app's server is running on port 8000, so use a different port
-// that is not being used by the app or any other plugins
-const PORT = 8001
+const BACKEND_URL = "http://localhost:8686";
 
-function TemplatePage(): JSX.Element {
-	const [testResult, setTestResult] = useState<string>('')
+export default function SAM3Page() {
+    const [prog, setProg] = useState<ProgressItem[]>([]);
+    const [run, setRun] = useState(false);
+    const [jobId, setJobId] = useState<string | null>(null);
+    const [connected, setConnected] = useState(false);
 
-	useEffect(() => {
-		const runFetch = () => {
-			fetch(`http://localhost:${PORT}/`)
-				.then((res) => res.text())
-				.then((data) => setTestResult(data))
-				.catch(() => setTimeout(runFetch, 1000))
-		}
+    useEffect(() => {
+        const check = async () => {
+            try {
+                const res = await fetch(`${BACKEND_URL}/`);
+                if(res.ok) setConnected(true);
+                else setConnected(false);
+            } catch(e) { setConnected(false); }
+        };
+        check();
+        const i = setInterval(check, 5000);
+        return () => clearInterval(i);
+    }, []);
 
-		if (testResult === '') {
-			runFetch()
-		}
-	}, [])
+    const handleRun = async (opts: any) => {
+        setRun(true);
+        setProg([
+            {name: 'Transferring', progress: 0},
+            {name: 'Inference', progress: 0},
+            {name: 'Saving', progress: 0}
+        ]);
+        try {
+            const res = await fetch(`${BACKEND_URL}/process-stack`, {
+                method:'POST', 
+                headers:{'Content-Type':'application/json'}, 
+                body:JSON.stringify({
+                    file_path: opts.filePath, 
+                    output_file: opts.outputFile,
+                    model_type: opts.modelType
+                })
+            });
+            const data = await res.json();
+            if(data.job_id) setJobId(data.job_id);
+        } catch(e) { console.error(e); setRun(false); }
+    };
 
-	useEffect(() => {
-		const registerMessage = {
-			type: 'register-plugin',
-			data: {
-				pluginName: 'plugin-template'
-			}
-		}
+    useEffect(() => {
+        let interval: any;
+        if(run && jobId) {
+            interval = setInterval(async () => {
+                try {
+                    const res = await fetch(`${BACKEND_URL}/status/${jobId}`);
+                    if(res.ok) {
+                        const data = await res.json();
+                        setProg(data.steps);
+                        if(data.status === 'completed' || data.status === 'error') {
+                            setRun(false);
+                            setJobId(null);
+                        }
+                    }
+                } catch(e) {}
+            }, 500);
+        }
+        return () => clearInterval(interval);
+    }, [run, jobId]);
 
-		// Register the plugin with the main app
-		// Doing so allows the main app to send messages to the plugin,
-		// which it primarily uses to send directory information (i.e. the open folder in the main app)
-		parent.postMessage(registerMessage, '*')
-
-		// Listen for messages from the main app
-		// See iframe.tsx and iframe-message-schema.ts in the main app for more information
-		// You can use this to get directory information from the main app,
-		// to read file contents, or to save file contents through the main app
-		const listener = (event: MessageEvent) => {
-			console.log(event.data)
-		}
-
-		window.addEventListener('message', listener)
-
-		return () => {
-			window.removeEventListener('message', listener)
-		}
-	}, [])
-
-	return (
-		<div>
-			<h1 className={styles.header}>{testResult === '' ? 'Template Page!' : testResult}</h1>
-		</div>
-	)
+    return (
+        <div className={styles.pageLayout}>
+            <div className={styles.vizArea}>
+                <VisualizePanel><div>SAM3 Visualization</div></VisualizePanel>
+            </div>
+            <div className={styles.rightSidebar}>
+                <div className={styles.progressArea}>
+                    <ProgressPanel items={prog} connected={connected} />
+                </div>
+                <div className={styles.optionsArea}>
+                    <OptionsPanel onSubmit={handleRun} isRunning={run} />
+                </div>
+            </div>
+        </div>
+    );
 }
-
-export default TemplatePage

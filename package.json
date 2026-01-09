@@ -1,16 +1,12 @@
 {
-	"name": "plugin-template",
-	"pluginName": "Plugin Template",
+	"name": "auto-segmentation",
+	"pluginName": "Automatic Segmentation",
 	"icon": "./icon.svg",
 	"index": "./index.html",
 	"dockerCompose": "./compose.yml",
 	"private": true,
-	"version": "0.0.0",
+	"version": "0.2.0",
 	"type": "module",
-	"main": "dist/main.js",
-	"files": [
-		"dist"
-	],
 	"scripts": {
 		"dev-frontend": "vite",
 		"dev-backend": "node backend-dev.cjs",

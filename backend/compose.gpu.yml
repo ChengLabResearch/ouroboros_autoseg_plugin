@@ -1,7 +1,6 @@
 services:
   backend:
     build: .
-	container_name: autosegmentation_plugin
     ports:
       - "8686:8686"
     volumes:
@@ -9,8 +8,13 @@ services:
     environment:
       - VOLUME_MOUNT_PATH=/ouroboros-volume
       - VOLUME_SERVER_URL=http://host.docker.internal:3001
-    extra_hosts:
-    - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
 volumes:
   ouroboros-volume:

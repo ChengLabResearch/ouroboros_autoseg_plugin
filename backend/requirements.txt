@@ -1,2 +1,12 @@
 fastapi
+uvicorn
 requests
+python-multipart
+numpy
+tifffile
+pydantic
+opencv-python-headless
+huggingface_hub
+pyyaml
+git+https://github.com/facebookresearch/sam2.git
+git+https://github.com/facebookresearch/sam3.git

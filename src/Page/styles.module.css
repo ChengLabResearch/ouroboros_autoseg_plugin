@@ -1,3 +1,29 @@
-.header {
-	color: rgb(255, 113, 113);
+.pageLayout {
+    display: grid;
+    grid-template-columns: 1fr 350px;
+    grid-template-rows: 100vh;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background-color: var(--window-background);
+}
+.vizArea {
+    grid-column: 1 / 2;
+    padding: 10px;
+    overflow: hidden;
+}
+.rightSidebar {
+    grid-column: 2 / 3;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    border-left: 1px solid #111;
+}
+.progressArea {
+    height: 40%;
+    overflow: hidden;
+}
+.optionsArea {
+    flex: 1;
+    overflow: hidden;
 }
