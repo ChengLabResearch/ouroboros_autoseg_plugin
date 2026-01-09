@@ -1,18 +1,18 @@
-import os
-import time
-import uuid
 import asyncio
-import numpy as np
-import tifffile
-import cv2
-import torch
-import requests
+import os
 from pathlib import PureWindowsPath, PurePosixPath, Path, PurePath
 from typing import Dict, Optional
+import uuid
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from huggingface_hub import hf_hub_download
+import numpy as np
+from pydantic import BaseModel
+import requests
+import tifffile
+import torch
+
 
 # --- Imports for SAM2/SAM3 ---
 try:
@@ -72,12 +72,15 @@ SAM2_URLS = {
 }
 
 # --- Helpers ---
+
+
 def get_pure_path(path_str: str) -> PurePath:
     # Robustly get filename from path string, handling Windows/Posix mixed scenarios.
     stripped = path_str.strip('"').strip("'")
     if '\\' in stripped or (len(stripped) > 1 and stripped[1] == ':'):
         return PureWindowsPath(stripped)
     return PurePosixPath(stripped)
+
 
 async def request_volume_server(path, data):
     url = f"{VOLUME_SERVER_URL}/{path}"
@@ -89,6 +92,7 @@ async def request_volume_server(path, data):
     except Exception as error:
         return False, str(error)
 
+
 async def copy_to_volume(files):
     return await request_volume_server("copy-to-volume", {
         "volumeName": "ouroboros-volume",
@@ -96,11 +100,13 @@ async def copy_to_volume(files):
         "files": files
     })
 
+
 async def copy_to_host(files):
     return await request_volume_server("copy-to-host", {
         "volumeName": "ouroboros-volume",
         "pluginFolderName": PLUGIN_NAME, "files": files
     })
+
 
 def download_file(url, dest):
     print(f"Downloading {url} to {dest}...")
@@ -113,9 +119,11 @@ def download_file(url, dest):
         raise Exception(f"Failed to download checkpoint: {response.status_code}")
 
 # --- Model Loading Logic ---
+
+
 def get_predictor(model_name: str):
     global loaded_model, loaded_model_name, loaded_predictor
-    
+
     if loaded_model_name == model_name and loaded_predictor is not None:
         return loaded_predictor
 
@@ -127,9 +135,9 @@ def get_predictor(model_name: str):
     checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
 
     if model_name in SAM2_CONFIGS:
-        if SAM2ImagePredictor is None: 
+        if SAM2ImagePredictor is None:
             raise ImportError("SAM2 library not found/installed")
-        
+
         # Fallback: Auto-download SAM2 if missing (convenience)
         if not os.path.exists(checkpoint_path):
             print(f"Checkpoint not found in {checkpoint_path}, attempting auto-download...")
@@ -137,22 +145,22 @@ def get_predictor(model_name: str):
                 download_file(SAM2_URLS[model_name], checkpoint_path)
             except Exception as e:
                 raise RuntimeError(f"Model not found and download failed: {e}")
-            
+
         config_file = SAM2_CONFIGS[model_name]
         model = build_sam2(config_file, checkpoint_path, device=device)
         loaded_predictor = SAM2ImagePredictor(model)
-        
+
     elif model_name.startswith("sam3"):
         if SAM3Predictor is None:
             raise ImportError("SAM3 library not found/installed")
-        
+
         # Strict Check: SAM3 must be downloaded via the UI first
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(
                 f"SAM3 checkpoint not found at {checkpoint_path}. "
                 "Please use the 'Models' section to download it with your authentication token."
             )
-        
+
         model = build_sam3(checkpoint=checkpoint_path, device=device)
         loaded_predictor = SAM3Predictor(model)
 
@@ -165,14 +173,17 @@ def get_predictor(model_name: str):
 
 # --- Endpoints ---
 
+
 class DownloadRequest(BaseModel):
     model_type: str
     hf_token: Optional[str] = None
+
 
 class ProcessRequest(BaseModel):
     file_path: str
     output_file: str
     model_type: str
+
 
 @app.post("/download-model")
 async def download_model(req: DownloadRequest):
@@ -180,7 +191,7 @@ async def download_model(req: DownloadRequest):
     try:
         model_name = req.model_type
         target_path = os.path.join(CHECKPOINT_DIR, f"{model_name}.pt")
-        
+
         if os.path.exists(target_path):
             return {"status": "exists", "message": f"Model {model_name} already exists."}
 
@@ -195,23 +206,23 @@ async def download_model(req: DownloadRequest):
         elif model_name.startswith("sam3"):
             if not req.hf_token:
                 raise HTTPException(400, "Authentication Token required for SAM 3")
-            
+
             repo_id = "facebook/sam3"
             filename = f"{model_name}.pt"
-            
+
             print(f"Fetching {filename} from Hugging Face...")
             try:
                 # hf_hub_download downloads to cache, we move/copy it to our persistent dir
                 cached_path = hf_hub_download(repo_id=repo_id, filename=filename, token=req.hf_token)
-                
+
                 # Move/Copy to our volume structure
                 import shutil
                 shutil.copy(cached_path, target_path)
-                
+
                 return {"status": "success", "message": f"Downloaded {model_name}"}
             except Exception as e:
                 raise HTTPException(500, f"Hugging Face Download Failed: {str(e)}")
-        
+
         else:
             raise HTTPException(400, "Unknown model type")
 
@@ -219,6 +230,7 @@ async def download_model(req: DownloadRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(500, str(e))
+
 
 @app.post("/process-stack")
 async def process_stack(req: ProcessRequest, background_tasks: BackgroundTasks):
@@ -232,21 +244,26 @@ async def process_stack(req: ProcessRequest, background_tasks: BackgroundTasks):
         ]
     }
     background_tasks.add_task(
-        run_pipeline, 
-        job_id, 
-        req.file_path, 
-        req.output_file, 
+        run_pipeline,
+        job_id,
+        req.file_path,
+        req.output_file,
         req.model_type
     )
     return {"job_id": job_id, "status": "started"}
 
+
 @app.get("/status/{job_id}")
 async def get_status(job_id: str):
-    if job_id not in jobs: raise HTTPException(404, "Job not found")
+    if job_id not in jobs:
+        raise HTTPException(404, "Job not found")
     return jobs[job_id]
 
+
 def update_step(job_id, step_index, progress):
-    if job_id in jobs: jobs[job_id]["steps"][step_index]["progress"] = progress
+    if job_id in jobs:
+        jobs[job_id]["steps"][step_index]["progress"] = progress
+
 
 async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type: str):
     try:
@@ -264,7 +281,7 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
 
         # 2. Inference
         if not os.path.exists(volume_source):
-             raise FileNotFoundError(f"File missing: {volume_source}")
+            raise FileNotFoundError(f"File missing: {volume_source}")
 
         stack = tifffile.imread(volume_source)
 
@@ -292,7 +309,7 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
         result_stack = np.zeros(result_shape, dtype=np.uint8)
 
         for i in range(num_slices):
-            img_slice = stack[i] 
+            img_slice = stack[i]
 
             # --- Tensor Dimension Fix (Ensure H,W,3) ---
             if img_slice.ndim == 2:
@@ -311,7 +328,7 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
 
             h, w = img_3ch.shape[:2]
             input_point = np.array([[w // 2, h // 2]])
-            input_label = np.array([1]) 
+            input_label = np.array([1])
 
             masks, scores, logits = predictor.predict(
                 point_coords=input_point,
@@ -339,7 +356,7 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
 
         # Robust copy back
         print(f"Copying {volume_result} back to {host_result}")
-        success, msg = await copy_to_host([{"sourcePath": str(host_result), "targetPath": "Segmentation"}])        
+        success, msg = await copy_to_host([{"sourcePath": str(host_result), "targetPath": "Segmentation"}])
         if not success:
             raise Exception(f"Copy back failed: {msg}")
         update_step(job_id, 2, 100)

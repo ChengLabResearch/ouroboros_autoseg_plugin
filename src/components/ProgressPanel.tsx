@@ -1,5 +1,3 @@
-import React from 'react';
-
 export type ProgressItem = { name: string; progress: number; };
 
 const styles = {
