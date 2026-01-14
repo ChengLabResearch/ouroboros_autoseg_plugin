@@ -69,13 +69,15 @@ export default function SAM3Page() {
 
     return (
         <div className={styles.pageLayout}>
-            <div className={styles.vizArea}>
-                <VisualizePanel><div>SAM3 Visualization</div></VisualizePanel>
-            </div>
-            <div className={styles.rightSidebar}>
+            <div className={styles.centerArea}>
+				<div className={styles.vizArea}>
+					<VisualizePanel><div>SAM3 Visualization</div></VisualizePanel>
+				</div>
                 <div className={styles.progressArea}>
                     <ProgressPanel items={prog} connected={connected} />
                 </div>
+			</div>
+            <div className={styles.rightSidebar}>
                 <div className={styles.optionsArea}>
                     <OptionsPanel onSubmit={handleRun} isRunning={run} />
                 </div>

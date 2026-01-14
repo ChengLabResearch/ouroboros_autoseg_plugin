@@ -102,6 +102,7 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const [fp, setFp] = useState('');
     const [outFp, setOutFp] = useState('');
     const [model, setModel] = useState('sam2_hiera_base_plus');
+	const [predictor, setPredictor] = useState('ImagePredictor')
     const [token, setToken] = useState('');
 
     // Download States
@@ -150,7 +151,7 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                     <span style={styles.headerTitle}>OPTIONS</span>
                     <button 
                         style={styles.playBtn(!canRun)} 
-                        onClick={() => onSubmit({filePath: fp, outputFile: outFp, modelType: model})} 
+                        onClick={() => onSubmit({filePath: fp, outputFile: outFp, modelType: model, predictor: predictor})} 
                         disabled={!canRun}
                         title="Run Segmentation"
                     >
@@ -170,6 +171,16 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                         <span style={styles.label}>Output File</span>
                         <div style={styles.inputContainer}>
                             <input style={styles.input} value={outFp} onChange={e=>setOutFp(e.target.value)} placeholder="/path/to/output.tif" onDrop={(e)=>handleDrop(e, setOutFp)} onDragOver={handleDragOver} />
+                        </div>
+                    </div>
+
+                    <div style={styles.row}>
+                        <span style={styles.label}>Predictor</span>
+                        <div style={styles.inputContainer}>
+                            <select style={styles.select} value={predictor} onChange={e=>setPredictor(e.target.value)}>
+								<option value="ImagePredictor">Image Predictor</option>
+								<option value="VideoPredictor">Video Predictor</option>
+                            </select>
                         </div>
                     </div>
 

@@ -7,9 +7,13 @@
     overflow: hidden;
     background-color: var(--window-background);
 }
-.vizArea {
+.centerArea {
     grid-column: 1 / 2;
     padding: 10px;
+    overflow: hidden;
+}
+.vizArea {
+    height: 60%;
     overflow: hidden;
 }
 .rightSidebar {
@@ -18,6 +22,7 @@
     flex-direction: column;
     height: 100vh;
     border-left: 1px solid #111;
+    padding: 10px;
 }
 .progressArea {
     height: 40%;

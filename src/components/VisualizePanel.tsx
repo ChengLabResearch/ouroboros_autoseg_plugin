@@ -9,9 +9,7 @@ export default function VisualizePanel({ children }: { children?: React.ReactNod
             display:'flex', 
             alignItems:'center', 
             justifyContent:'center', 
-            borderRadius:'8px', 
             color:'#666', 
-            border: '1px solid #333'
         }}>
             {children || "Visualization Area"}
         </div>

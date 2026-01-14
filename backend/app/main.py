@@ -18,6 +18,8 @@ import torch
 try:
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
+    from sam2.sam2_video_predictor import SAM2VideoPredictor
+
 except ImportError:
     print("SAM2 not installed.")
     build_sam2 = None
@@ -121,7 +123,7 @@ def download_file(url, dest):
 # --- Model Loading Logic ---
 
 
-def get_predictor(model_name: str):
+def get_predictor(model_name: str, predictor: str):
     global loaded_model, loaded_model_name, loaded_predictor
 
     if loaded_model_name == model_name and loaded_predictor is not None:
@@ -148,7 +150,10 @@ def get_predictor(model_name: str):
 
         config_file = SAM2_CONFIGS[model_name]
         model = build_sam2(config_file, checkpoint_path, device=device)
-        loaded_predictor = SAM2ImagePredictor(model)
+        if predictor == "ImagePredictor":
+            loaded_predictor = SAM2ImagePredictor(model)
+        elif predictor == "VideoPredictor":
+            loaded_predictor = SAM2VideoPredictor(model)
 
     elif model_name.startswith("sam3"):
         if SAM3Predictor is None:
@@ -183,6 +188,7 @@ class ProcessRequest(BaseModel):
     file_path: str
     output_file: str
     model_type: str
+    predictor: str
 
 
 @app.post("/download-model")
@@ -248,7 +254,8 @@ async def process_stack(req: ProcessRequest, background_tasks: BackgroundTasks):
         job_id,
         req.file_path,
         req.output_file,
-        req.model_type
+        req.model_type,
+        req.predictor
     )
     return {"job_id": job_id, "status": "started"}
 
@@ -265,7 +272,7 @@ def update_step(job_id, step_index, progress):
         jobs[job_id]["steps"][step_index]["progress"] = progress
 
 
-async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type: str):
+async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type: str, predictor: str):
     try:
         host_source = get_pure_path(host_path)
         host_result = get_pure_path(output_path)
@@ -295,7 +302,7 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
         update_step(job_id, 1, 0)
         # Load Model (will look in chkpts dir)
         try:
-            predictor = get_predictor(model_type)
+            predictor = get_predictor(model_type, predictor)
         except Exception as e:
             print(f"Model Init Error: {e}")
             raise e
