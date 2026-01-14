@@ -151,7 +151,7 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                     <span style={styles.headerTitle}>OPTIONS</span>
                     <button 
                         style={styles.playBtn(!canRun)} 
-                        onClick={() => onSubmit({filePath: fp, outputFile: outFp, modelType: model, predictor: predictor})} 
+                        onClick={() => onSubmit({filePath: fp, outputFile: outFp, modelType: model, predictor_type: predictor})} 
                         disabled={!canRun}
                         title="Run Segmentation"
                     >

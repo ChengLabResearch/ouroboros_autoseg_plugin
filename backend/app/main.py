@@ -58,6 +58,41 @@ loaded_model = None
 loaded_model_name = None
 loaded_predictor = None
 
+# Docker/Service Initialization Status
+startup_status = {
+    "is_ready": False,
+    "initialization_steps": [
+        {"name": "Building Docker Image", "status": "pending"},
+        {"name": "Connecting to Volume Server", "status": "pending"},
+        {"name": "Initializing ML Models", "status": "pending"}
+    ],
+    "start_time": None,
+    "ready_time": None
+}
+
+
+def mark_initialization_complete():
+    """Call this when the service is fully initialized"""
+    global startup_status
+    startup_status["is_ready"] = True
+    startup_status["ready_time"] = time.time()
+    for step in startup_status["initialization_steps"]:
+        if step["status"] == "pending":
+            step["status"] = "completed"
+    print("Service initialization complete!")
+
+
+def update_initialization_step(step_name: str, status: str):
+    """Update the status of a specific initialization step"""
+    global startup_status
+    if startup_status["start_time"] is None:
+        startup_status["start_time"] = time.time()
+    for step in startup_status["initialization_steps"]:
+        if step["name"] == step_name:
+            step["status"] = status
+            print(f"Initialization: {step_name} -> {status}")
+
+
 # --- Model Definitions ---
 SAM2_CONFIGS = {
     "sam2_hiera_tiny": "sam2_hiera_t.yaml",
@@ -123,14 +158,16 @@ def download_file(url, dest):
 # --- Model Loading Logic ---
 
 
-def get_predictor(model_name: str, predictor: str):
+def get_predictor(model_name: str, predictor_type: str):
     global loaded_model, loaded_model_name, loaded_predictor
 
-    if loaded_model_name == model_name and loaded_predictor is not None:
+    cache_key = f"{model_name}_{predictor_type}"
+
+    if loaded_model_name == cache_key and loaded_predictor is not None:
         return loaded_predictor
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading Model: {model_name} on {device}...")
+    print(f"Loading Model: {model_name} (Predictor: {predictor_type}) on {device}...")
 
     # Define path in the volume checkpoint directory
     checkpoint_name = f"{model_name}.pt"
@@ -150,10 +187,15 @@ def get_predictor(model_name: str, predictor: str):
 
         config_file = SAM2_CONFIGS[model_name]
         model = build_sam2(config_file, checkpoint_path, device=device)
-        if predictor == "ImagePredictor":
+
+        if predictor_type == "ImagePredictor":
             loaded_predictor = SAM2ImagePredictor(model)
-        elif predictor == "VideoPredictor":
+        elif predictor_type == "VideoPredictor":
+            if SAM2VideoPredictor is None:
+                raise ImportError("SAM2 VideoPredictor not available")
             loaded_predictor = SAM2VideoPredictor(model)
+        else:
+            raise ValueError(f"Unknown predictor type: {predictor_type}")
 
     elif model_name.startswith("sam3"):
         if SAM3Predictor is None:
@@ -173,7 +215,7 @@ def get_predictor(model_name: str, predictor: str):
         raise ValueError(f"Unknown model type: {model_name}")
 
     loaded_model = model
-    loaded_model_name = model_name
+    loaded_model_name = cache_key
     return loaded_predictor
 
 # --- Endpoints ---
@@ -188,7 +230,7 @@ class ProcessRequest(BaseModel):
     file_path: str
     output_file: str
     model_type: str
-    predictor: str
+    predictor_type: str
 
 
 @app.post("/download-model")
@@ -255,7 +297,7 @@ async def process_stack(req: ProcessRequest, background_tasks: BackgroundTasks):
         req.file_path,
         req.output_file,
         req.model_type,
-        req.predictor
+        req.predictor_type
     )
     return {"job_id": job_id, "status": "started"}
 
@@ -272,7 +314,7 @@ def update_step(job_id, step_index, progress):
         jobs[job_id]["steps"][step_index]["progress"] = progress
 
 
-async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type: str, predictor: str):
+async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type: str, predictor_type: str):
     try:
         host_source = get_pure_path(host_path)
         host_result = get_pure_path(output_path)
@@ -302,7 +344,7 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
         update_step(job_id, 1, 0)
         # Load Model (will look in chkpts dir)
         try:
-            predictor = get_predictor(model_type, predictor)
+            predictor = get_predictor(model_type, predictor_type)
         except Exception as e:
             print(f"Model Init Error: {e}")
             raise e
@@ -314,6 +356,13 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
         # FIX: Result Stack Dimensions (Z, Y, X)
         result_shape = stack.shape[:3]
         result_stack = np.zeros(result_shape, dtype=np.uint8)
+
+        # Determine if we're using VideoPredictor or ImagePredictor
+        is_video_predictor = predictor_type == "VideoPredictor"
+
+        if is_video_predictor:
+            # Initialize video predictor state
+            predictor.init_state(None)
 
         for i in range(num_slices):
             img_slice = stack[i]
@@ -331,24 +380,42 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
 
             img_3ch = np.ascontiguousarray(img_3ch)
 
-            predictor.set_image(img_3ch)
-
             h, w = img_3ch.shape[:2]
             input_point = np.array([[w // 2, h // 2]])
             input_label = np.array([1])
 
-            masks, scores, logits = predictor.predict(
-                point_coords=input_point,
-                point_labels=input_label,
-                multimask_output=False,
-            )
-
-            if masks.ndim == 3:
-                final_mask = masks[0]
+            if is_video_predictor:
+                # For VideoPredictor, process frames sequentially
+                if i == 0:
+                    # Add the first frame with prompts
+                    _, out_obj_ids, out_mask_logits = predictor.add_new_frame_with_prompt(
+                        img_3ch,
+                        predictor_masks=None,
+                        point_coords=input_point,
+                        point_labels=input_label
+                    )
+                    masks = out_mask_logits[0] > 0  # Convert logits to binary mask
+                else:
+                    # Propagate through subsequent frames
+                    _, out_obj_ids, out_mask_logits = predictor.track_step(img_3ch)
+                    if out_obj_ids is not None and len(out_obj_ids) > 0:
+                        masks = out_mask_logits[0] > 0  # Convert logits to binary mask
+                    else:
+                        # No objects tracked, use empty mask
+                        masks = np.zeros((h, w), dtype=bool)
             else:
-                final_mask = masks
+                # For ImagePredictor, process each frame independently
+                predictor.set_image(img_3ch)
+                masks, scores, logits = predictor.predict(
+                    point_coords=input_point,
+                    point_labels=input_label,
+                    multimask_output=False,
+                )
 
-            result_stack[i] = (final_mask > 0).astype(np.uint8) * 255
+                if masks.ndim == 3:
+                    masks = masks[0]
+
+            result_stack[i] = (masks > 0).astype(np.uint8) * 255
 
             pct = int(((i + 1) / num_slices) * 100)
             update_step(job_id, 1, pct)

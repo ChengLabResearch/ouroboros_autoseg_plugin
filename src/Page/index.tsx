@@ -39,7 +39,8 @@ export default function SAM3Page() {
                 body:JSON.stringify({
                     file_path: opts.filePath, 
                     output_file: opts.outputFile,
-                    model_type: opts.modelType
+                    model_type: opts.modelType,
+                    predictor_type: opts.predictor_type
                 })
             });
             const data = await res.json();
