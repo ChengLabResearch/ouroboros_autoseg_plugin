@@ -8,5 +8,6 @@ pydantic
 opencv-python-headless
 huggingface_hub
 pyyaml
+psutil
 git+https://github.com/facebookresearch/sam2.git
 git+https://github.com/facebookresearch/sam3.git

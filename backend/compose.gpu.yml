@@ -8,6 +8,8 @@ services:
     environment:
       - VOLUME_MOUNT_PATH=/ouroboros-volume
       - VOLUME_SERVER_URL=http://host.docker.internal:3001
+      # Frame loading mode: "sync" (safer, slower) or "async" (faster, may have threading issues)
+      - SAM2_FRAME_LOADING_MODE=async
     deploy:
       resources:
         reservations:
