@@ -87,6 +87,14 @@ def num_digits_for_n_files(n: int) -> int:
 
 
 def get_system_memory_info():
+    """
+    Get current system memory usage statistics.
+
+    Returns
+    -------
+    dict
+        Dictionary with CPU and GPU memory stats in GB
+    """
     cpu_mem = psutil.virtual_memory()
     gpu_mem = None
 
@@ -111,6 +119,24 @@ def get_system_memory_info():
 
 
 def check_async_frame_loader_exception(inference_state):
+    """
+    Check if the async frame loader thread encountered an exception.
+
+    SAM2's AsyncVideoFrameLoader stores background thread exceptions in self.exception.
+    This function directly accesses that to catch thread crashes that won't propagate
+    to the main thread via normal exception handling.
+
+    Parameters
+    ----------
+    inference_state : dict
+        The inference state dict returned by predictor.init_state()
+
+    Returns
+    -------
+    Exception or None
+        The exception from the async loader thread, if any
+
+    """
     images = inference_state.get("images")
     if images is None:
         return None
@@ -123,7 +149,12 @@ def check_async_frame_loader_exception(inference_state):
 
 
 def mark_initialization_complete():
-    """Call this when the service is fully initialized"""
+    """
+    Mark the service as fully initialized and complete all pending initialization steps.
+
+    Updates the global startup_status to indicate the service is ready for processing.
+    Sets the ready_time timestamp and marks all pending initialization steps as completed.
+    """
     global startup_status
     startup_status["is_ready"] = True
     startup_status["ready_time"] = time.time()
@@ -134,7 +165,16 @@ def mark_initialization_complete():
 
 
 def update_initialization_step(step_name: str, status: str):
-    """Update the status of a specific initialization step"""
+    """
+    Update the status of a specific initialization step.
+
+    Parameters
+    ----------
+    step_name : str
+        Name of the initialization step to update
+    status : str
+        New status for the step (e.g., 'pending', 'in_progress', 'completed', 'warning')
+    """
     global startup_status
     if startup_status["start_time"] is None:
         startup_status["start_time"] = time.time()
@@ -163,7 +203,22 @@ SAM2_URLS = {
 
 
 def get_pure_path(path_str: str) -> PurePath:
-    # Robustly get filename from path string, handling Windows/Posix mixed scenarios.
+    """
+    Robustly parse a file path string and return the appropriate PurePath object.
+
+    Handles Windows and POSIX path formats, including mixed scenarios.
+    Strips surrounding quotes before parsing.
+
+    Parameters
+    ----------
+    path_str : str
+        Path string to parse (may contain quotes)
+
+    Returns
+    -------
+    PurePath
+        PureWindowsPath if Windows path detected, otherwise PurePosixPath
+    """
     stripped = path_str.strip('"').strip("'")
     if '\\' in stripped or (len(stripped) > 1 and stripped[1] == ':'):
         return PureWindowsPath(stripped)
@@ -171,6 +226,21 @@ def get_pure_path(path_str: str) -> PurePath:
 
 
 async def request_volume_server(path, data):
+    """
+    Send a POST request to the volume server to perform file operations.
+
+    Parameters
+    ----------
+    path : str
+        API endpoint path on the volume server
+    data : dict
+        JSON data to send in the request body
+
+    Returns
+    -------
+    tuple
+        (success: bool, message: str) - Success status and response/error message
+    """
     url = f"{VOLUME_SERVER_URL}/{path}"
     try:
         result = requests.post(url, headers={"Content-Type": "application/json"}, json=data)
@@ -182,6 +252,19 @@ async def request_volume_server(path, data):
 
 
 async def copy_to_volume(files):
+    """
+    Copy files from the host to the ouroboros volume.
+
+    Parameters
+    ----------
+    files : list
+        List of file path dictionaries with 'sourcePath' and 'targetPath' keys
+
+    Returns
+    -------
+    tuple
+        (success: bool, message: str) - Result of the copy operation
+    """
     return await request_volume_server("copy-to-volume", {
         "volumeName": "ouroboros-volume",
         "pluginFolderName": PLUGIN_NAME,
@@ -190,6 +273,19 @@ async def copy_to_volume(files):
 
 
 async def copy_to_host(files):
+    """
+    Copy files from the ouroboros volume back to the host.
+
+    Parameters
+    ----------
+    files : list
+        List of file path dictionaries with 'sourcePath' and 'targetPath' keys
+
+    Returns
+    -------
+    tuple
+        (success: bool, message: str) - Result of the copy operation
+    """
     return await request_volume_server("copy-to-host", {
         "volumeName": "ouroboros-volume",
         "pluginFolderName": PLUGIN_NAME, "files": files
@@ -197,6 +293,21 @@ async def copy_to_host(files):
 
 
 def download_file(url, dest):
+    """
+    Download a file from a URL and save it to the specified destination.
+
+    Parameters
+    ----------
+    url : str
+        URL of the file to download
+    dest : str
+        Destination file path
+
+    Raises
+    ------
+    Exception
+        If the download fails with a non-200 status code
+    """
     print(f"Downloading {url} to {dest}...")
     response = requests.get(url, stream=True)
     if response.status_code == 200:
@@ -210,6 +321,36 @@ def download_file(url, dest):
 
 
 def get_predictor(model_name: str, predictor_type: str):
+    """
+    Load and cache a segmentation predictor model.
+
+    Supports SAM2 (with ImagePredictor or VideoPredictor) and SAM3 models.
+    Implements model caching to avoid reloading the same model.
+    Auto-downloads SAM2 models if not found locally.
+
+    Parameters
+    ----------
+    model_name : str
+        Name of the model to load (e.g., 'sam2_hiera_base_plus', 'sam3')
+    predictor_type : str
+        Type of predictor - 'ImagePredictor' or 'VideoPredictor'
+
+    Returns
+    -------
+    Predictor
+        Initialized SAM2ImagePredictor, SAM2VideoPredictor, or SAM3Predictor
+
+    Raises
+    ------
+    ImportError
+        If required library not installed
+    RuntimeError
+        If model download fails
+    FileNotFoundError
+        If SAM3 checkpoint not found
+    ValueError
+        If model or predictor type is unknown
+    """
     global loaded_model, loaded_model_name, loaded_predictor
 
     cache_key = f"{model_name}_{predictor_type}"
@@ -282,7 +423,27 @@ class ProcessRequest(BaseModel):
 
 @app.post("/download-model")
 async def download_model(req: DownloadRequest):
-    # Downloads the requested model to the /ouroboros-volume/sam3-segmentation/chkpts directory.
+    """
+    Download a segmentation model checkpoint.
+
+    Downloads SAM2 models from Meta's public URLs or SAM3 models from Hugging Face.
+    Saves the model to the persistent checkpoint directory.
+
+    Parameters
+    ----------
+    req : DownloadRequest
+        Request containing model_type and optional hf_token
+
+    Returns
+    -------
+    dict
+        Status dict with 'status' and 'message' keys
+
+    Raises
+    ------
+    HTTPException
+        If token required but not provided, or download fails
+    """
     try:
         model_name = req.model_type
         target_path = os.path.join(CHECKPOINT_DIR, f"{model_name}.pt")
@@ -329,6 +490,24 @@ async def download_model(req: DownloadRequest):
 
 @app.post("/process-stack")
 async def process_stack(req: ProcessRequest, background_tasks: BackgroundTasks):
+    """
+    Submit a segmentation processing job.
+
+    Creates a new background job to process an image stack with the specified model and predictor.
+    Returns immediately with a job ID for status tracking.
+
+    Parameters
+    ----------
+    req : ProcessRequest
+        Request containing file paths, model type, and predictor type
+    background_tasks : BackgroundTasks
+        FastAPI background tasks manager
+
+    Returns
+    -------
+    dict
+        Job information with 'job_id' and 'status' keys
+    """
     job_id = str(uuid.uuid4())
     jobs[job_id] = {
         "status": "running",
@@ -351,21 +530,81 @@ async def process_stack(req: ProcessRequest, background_tasks: BackgroundTasks):
 
 @app.get("/status/{job_id}")
 async def get_status(job_id: str):
+    """
+    Get the current status of a processing job.
+
+    Parameters
+    ----------
+    job_id : str
+        Unique identifier of the job
+
+    Returns
+    -------
+    dict
+        Job status including overall status and progress for each step
+
+    Raises
+    ------
+    HTTPException
+        404 if job not found
+    """
     if job_id not in jobs:
         raise HTTPException(404, "Job not found")
     return jobs[job_id]
 
 
 def update_step(job_id, step_index, progress):
+    """
+    Update the progress of a specific step in a processing job.
+
+    Parameters
+    ----------
+    job_id : str
+        Unique identifier of the job
+    step_index : int
+        Index of the step to update (0=Transferring, 1=Inference, 2=Saving)
+    progress : int
+        Progress percentage (0-100)
+    """
     if job_id in jobs:
         jobs[job_id]["steps"][step_index]["progress"] = progress
 
+
+def jpeg_convert(img_path: Path, target_path: Path, img_page: int = 0):
+    """
+    Convert an image file to JPEG format for video predictor processing.
+
+    Used in multiprocessing to prepare image frames for the SAM2 VideoPredictor.
+
+    Parameters
+    ----------
+    img_path : Path
+        Path to the image file to convert.
+    target_path : Path
+        Path to write converted image to.
+    img_page : Path
+        Page of the input to read from, for use with single-file, multipage TIFFs.
+    """
     with tf.TiffFile(img_path) as tif:
         im = Image.fromarray(tif.pages[img_page].asarray() // 255).convert("RGB")
     im.save(target_path.with_suffix(".jpg"), format="JPEG", quality=90)
 
 
 def downsample(img_path: Path, target_path: Path, img_page: int = 0):
+    """
+    Prepare an image for the SAM2 ImagePredictor by ensuring RGB format.
+
+    Used in multiprocessing to convert grayscale or multi-channel images to 8-bit RGB format.
+
+    Parameters
+    ----------
+    img_path : Path
+        Path to the image file to process
+    target_path : Path
+        Path to write converted image to.
+    img_page : Path
+        Page of the input to read from, for use with single-file, multipage TIFFs.
+    """
     with tf.TiffFile(img_path) as tif:
         im = tif.pages[img_page].asarray()
 
@@ -382,6 +621,34 @@ def downsample(img_path: Path, target_path: Path, img_page: int = 0):
 
 
 async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type: str, predictor_type: str):
+    """
+    Execute the full segmentation pipeline for an image stack.
+
+    Orchestrates the complete workflow:
+    1. Transfer files from host to volume
+    2. Preprocess image data and run segmentation inference
+    3. Save results and transfer back to host
+
+    Supports both SAM2 ImagePredictor (per-frame segmentation) and VideoPredictor (temporal coherence).
+    Updates job status throughout execution for UI progress tracking.
+
+    Parameters
+    ----------
+    job_id : str
+        Unique job identifier for status tracking
+    host_path : str
+        Path to input image stack on host
+    output_path : str
+        Desired output path for segmentation results
+    model_type : str
+        Name of the model to use (e.g., 'sam2_hiera_base_plus')
+    predictor_type : str
+        Type of predictor - 'ImagePredictor' or 'VideoPredictor'
+
+    Notes
+    -----
+    Updates global jobs dict with progress and final status (completed or error).
+    """
     try:
         host_source = get_pure_path(host_path)
         host_result = get_pure_path(output_path)
