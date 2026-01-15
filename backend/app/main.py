@@ -82,6 +82,22 @@ startup_status = {
 }
 
 
+def get_shared_memory_info():
+    """
+    Get usage statistics for /dev/shm (Shared Memory).
+    """
+    try:
+        total, used, free = shutil.disk_usage("/dev/shm")
+        return {
+            "shm_total_gb": total / 1e9,
+            "shm_used_gb": used / 1e9,
+            "shm_free_gb": free / 1e9,
+            "shm_percent": (used / total) * 100
+        }
+    except FileNotFoundError:
+        return {"error": "/dev/shm not found"}
+
+
 def num_digits_for_n_files(n: int) -> int:
     return len(str(n - 1))
 
@@ -483,7 +499,6 @@ async def download_model(req: DownloadRequest):
             raise HTTPException(400, "Unknown model type")
 
     except Exception as e:
-        import traceback
         traceback.print_exc()
         raise HTTPException(500, str(e))
 
@@ -785,14 +800,15 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
                         update_step(job_id, 1, 20 + 0.8 * pct)
                         await asyncio.sleep(0.001)
                         if frame % 10 == 0:
-                            print(f"Memory:{get_system_memory_info()}|\nThreading at watch: {threading.active_count()}")
+                            print(f"Memory:{get_system_memory_info()}\n{get_shared_memory_info()}\n"
+                                  f"Threading at watch: {threading.active_count()}")
                     except Exception as e:
                         print(f"Error propogating video at frame {frame}: {type(e).__name__}: {e}\n"
                               f"Memory at error: {get_system_memory_info()}\n{traceback.print_exc()}\n"
                               f"Threading at error: {threading.active_count()}")
                         raise
             except Exception as e:
-                print(f"Error adding points to frame {frame}: {type(e).__name__}: {e}\n"
+                print(f"Error propogating video at frame {frame}: {type(e).__name__}: {e}\n"
                       f"Memory at error: {get_system_memory_info()}\n{traceback.print_exc()}\n"
                       f"Threading at error: {threading.active_count()}")
                 raise
@@ -834,6 +850,5 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
 
     except Exception as e:
         print(f"Pipeline Error: {e}")
-        import traceback
         traceback.print_exc()
         jobs[job_id]["status"] = "error"

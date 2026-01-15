@@ -1,7 +1,6 @@
 services:
   backend:
     build: .
-	container_name: autosegmentation_plugin
     ports:
       - "8686:8686"
     volumes:
@@ -11,6 +10,7 @@ services:
       - VOLUME_SERVER_URL=http://host.docker.internal:3001
     extra_hosts:
     - "host.docker.internal:host-gateway"
+    shm_size: 1gb
 
 volumes:
   ouroboros-volume:

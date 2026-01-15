@@ -10,6 +10,7 @@ services:
       - VOLUME_SERVER_URL=http://host.docker.internal:3001
       # Frame loading mode: "sync" (safer, slower) or "async" (faster, may have threading issues)
       - SAM2_FRAME_LOADING_MODE=async
+    shm_size: 1gb
     deploy:
       resources:
         reservations:
