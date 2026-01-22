@@ -233,7 +233,7 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             />
                             <button 
                                 style={styles.downloadBtn(sam3Status !== 'Download' || !token)} 
-                                onClick={() => downloadModel('sam3_hiera_base', token, setSam3Status)}
+                                onClick={() => downloadModel('sam3', token, setSam3Status)}
                                 disabled={sam3Status !== 'Download' || !token}
                             >
                                 {sam3Status}

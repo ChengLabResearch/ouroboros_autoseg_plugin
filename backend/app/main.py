@@ -13,6 +13,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from huggingface_hub import hf_hub_download
 import numpy as np
 from pydantic import BaseModel
@@ -32,8 +33,8 @@ except ImportError:
     SAM2ImagePredictor = None
 
 try:
-    from sam3.build_sam import build_sam3
-    from sam3.predictor import SAM3Predictor
+    from sam3.model_builder import build_sam3_video_predictor, build_sam3_image_model
+    from sam3.model.sam3_image_processor import Sam3Processor
 except ImportError:
     print("SAM3 not installed.")
     build_sam3 = None
@@ -414,8 +415,10 @@ def get_predictor(model_name: str, predictor_type: str):
                 "Please use the 'Models' section to download it with your authentication token."
             )
 
-        model = build_sam3(checkpoint=checkpoint_path, device=device)
-        loaded_predictor = SAM3Predictor(model)
+        if predictor_type == "ImagePredictor":
+            loaded_predictor = Sam3Processor(build_sam3_image_model(checkpoint_path=checkpoint_path, device=device))
+        elif predictor_type == "VideoPredictor":
+            loaded_predictor = build_sam3_video_predictor(checkpoint_path=checkpoint_path, device=device)
 
     else:
         raise ValueError(f"Unknown model type: {model_name}")
@@ -435,6 +438,11 @@ class ProcessRequest(BaseModel):
     output_file: str
     model_type: str
     predictor_type: str
+
+
+@app.get("/")
+async def server_active():
+    return JSONResponse("Segmentation server is active")
 
 
 @app.post("/download-model")
@@ -465,6 +473,8 @@ async def download_model(req: DownloadRequest):
         target_path = os.path.join(CHECKPOINT_DIR, f"{model_name}.pt")
 
         if os.path.exists(target_path):
+            print(f"Model {model_name} already exists.")
+            await asyncio.sleep(0.0001)
             return {"status": "exists", "message": f"Model {model_name} already exists."}
 
         print(f"Initiating download for {model_name}...")
@@ -472,6 +482,8 @@ async def download_model(req: DownloadRequest):
         # SAM 2 Download
         if model_name in SAM2_URLS:
             download_file(SAM2_URLS[model_name], target_path)
+            print(f"Downloaded {model_name}")
+            await asyncio.sleep(0.0001)
             return {"status": "success", "message": f"Downloaded {model_name}"}
 
         # SAM 3 Download
@@ -491,6 +503,7 @@ async def download_model(req: DownloadRequest):
                 import shutil
                 shutil.copy(cached_path, target_path)
 
+                await asyncio.sleep(0.0001)
                 return {"status": "success", "message": f"Downloaded {model_name}"}
             except Exception as e:
                 raise HTTPException(500, f"Hugging Face Download Failed: {str(e)}")
