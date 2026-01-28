@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import styles from './styles.module.css';
+import styles from '../assets/styles.module.css';
 import OptionsPanel from '../components/OptionsPanel';
 import ProgressPanel, { ProgressItem } from '../components/ProgressPanel';
 import VisualizePanel from '../components/VisualizePanel';

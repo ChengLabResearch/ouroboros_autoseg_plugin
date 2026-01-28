@@ -1,16 +1,9 @@
 import React from 'react';
+import styles from '../assets/styles.module.css';
 
 export default function VisualizePanel({ children }: { children?: React.ReactNode }) {
     return (
-        <div style={{
-            backgroundColor: 'var(--panel-background)', 
-            width:'100%', 
-            height:'100%', 
-            display:'flex', 
-            alignItems:'center', 
-            justifyContent:'center', 
-            color:'#666', 
-        }}>
+        <div className={styles.vizPlaceholder}>
             {children || "Visualization Area"}
         </div>
     );
