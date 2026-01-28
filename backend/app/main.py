@@ -35,10 +35,11 @@ except ImportError:
 try:
     from sam3.model_builder import build_sam3_video_predictor, build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
-except ImportError:
+except ImportError as ie:
     print("SAM3 not installed.")
+    print(f"{ie}:{ie.name}|{ie.path}")
     build_sam3 = None
-    SAM3Predictor = None
+    Sam3Processor = None
 
 app = FastAPI()
 
@@ -355,7 +356,7 @@ def get_predictor(model_name: str, predictor_type: str):
     Returns
     -------
     Predictor
-        Initialized SAM2ImagePredictor, SAM2VideoPredictor, or SAM3Predictor
+        Initialized SAM2ImagePredictor, SAM2VideoPredictor, or Sam3Processor
 
     Raises
     ------
@@ -405,7 +406,7 @@ def get_predictor(model_name: str, predictor_type: str):
             raise ValueError(f"Unknown predictor type: {predictor_type}")
 
     elif model_name.startswith("sam3"):
-        if SAM3Predictor is None:
+        if Sam3Processor is None:
             raise ImportError("SAM3 library not found/installed")
 
         # Strict Check: SAM3 must be downloaded via the UI first
