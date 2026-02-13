@@ -1,4 +1,4 @@
-const { upAll, downAll } = require('docker-compose/dist/v2')
+const { upAll, downAll } = require('docker-compose')
 const { join } = require('path')
 const { execSync } = require('child_process')
 
