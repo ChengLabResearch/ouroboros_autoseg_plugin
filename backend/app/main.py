@@ -327,6 +327,8 @@ def download_file(url, dest):
         If the download fails with a non-200 status code
     """
     print(f"Downloading {url} to {dest}...")
+    if not Path(dest).parent.exists():
+        Path(dest).mkdir(parents=True)
     response = requests.get(url, stream=True)
     if response.status_code == 200:
         with open(dest, 'wb') as f:
