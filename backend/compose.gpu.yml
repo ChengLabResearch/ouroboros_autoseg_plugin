@@ -1,5 +1,5 @@
 services:
-  backend:
+  our_autoseg:
     build: .
     ports:
       - "8686:8686"
