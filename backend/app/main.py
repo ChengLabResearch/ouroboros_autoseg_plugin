@@ -84,6 +84,45 @@ startup_status = {
 }
 
 
+def refresh_startup_status():
+    """
+    Refresh startup status based on currently reachable dependencies.
+
+    Returns
+    -------
+    dict
+        Updated startup status object
+    """
+    global startup_status
+
+    # If this API is reachable, the container image has already started.
+    update_initialization_step("Building Docker Image", "completed")
+
+    try:
+        response = requests.get(f"{VOLUME_SERVER_URL}/", timeout=1)
+        if response.ok or response.status_code in (404, 405):
+            update_initialization_step("Connecting to Volume Server", "completed")
+        else:
+            update_initialization_step("Connecting to Volume Server", "warning")
+    except requests.RequestException:
+        update_initialization_step("Connecting to Volume Server", "warning")
+
+    models_available = (
+        (build_sam2 is not None and SAM2ImagePredictor is not None)
+        or (build_sam3 is not None and Sam3Processor is not None)
+    )
+    update_initialization_step("Initializing ML Models", "completed" if models_available else "warning")
+
+    all_steps_completed = all(step["status"] == "completed" for step in startup_status["initialization_steps"])
+    startup_status["is_ready"] = all_steps_completed
+    if all_steps_completed and startup_status["ready_time"] is None:
+        startup_status["ready_time"] = time.time()
+    if not all_steps_completed:
+        startup_status["ready_time"] = None
+
+    return startup_status
+
+
 def get_shared_memory_info():
     """
     Get usage statistics for /dev/shm (Shared Memory).
@@ -446,6 +485,11 @@ class ProcessRequest(BaseModel):
 @app.get("/")
 async def server_active():
     return JSONResponse("Segmentation server is active")
+
+
+@app.get("/startup-status")
+async def get_startup_status():
+    return refresh_startup_status()
 
 
 @app.post("/download-model")

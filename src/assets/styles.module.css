@@ -149,7 +149,7 @@
 .connectionDot {
     width: 10px;
     height: 10px;
-    borderRadius: 50%;
+    border-radius: 50%;
     background-color: #f44336;
     transition: background-color 0.3s;
 }
@@ -168,6 +168,58 @@
 .progressLabelRow { display: flex; justify-content: space-between; color: var(--primary-text); font-size: 0.9rem; margin-bottom: 5px; }
 .progressBarBg { height: 6px; background: var(--light-background); border-radius: 3px; overflow: hidden; }
 .progressBarFill { height: 100%; background: var(--option-highlight-color); transition: width 0.3s ease-out; }
+.backendStatusBlock {
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #222;
+}
+.backendStatusHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--primary-text);
+    font-size: 0.9rem;
+    margin-bottom: 8px;
+}
+.backendSteps {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.backendStepRow {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: var(--primary-text);
+    font-size: 0.82rem;
+}
+.backendStatusBadge {
+    text-transform: capitalize;
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+}
+.statusCompleted {
+    color: #7dd97d;
+    border-color: rgba(125, 217, 125, 0.45);
+    background: rgba(125, 217, 125, 0.12);
+}
+.statusInProgress {
+    color: #4fc3f7;
+    border-color: rgba(79, 195, 247, 0.45);
+    background: rgba(79, 195, 247, 0.12);
+}
+.statusPending {
+    color: #b0bec5;
+    border-color: rgba(176, 190, 197, 0.35);
+    background: rgba(176, 190, 197, 0.1);
+}
+.statusWarning {
+    color: #ffb74d;
+    border-color: rgba(255, 183, 77, 0.45);
+    background: rgba(255, 183, 77, 0.12);
+}
 
 /* VisualizePanel Specific */
 .vizPlaceholder {

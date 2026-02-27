@@ -1,24 +1,33 @@
 import { useState, useEffect } from 'react';
 import styles from '../assets/styles.module.css';
 import OptionsPanel from '../components/OptionsPanel';
-import ProgressPanel, { ProgressItem } from '../components/ProgressPanel';
+import ProgressPanel, { BackendStatus, ProgressItem } from '../components/ProgressPanel';
 import VisualizePanel from '../components/VisualizePanel';
-
-const BACKEND_URL = "http://localhost:8686";
+import { BACKEND_URL } from '../config';
 
 export default function SAM3Page() {
     const [prog, setProg] = useState<ProgressItem[]>([]);
     const [run, setRun] = useState(false);
     const [jobId, setJobId] = useState<string | null>(null);
     const [connected, setConnected] = useState(false);
+    const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
 
     useEffect(() => {
         const check = async () => {
             try {
-                const res = await fetch(`${BACKEND_URL}/`);
-                if(res.ok) setConnected(true);
-                else setConnected(false);
-            } catch(e) { setConnected(false); }
+                const res = await fetch(`${BACKEND_URL}/startup-status`);
+                if(res.ok) {
+                    const data: BackendStatus = await res.json();
+                    setConnected(true);
+                    setBackendStatus(data);
+                } else {
+                    setConnected(false);
+                    setBackendStatus(null);
+                }
+            } catch(e) {
+                setConnected(false);
+                setBackendStatus(null);
+            }
         };
         check();
         const i = setInterval(check, 5000);
@@ -75,7 +84,7 @@ export default function SAM3Page() {
 					<VisualizePanel><div>SAM3 Visualization</div></VisualizePanel>
 				</div>
                 <div className={styles.progressArea}>
-                    <ProgressPanel items={prog} connected={connected} />
+                    <ProgressPanel items={prog} connected={connected} backendStatus={backendStatus} />
                 </div>
 			</div>
             <div className={styles.rightSidebar}>

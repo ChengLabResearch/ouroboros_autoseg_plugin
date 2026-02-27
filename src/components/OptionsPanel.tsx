@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import styles from '../assets/styles.module.css';
+import { BACKEND_URL } from '../config';
 
 type Props = { 
     onSubmit: (d: any) => void; 
     isRunning: boolean; 
 };
 
-const BACKEND_URL = "http://localhost:8686";
 export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const [fp, setFp] = useState('');
     const [outFp, setOutFp] = useState('');
