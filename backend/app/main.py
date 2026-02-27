@@ -366,11 +366,17 @@ def download_file(url, dest):
         If the download fails with a non-200 status code
     """
     print(f"Downloading {url} to {dest}...")
-    if not Path(dest).parent.exists():
-        Path(dest).mkdir(parents=True)
+    target_path = Path(dest)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Recover from older bug where checkpoint path was created as a directory.
+    if target_path.exists() and target_path.is_dir():
+        print(f"Found directory at checkpoint path {target_path}, removing it before download.")
+        shutil.rmtree(target_path)
+
     response = requests.get(url, stream=True)
     if response.status_code == 200:
-        with open(dest, 'wb') as f:
+        with open(target_path, 'wb') as f:
             for chunk in response.iter_content(1024):
                 f.write(chunk)
     else:
@@ -429,7 +435,7 @@ def get_predictor(model_name: str, predictor_type: str):
             raise ImportError("SAM2 library not found/installed")
 
         # Fallback: Auto-download SAM2 if missing (convenience)
-        if not os.path.exists(checkpoint_path):
+        if not os.path.isfile(checkpoint_path):
             print(f"Checkpoint not found in {checkpoint_path}, attempting auto-download...")
             try:
                 download_file(SAM2_URLS[model_name], checkpoint_path)
@@ -451,7 +457,7 @@ def get_predictor(model_name: str, predictor_type: str):
             raise ImportError("SAM3 library not found/installed")
 
         # Strict Check: SAM3 must be downloaded via the UI first
-        if not os.path.exists(checkpoint_path):
+        if not os.path.isfile(checkpoint_path):
             raise FileNotFoundError(
                 f"SAM3 checkpoint not found at {checkpoint_path}. "
                 "Please use the 'Models' section to download it with your authentication token."
@@ -492,6 +498,28 @@ async def get_startup_status():
     return refresh_startup_status()
 
 
+@app.get("/model-status")
+async def get_model_status():
+    """
+    Report whether key model checkpoints are present on the mounted volume.
+
+    Returns
+    -------
+    dict
+        Availability flags per model and checkpoint directory path.
+    """
+    tracked_models = ["sam2_hiera_base_plus", "sam3"]
+    statuses = {}
+    for model_name in tracked_models:
+        checkpoint_path = os.path.join(CHECKPOINT_DIR, f"{model_name}.pt")
+        statuses[model_name] = os.path.isfile(checkpoint_path)
+
+    return {
+        "checkpoint_dir": CHECKPOINT_DIR,
+        "models": statuses
+    }
+
+
 @app.post("/download-model")
 async def download_model(req: DownloadRequest):
     """
@@ -519,10 +547,15 @@ async def download_model(req: DownloadRequest):
         model_name = req.model_type
         target_path = os.path.join(CHECKPOINT_DIR, f"{model_name}.pt")
 
-        if os.path.exists(target_path):
+        if os.path.isfile(target_path):
             print(f"Model {model_name} already exists.")
             await asyncio.sleep(0.0001)
             return {"status": "exists", "message": f"Model {model_name} already exists."}
+
+        # Recover from old bug: remove accidental directory at checkpoint file path.
+        if os.path.isdir(target_path):
+            print(f"Removing directory at checkpoint path: {target_path}")
+            shutil.rmtree(target_path)
 
         print(f"Initiating download for {model_name}...")
 

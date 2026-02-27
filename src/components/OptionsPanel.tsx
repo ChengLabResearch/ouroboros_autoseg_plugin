@@ -1,22 +1,23 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import styles from '../assets/styles.module.css';
 import { BACKEND_URL } from '../config';
 
 type Props = { 
     onSubmit: (d: any) => void; 
     isRunning: boolean; 
+    connected: boolean;
 };
 
-export default function OptionsPanel({ onSubmit, isRunning }: Props) {
+export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) {
     const [fp, setFp] = useState('');
     const [outFp, setOutFp] = useState('');
     const [model, setModel] = useState('sam2_hiera_base_plus');
     const [predictor, setPredictor] = useState('ImagePredictor');
     const [token, setToken] = useState('');
 
-    // Download States
-    const [sam2Status, setSam2Status] = useState('Download');
-    const [sam3Status, setSam3Status] = useState('Download');
+    type DownloadState = 'idle' | 'downloading' | 'downloaded' | 'error';
+    const [sam2State, setSam2State] = useState<DownloadState>('idle');
+    const [sam3State, setSam3State] = useState<DownloadState>('idle');
 
     const handleDrop = (e: React.DragEvent, setFn: (s: string) => void) => {
         e.preventDefault();
@@ -30,23 +31,67 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
         e.stopPropagation();
     };
 
-    const downloadModel = async (modelType: string, hfToken: string, setStatus: (s: string) => void) => {
-        setStatus('Downloading...');
+    const refreshModelStatuses = async () => {
+        if (!connected) return;
+        try {
+            const res = await fetch(`${BACKEND_URL}/model-status`);
+            if (!res.ok) {
+                return;
+            }
+            const data = await res.json();
+            setSam2State(data?.models?.sam2_hiera_base_plus ? 'downloaded' : 'idle');
+            setSam3State(data?.models?.sam3 ? 'downloaded' : 'idle');
+        } catch (e) {
+            console.error('Failed to fetch model status:', e);
+        }
+    };
+
+    useEffect(() => {
+        if (!connected) {
+            setSam2State('idle');
+            setSam3State('idle');
+            return;
+        }
+        refreshModelStatuses();
+        const interval = setInterval(refreshModelStatuses, 5000);
+        return () => clearInterval(interval);
+    }, [connected]);
+
+    const downloadModel = async (
+        modelType: string,
+        hfToken: string,
+        setState: (s: DownloadState) => void
+    ) => {
+        setState('downloading');
         try {
             const res = await fetch(`${BACKEND_URL}/download-model`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model_type: modelType, hf_token: hfToken })
             });
-            if (res.ok) setStatus('Done');
-            else {
+            if (res.ok) {
+                await refreshModelStatuses();
+            } else {
                 console.error(await res.text());
-                setStatus('Error');
+                setState('error');
             }
         } catch (e) {
             console.error(e);
-            setStatus('Error');
+            setState('error');
         }
+    };
+
+    const buttonLabel = (state: DownloadState): string => {
+        if (state === 'downloading') return 'Downloading...';
+        if (state === 'downloaded') return 'Downloaded';
+        if (state === 'error') return 'Retry';
+        return 'Download';
+    };
+
+    const buttonClass = (state: DownloadState): string => {
+        if (state === 'downloaded') return `${styles.downloadBtn} ${styles.downloadBtnSuccess}`;
+        if (state === 'error') return `${styles.downloadBtn} ${styles.downloadBtnError}`;
+        return styles.downloadBtn;
     };
 
     const canRun = !isRunning && fp && outFp;
@@ -133,11 +178,11 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                     <div className={styles.row}>
                         <span className={styles.label}>SAM 2 (Official)</span>
                         <button 
-                            className={styles.downloadBtn} 
-                            onClick={() => downloadModel('sam2_hiera_base_plus', '', setSam2Status)}
-                            disabled={sam2Status !== 'Download'}
+                            className={buttonClass(sam2State)}
+                            onClick={() => downloadModel('sam2_hiera_base_plus', '', setSam2State)}
+                            disabled={sam2State === 'downloading' || sam2State === 'downloaded'}
                         >
-                            {sam2Status}
+                            {buttonLabel(sam2State)}
                         </button>
                     </div>
 
@@ -155,11 +200,15 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                                 placeholder="Paste HF Token" 
                             />
                             <button 
-                                className={styles.downloadBtn} 
-                                onClick={() => downloadModel('sam3', token, setSam3Status)}
-                                disabled={sam3Status !== 'Download' || !token}
+                                className={buttonClass(sam3State)}
+                                onClick={() => downloadModel('sam3', token, setSam3State)}
+                                disabled={
+                                    sam3State === 'downloading' ||
+                                    sam3State === 'downloaded' ||
+                                    !token
+                                }
                             >
-                                {sam3Status}
+                                {buttonLabel(sam3State)}
                             </button>
                         </div>
                     </div>

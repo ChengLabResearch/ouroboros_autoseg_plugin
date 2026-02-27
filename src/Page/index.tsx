@@ -89,7 +89,7 @@ export default function SAM3Page() {
 			</div>
             <div className={styles.rightSidebar}>
                 <div className={styles.optionsArea}>
-                    <OptionsPanel onSubmit={handleRun} isRunning={run} />
+                    <OptionsPanel onSubmit={handleRun} isRunning={run} connected={connected} />
                 </div>
             </div>
         </div>
