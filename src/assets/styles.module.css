@@ -208,6 +208,17 @@
     font-family: 'Poppins', sans-serif;
     margin-bottom: 0.5rem;
 }
+.reconnectBanner {
+    margin-top: 0.25rem;
+    margin-bottom: 0.5rem;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    font-family: 'Poppins', sans-serif;
+    color: #4fc3f7;
+    background: rgba(79, 195, 247, 0.12);
+    border: 1px solid rgba(79, 195, 247, 0.35);
+    border-radius: 8px;
+}
 .backendSteps {
     display: flex;
     flex-direction: column;

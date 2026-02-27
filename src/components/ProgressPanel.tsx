@@ -18,11 +18,13 @@ function statusClass(status: string): string {
 export default function ProgressPanel({
     items,
     connected,
-    backendStatus
+    backendStatus,
+    reconnected
 }: {
     items: ProgressItem[],
     connected: boolean,
-    backendStatus: BackendStatus | null
+    backendStatus: BackendStatus | null,
+    reconnected?: boolean
 }) {
     const backendLabel = !connected
         ? 'Disconnected'
@@ -47,6 +49,11 @@ export default function ProgressPanel({
                             {backendLabel}
                         </span>
                     </div>
+                    {reconnected && (
+                        <div className={styles.reconnectBanner}>
+                            Reconnected to an active run.
+                        </div>
+                    )}
                     {connected && backendStatus && (
                         <div className={styles.backendSteps}>
                             {backendStatus.initialization_steps.map((step) => (

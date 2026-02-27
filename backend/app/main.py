@@ -623,7 +623,9 @@ async def process_stack(req: ProcessRequest, background_tasks: BackgroundTasks):
             {"name": "Transferring", "progress": 0},
             {"name": "Inference", "progress": 0},
             {"name": "Saving", "progress": 0}
-        ]
+        ],
+        "created_at": time.time(),
+        "updated_at": time.time()
     }
     background_tasks.add_task(
         run_pipeline,
@@ -661,6 +663,24 @@ async def get_status(job_id: str):
     return jobs[job_id]
 
 
+@app.get("/latest-job")
+async def get_latest_job():
+    """
+    Return the most recently created running job, if any.
+    """
+    running_jobs = [
+        (job_id, data)
+        for job_id, data in jobs.items()
+        if data.get("status") == "running"
+    ]
+    if not running_jobs:
+        return {"job_id": None, "status": "none"}
+    latest_job_id, latest_job = max(
+        running_jobs, key=lambda item: item[1].get("created_at", 0)
+    )
+    return {"job_id": latest_job_id, "status": latest_job.get("status", "running")}
+
+
 def update_step(job_id, step_index, progress):
     """
     Update the progress of a specific step in a processing job.
@@ -676,6 +696,7 @@ def update_step(job_id, step_index, progress):
     """
     if job_id in jobs:
         jobs[job_id]["steps"][step_index]["progress"] = progress
+        jobs[job_id]["updated_at"] = time.time()
 
 
 def jpeg_convert(img_path: Path, target_path: Path, img_page: int = 0):
@@ -940,8 +961,10 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
         shutil.rmtree(volume_folder)
 
         jobs[job_id]["status"] = "completed"
+        jobs[job_id]["updated_at"] = time.time()
 
     except Exception as e:
         print(f"Pipeline Error: {e}")
         traceback.print_exc()
         jobs[job_id]["status"] = "error"
+        jobs[job_id]["updated_at"] = time.time()

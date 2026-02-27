@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import styles from '../assets/styles.module.css';
 import OptionsPanel from '../components/OptionsPanel';
 import ProgressPanel, { BackendStatus, ProgressItem } from '../components/ProgressPanel';
@@ -11,6 +11,37 @@ export default function SAM3Page() {
     const [jobId, setJobId] = useState<string | null>(null);
     const [connected, setConnected] = useState(false);
     const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+    const [reconnected, setReconnected] = useState(false);
+    const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const storageKey = 'ouroboros.autoseg.jobId';
+
+    const getStoredJobId = () => {
+        try {
+            return localStorage.getItem(storageKey);
+        } catch {
+            return null;
+        }
+    };
+
+    const setStoredJobId = (id: string) => {
+        try {
+            localStorage.setItem(storageKey, id);
+        } catch {}
+    };
+
+    const clearStoredJobId = () => {
+        try {
+            localStorage.removeItem(storageKey);
+        } catch {}
+    };
+
+    const scheduleReconnectBannerClear = () => {
+        if (reconnectTimer.current) {
+            clearTimeout(reconnectTimer.current);
+        }
+        setReconnected(true);
+        reconnectTimer.current = setTimeout(() => setReconnected(false), 6000);
+    };
 
     useEffect(() => {
         let cancelled = false;
@@ -63,6 +94,7 @@ export default function SAM3Page() {
             {name: 'Inference', progress: 0},
             {name: 'Saving', progress: 0}
         ]);
+        clearStoredJobId();
         try {
             const res = await fetch(`${BACKEND_URL}/process-stack`, {
                 method:'POST', 
@@ -75,9 +107,67 @@ export default function SAM3Page() {
                 })
             });
             const data = await res.json();
-            if(data.job_id) setJobId(data.job_id);
+            if (data.job_id) {
+                setJobId(data.job_id);
+                setStoredJobId(data.job_id);
+            } else {
+                setRun(false);
+            }
         } catch(e) { console.error(e); setRun(false); }
     };
+
+    useEffect(() => {
+        if (!connected || run || jobId) return;
+
+        let cancelled = false;
+
+        const tryReconnect = async () => {
+            const storedJobId = getStoredJobId();
+            let candidateJobId = storedJobId;
+
+            if (!candidateJobId) {
+                try {
+                    const latestRes = await fetch(`${BACKEND_URL}/latest-job`);
+                    if (latestRes.ok) {
+                        const latestData = await latestRes.json();
+                        if (latestData?.job_id) {
+                            candidateJobId = latestData.job_id;
+                            setStoredJobId(candidateJobId);
+                        }
+                    }
+                } catch {
+                    // Ignore; we'll retry later when the backend is stable.
+                }
+            }
+
+            if (!candidateJobId) return;
+
+            try {
+                const res = await fetch(`${BACKEND_URL}/status/${candidateJobId}`);
+                if (!res.ok) {
+                    clearStoredJobId();
+                    return;
+                }
+                const data = await res.json();
+                if (cancelled) return;
+                if (Array.isArray(data.steps)) {
+                    setProg(data.steps);
+                }
+                if (data.status === 'completed' || data.status === 'error') {
+                    clearStoredJobId();
+                    return;
+                }
+                setJobId(candidateJobId);
+                setRun(true);
+                scheduleReconnectBannerClear();
+            } catch {
+                // Keep stored job id for a later reconnect attempt.
+            }
+        };
+
+        tryReconnect();
+        return () => { cancelled = true; };
+    }, [connected, run, jobId]);
 
     useEffect(() => {
         let interval: any;
@@ -91,13 +181,26 @@ export default function SAM3Page() {
                         if(data.status === 'completed' || data.status === 'error') {
                             setRun(false);
                             setJobId(null);
+                            clearStoredJobId();
                         }
+                    } else if (res.status === 404) {
+                        setRun(false);
+                        setJobId(null);
+                        clearStoredJobId();
                     }
                 } catch(e) {}
             }, 500);
         }
         return () => clearInterval(interval);
     }, [run, jobId]);
+
+    useEffect(() => {
+        return () => {
+            if (reconnectTimer.current) {
+                clearTimeout(reconnectTimer.current);
+            }
+        };
+    }, []);
 
     return (
         <div className={styles.pageLayout}>
@@ -106,7 +209,7 @@ export default function SAM3Page() {
 					<VisualizePanel><div>SAM3 Visualization</div></VisualizePanel>
 				</div>
                 <div className={styles.progressArea}>
-                    <ProgressPanel items={prog} connected={connected} backendStatus={backendStatus} />
+                    <ProgressPanel items={prog} connected={connected} backendStatus={backendStatus} reconnected={reconnected} />
                 </div>
 			</div>
             <div className={styles.rightSidebar}>
