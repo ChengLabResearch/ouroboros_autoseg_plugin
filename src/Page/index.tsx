@@ -13,25 +13,47 @@ export default function SAM3Page() {
     const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
 
     useEffect(() => {
+        let cancelled = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+
         const check = async () => {
             try {
                 const res = await fetch(`${BACKEND_URL}/startup-status`);
                 if(res.ok) {
                     const data: BackendStatus = await res.json();
-                    setConnected(true);
-                    setBackendStatus(data);
+                    if (!cancelled) {
+                        setConnected(true);
+                        setBackendStatus(data);
+                    }
                 } else {
+                    if (!cancelled) {
+                        setConnected(false);
+                        setBackendStatus(null);
+                    }
+                }
+            } catch(e) {
+                if (!cancelled) {
                     setConnected(false);
                     setBackendStatus(null);
                 }
-            } catch(e) {
-                setConnected(false);
-                setBackendStatus(null);
             }
         };
-        check();
-        const i = setInterval(check, 5000);
-        return () => clearInterval(i);
+
+        const poll = async (delayMs: number) => {
+            if (cancelled) return;
+            timer = setTimeout(async () => {
+                await check();
+                await poll(5000);
+            }, delayMs);
+        };
+
+        // Give backend container a small startup grace period in dev.
+        poll(2500);
+
+        return () => {
+            cancelled = true;
+            if (timer) clearTimeout(timer);
+        };
     }, []);
 
     const handleRun = async (opts: any) => {
