@@ -1,29 +1,32 @@
 /* Layout Styles (from Page/index.tsx) */
 .pageLayout {
     display: grid;
-    grid-template-columns: 1fr 350px;
+    grid-template-columns: 3fr 2fr;
     grid-template-rows: 100vh;
-    width: 100vw;
-    height: 100vh;
+    margin: 1rem;
+    gap: 1rem;
+    width: calc(100% - 2rem);
+    height: calc(100% - 2rem);
+    max-height: calc(100vh - 2rem);
     overflow: hidden;
     background-color: var(--window-background);
 }
 .centerArea {
     grid-column: 1 / 2;
-    padding: 10px;
+    padding: 0.75rem;
     overflow: hidden;
 }
 .vizArea {
     height: 60%;
+    padding-bottom: 0.75rem;
     overflow: hidden;
 }
 .rightSidebar {
     grid-column: 2 / 3;
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    border-left: 1px solid #111;
-    padding: 10px;
+    height: 100%;
+    padding: 0;
 }
 .progressArea {
     height: 40%;
@@ -40,29 +43,29 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    border-top: 1px solid #111;
+    border-radius: 1.25rem;
     overflow: hidden;
 }
 
 .headerRow {
-    padding: 10px 15px;
+    padding: 0.5rem 1rem 0.25rem 1rem;
     background-color: var(--panel-background);
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid #222;
 }
 
 .headerTitle {
     color: var(--panel-header-text);
-    font-size: 1rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
+    font-size: 2.25rem;
+    line-height: 1;
+    font-weight: 700;
+    font-family: 'Poppins', sans-serif;
 }
 
 .section {
-    padding: 15px;
-    border-bottom: 1px solid #222;
+    width: calc(100% - 2rem);
+    margin: 0.25rem 1rem;
 }
 
 /* OptionsPanel Specific */
@@ -70,13 +73,15 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 10px;
-    min-height: 30px;
+    margin: 0.5rem 0;
+    min-height: 2rem;
 }
 
 .label {
     color: var(--primary-text);
-    font-size: 0.9rem;
+    font-size: 1.25rem;
+    font-family: 'Poppins', sans-serif;
+    font-weight: 500;
     flex: 1;
 }
 
@@ -90,23 +95,30 @@
 
 .input {
     width: 100%;
+    max-width: 50%;
     background: transparent;
     border: none;
-    border-bottom: 1px solid var(--inactive-menu-text);
+    border-bottom: 2px solid var(--option-highlight-color);
     color: var(--primary-text);
     text-align: right;
-    padding: 4px;
-    font-size: 0.9rem;
+    padding: 0.25rem;
+    font-size: 1.25rem;
+    font-family: 'Poppins', sans-serif;
+    font-weight: 500;
     outline: none;
 }
 
 .select {
     width: 100%;
+    max-width: 50%;
     background: transparent;
     border: none;
+    border-bottom: 2px solid var(--option-highlight-color);
     color: var(--primary-text);
     text-align: right;
-    font-size: 0.9rem;
+    font-size: 1.25rem;
+    font-family: 'Poppins', sans-serif;
+    font-weight: 500;
     appearance: none;
     cursor: pointer;
 }
@@ -128,15 +140,16 @@
 }
 
 .downloadBtn {
-    padding: 6px 12px;
+    padding: 0.35rem 0.75rem;
     background-color: var(--option-highlight-color);
     color: var(--dark-text);
     border: none;
-    border-radius: 4px;
-    font-size: 0.8rem;
-    font-weight: bold;
+    border-radius: 0.45rem;
+    font-size: 0.95rem;
+    font-family: 'Poppins', sans-serif;
+    font-weight: 700;
     cursor: pointer;
-    width: 100px;
+    width: 6.75rem;
     text-align: center;
 }
 .downloadBtn:disabled {
@@ -144,59 +157,75 @@
     color: #888;
     cursor: default;
 }
+.downloadBtnSuccess {
+    background-color: #2e7d32;
+    color: #d7ffd9;
+}
+.downloadBtnError {
+    background-color: #b71c1c;
+    color: #ffd6d6;
+}
+.downloadBtnSuccess:disabled {
+    background-color: #2e7d32;
+    color: #d7ffd9;
+    opacity: 1;
+}
 
 /* ProgressPanel Specific */
 .connectionDot {
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background-color: #f44336;
+    background-color: #ff0000;
     transition: background-color 0.3s;
 }
 .connectionDot.connected {
-    background-color: #4caf50;
-    box-shadow: 0 0 5px #4caf50;
+    background-color: #00ff00;
+    box-shadow: 0 0 5px #00ff00;
 }
 
 .progressContent {
-    padding: 15px;
+    padding: 0.5rem 0;
     overflow-y: auto;
     flex: 1;
 }
 
-.progressItem { margin-bottom: 15px; }
-.progressLabelRow { display: flex; justify-content: space-between; color: var(--primary-text); font-size: 0.9rem; margin-bottom: 5px; }
-.progressBarBg { height: 6px; background: var(--light-background); border-radius: 3px; overflow: hidden; }
+.progressItem { margin: 0.75rem 1rem; }
+.progressLabelRow { display: flex; justify-content: space-between; color: var(--primary-text); font-size: 1rem; margin-bottom: 0.35rem; font-family: 'Poppins', sans-serif; }
+.progressBarBg { height: 1.1rem; background: #0f1016; overflow: hidden; }
 .progressBarFill { height: 100%; background: var(--option-highlight-color); transition: width 0.3s ease-out; }
 .backendStatusBlock {
-    margin-bottom: 16px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid #222;
+    margin: 0.5rem 1rem 1rem 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 .backendStatusHeader {
     display: flex;
     justify-content: space-between;
     align-items: center;
     color: var(--primary-text);
-    font-size: 0.9rem;
-    margin-bottom: 8px;
+    font-size: 1rem;
+    font-family: 'Poppins', sans-serif;
+    margin-bottom: 0.5rem;
 }
 .backendSteps {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 0.4rem;
 }
 .backendStepRow {
     display: flex;
     justify-content: space-between;
     align-items: center;
     color: var(--primary-text);
-    font-size: 0.82rem;
+    font-size: 0.9rem;
+    font-family: 'Poppins', sans-serif;
 }
 .backendStatusBadge {
     text-transform: capitalize;
-    font-size: 0.72rem;
-    padding: 2px 8px;
+    font-size: 0.75rem;
+    font-family: 'Poppins', sans-serif;
+    padding: 0.1rem 0.5rem;
     border-radius: 999px;
     border: 1px solid transparent;
 }
@@ -230,4 +259,29 @@
     align-items: center; 
     justify-content: center; 
     color: #666; 
+}
+
+.scrollContent {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    padding-bottom: 1rem;
+}
+
+.sam3Container {
+    margin-top: 0.75rem;
+}
+
+.tokenInput {
+    width: 100%;
+    max-width: calc(100% - 8rem);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid var(--option-highlight-color);
+    color: var(--primary-text);
+    padding: 0.25rem;
+    font-size: 1.25rem;
+    font-family: 'Poppins', sans-serif;
+    font-weight: 500;
+    outline: none;
 }
