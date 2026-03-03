@@ -130,9 +130,10 @@ export default function SAM3Page() {
                     const latestRes = await fetch(`${BACKEND_URL}/latest-job`);
                     if (latestRes.ok) {
                         const latestData = await latestRes.json();
-                        if (latestData?.job_id) {
-                            candidateJobId = latestData.job_id;
-                            setStoredJobId(candidateJobId);
+                        const latestJobId = latestData?.job_id;
+                        if (typeof latestJobId === 'string' && latestJobId.length > 0) {
+                            candidateJobId = latestJobId;
+                            setStoredJobId(latestJobId);
                         }
                     }
                 } catch {
