@@ -19,16 +19,110 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
     const [sam2State, setSam2State] = useState<DownloadState>('idle');
     const [sam3State, setSam3State] = useState<DownloadState>('idle');
 
+    const normalizeFileUri = (uri: string): string => {
+        let cleaned = uri.trim();
+        if (cleaned.startsWith('file://')) {
+            cleaned = cleaned.replace(/^file:\/\//, '');
+            cleaned = decodeURIComponent(cleaned);
+            if (/^\/[A-Za-z]:\//.test(cleaned)) {
+                cleaned = cleaned.slice(1);
+            }
+        }
+        return cleaned.trim();
+    };
+
+    const parseTextToPath = (text: string): string | null => {
+        const trimmed = text.trim();
+        if (!trimmed) return null;
+        if (trimmed.startsWith('file://')) {
+            return normalizeFileUri(trimmed);
+        }
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+            try {
+                const data = JSON.parse(trimmed);
+                if (typeof data === 'string') return data;
+                if (Array.isArray(data)) {
+                    const first = data.find((item) => typeof item === 'string');
+                    return first ?? null;
+                }
+                if (data && typeof data === 'object') {
+                    const keys = ['path', 'filePath', 'filepath', 'file_path', 'uri', 'url'];
+                    for (const key of keys) {
+                        const val = (data as any)[key];
+                        if (typeof val === 'string') return val;
+                    }
+                }
+            } catch {}
+        }
+        return trimmed;
+    };
+
+    const extractPathFromDataTransfer = (dt: DataTransfer): string | null => {
+        if (dt.items && dt.items.length > 0) {
+            for (const item of Array.from(dt.items)) {
+                if (item.kind === 'file') {
+                    const file = item.getAsFile();
+                    if (file) {
+                        const anyFile = file as any;
+                        return (typeof anyFile.path === 'string' && anyFile.path) || file.name || null;
+                    }
+                }
+            }
+        }
+
+        if (dt.files && dt.files.length > 0) {
+            const file = dt.files[0];
+            const anyFile = file as any;
+            return (typeof anyFile.path === 'string' && anyFile.path) || file.name || null;
+        }
+
+        const types = Array.from(dt.types || []);
+        const preferredTypes = [
+            'text/uri-list',
+            'text/plain',
+            'application/json',
+            'text/json',
+            'application/x-ouroboros-path',
+            'application/x-ouroboros-file',
+            'application/x-file-path'
+        ];
+
+        const orderedTypes = [
+            ...preferredTypes.filter((t) => types.includes(t)),
+            ...types.filter((t) => !preferredTypes.includes(t))
+        ];
+
+        for (const type of orderedTypes) {
+            const raw = dt.getData(type);
+            if (!raw) continue;
+            if (type === 'text/uri-list') {
+                const line = raw
+                    .split(/\r?\n/)
+                    .map((entry) => entry.trim())
+                    .find((entry) => entry && !entry.startsWith('#'));
+                if (line) return normalizeFileUri(line);
+                continue;
+            }
+            const parsed = parseTextToPath(raw);
+            if (parsed) return parsed;
+        }
+
+        return null;
+    };
+
     const handleDrop = (e: React.DragEvent, setFn: (s: string) => void) => {
         e.preventDefault();
         e.stopPropagation();
-        const data = e.dataTransfer.getData("text/plain");
+        const data = extractPathFromDataTransfer(e.dataTransfer);
         if (data) setFn(data);
     };
 
     const handleDragOver = (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
+        if (e.dataTransfer) {
+            e.dataTransfer.dropEffect = 'copy';
+        }
     };
 
     const refreshModelStatuses = async () => {
