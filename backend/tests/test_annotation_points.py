@@ -10,7 +10,7 @@ import tifffile as tf
 _TEST_VOLUME_ROOT = tempfile.mkdtemp(prefix="ouroboros-test-volume-")
 os.environ["VOLUME_MOUNT_PATH"] = _TEST_VOLUME_ROOT
 
-from backend.app.main import (
+from backend.app.util.util import ( 	# noqa: E402
     _annotation_point_for_frame,
     _annotation_samples_for_video,
     load_annotation_points,
