@@ -141,6 +141,19 @@ def get_shared_memory_info():
 
 
 def num_digits_for_n_files(n: int) -> int:
+    """
+    Return zero-padding width required to index `n` files from zero.
+
+    Parameters
+    ----------
+    n : int
+        Total number of files.
+
+    Returns
+    -------
+    int
+        Number of digits required to represent the largest index (`n - 1`).
+    """
     return len(str(n - 1))
 
 
@@ -164,7 +177,7 @@ def _read_annotation_points_from_tiff(tiff_path: Path) -> Optional[np.ndarray]:
 
     try:
         arr = np.asarray(metadata["annotation_points"], dtype=np.float32)
-    except (TypeError, ValueError):
+    except (AttributeError, TypeError, ValueError):
         return None
 
     if arr.ndim != 2 or arr.shape[1] < 3 or arr.shape[0] == 0:
@@ -177,6 +190,17 @@ def load_annotation_points(volume_source: Path) -> Optional[np.ndarray]:
     Load annotation points from a straightened-volume input.
 
     For multi-file TIFF outputs, points are expected on the first TIFF file metadata.
+
+    Parameters
+    ----------
+    volume_source : pathlib.Path
+        Path to a single TIFF file or a directory containing TIFF slices.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Array with shape ``(N, 3)`` containing ``[x, y, z]`` annotation points,
+        or ``None`` when metadata is missing or invalid.
     """
     if volume_source.is_dir():
         tif_paths = _sorted_tif_paths(volume_source)
