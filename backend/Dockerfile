@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.10.19-slim-bookworm
 
 WORKDIR /app
 
@@ -9,9 +9,13 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Mitigate pip CVEs (including CVE-2023-5752 and CVE-2025-8869).
+RUN python -m pip install --no-cache-dir --upgrade "pip>=25.3"
+
+COPY pyproject.toml .
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu121
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir "wheel>=0.46.2"
+RUN pip install --no-cache-dir .
 
 COPY . .
 
