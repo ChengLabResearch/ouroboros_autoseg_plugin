@@ -711,7 +711,6 @@ async def download_model(req: DownloadRequest):
                 cached_path = hf_hub_download(repo_id=repo_id, filename=filename, token=req.hf_token)
 
                 # Move/Copy to our volume structure
-                import shutil
                 shutil.copy(cached_path, target_path)
 
                 await asyncio.sleep(0.0001)
