@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from multiprocessing import Pool
 import os
 from pathlib import PureWindowsPath, PurePosixPath, Path, PurePath
@@ -56,7 +57,16 @@ app.add_middleware(
 jobs: Dict[str, Dict] = {}
 PLUGIN_NAME = "sam3-segmentation"
 VOLUME_SERVER_URL = os.getenv("VOLUME_SERVER_URL", "http://host.docker.internal:3001")
-INTERNAL_VOLUME_PATH = os.getenv("VOLUME_MOUNT_PATH", "/ouroboros-volume")
+logger = logging.getLogger(__name__)
+
+
+def _running_in_docker() -> bool:
+    return Path("/.dockerenv").exists() or os.getenv("RUNNING_IN_DOCKER") == "1"
+
+
+INTERNAL_VOLUME_PATH = "/ouroboros-volume" if _running_in_docker() else os.getenv(
+    "VOLUME_MOUNT_PATH", "/tmp/ouroboros-volume"
+)
 CHECKPOINT_DIR = os.path.join(INTERNAL_VOLUME_PATH, PLUGIN_NAME, "chkpts")
 
 # Frame loading mode for SAM2 VideoPredictor
@@ -64,8 +74,11 @@ CHECKPOINT_DIR = os.path.join(INTERNAL_VOLUME_PATH, PLUGIN_NAME, "chkpts")
 FRAME_LOADING_MODE = os.getenv("SAM2_FRAME_LOADING_MODE", "sync").lower()
 print(f"SAM2 frame loading mode: {FRAME_LOADING_MODE}")
 
-# Ensure checkpoint directory exists
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+if _running_in_docker() and not os.path.isdir(INTERNAL_VOLUME_PATH):
+    logger.error(
+        "Expected mounted volume path %s not found. Ensure ouroboros-volume is mounted.",
+        INTERNAL_VOLUME_PATH,
+    )
 
 # Caching
 loaded_model = None
@@ -177,7 +190,8 @@ def _read_annotation_points_from_tiff(tiff_path: Path) -> Optional[np.ndarray]:
 
     try:
         arr = np.asarray(metadata["annotation_points"], dtype=np.float32)
-    except (AttributeError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError) as e:
+        print(f"Invalid annotation_points in TIFF metadata from {tiff_path}: {type(e).__name__}: {e}")
         return None
 
     if arr.ndim != 2 or arr.shape[1] < 3 or arr.shape[0] == 0:
@@ -554,7 +568,7 @@ def get_predictor(model_name: str, predictor_type: str):
         if not os.path.isfile(checkpoint_path):
             print(f"Checkpoint not found in {checkpoint_path}, attempting auto-download...")
             try:
-                download_file(SAM2_URLS[model_name], checkpoint_path)
+                download_model(DownloadRequest(SAM2_URLS[model_name]))
             except Exception as e:
                 raise RuntimeError(f"Model not found and download failed: {e}")
 
@@ -661,6 +675,7 @@ async def download_model(req: DownloadRequest):
     """
     try:
         model_name = req.model_type
+        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
         target_path = os.path.join(CHECKPOINT_DIR, f"{model_name}.pt")
 
         if os.path.isfile(target_path):
