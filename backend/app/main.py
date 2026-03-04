@@ -1,4 +1,5 @@
 import asyncio
+import json
 from multiprocessing import Pool
 import os
 from pathlib import PureWindowsPath, PurePosixPath, Path, PurePath
@@ -141,6 +142,97 @@ def get_shared_memory_info():
 
 def num_digits_for_n_files(n: int) -> int:
     return len(str(n - 1))
+
+
+def _sorted_tif_paths(folder: Path) -> list[Path]:
+    return sorted(path for path in folder.iterdir() if path.suffix.lower() in {".tif", ".tiff"})
+
+
+def _read_annotation_points_from_tiff(tiff_path: Path) -> Optional[np.ndarray]:
+    """
+    Read annotation points from TIFF ImageDescription metadata.
+
+    The expected metadata schema (from ouroboros) stores points as:
+    {"annotation_points": [[x, y, z], ...]}
+    """
+    try:
+        with tf.TiffFile(tiff_path) as tif:
+            metadata = json.loads(tif.pages[0].description)
+    except Exception as e:
+        print(f"Unable to parse TIFF metadata from {tiff_path}: {type(e).__name__}: {e}")
+        return None
+
+    try:
+        arr = np.asarray(metadata["annotation_points"], dtype=np.float32)
+    except (TypeError, ValueError):
+        return None
+
+    if arr.ndim != 2 or arr.shape[1] < 3 or arr.shape[0] == 0:
+        return None
+    return arr[:, :3]
+
+
+def load_annotation_points(volume_source: Path) -> Optional[np.ndarray]:
+    """
+    Load annotation points from a straightened-volume input.
+
+    For multi-file TIFF outputs, points are expected on the first TIFF file metadata.
+    """
+    if volume_source.is_dir():
+        tif_paths = _sorted_tif_paths(volume_source)
+        if not tif_paths:
+            return None
+        return _read_annotation_points_from_tiff(tif_paths[0])
+    return _read_annotation_points_from_tiff(volume_source)
+
+
+def _annotation_samples_for_video(annotation_points: np.ndarray,
+                                  num_frames: int) -> list[tuple[int, np.ndarray]]:
+    """
+    Convert XYZ annotation points into per-frame XY prompts for video predictor.
+    """
+    frame_to_points = {}
+    for x, y, z in annotation_points:
+        frame_idx = int(np.rint(z))
+        if frame_idx < 0 or frame_idx >= num_frames:
+            continue
+        frame_to_points.setdefault(frame_idx, []).append([x, y])
+
+    return [(frame_idx, np.asarray(points, dtype=np.float32))
+            for frame_idx, points in sorted(frame_to_points.items(), key=lambda item: item[0])]
+
+
+def _annotation_point_for_frame(annotation_points: np.ndarray, frame_idx: int) -> np.ndarray:
+    """
+    Interpolate an XY point for a frame from nearest annotation points in Z.
+    """
+    z = annotation_points[:, 2]
+    x = annotation_points[:, 0]
+    y = annotation_points[:, 1]
+
+    order = np.argsort(z)
+    z = z[order]
+    x = x[order]
+    y = y[order]
+
+    if len(z) == 1:
+        return np.array([[x[0], y[0]]], dtype=np.float32)
+
+    right = int(np.searchsorted(z, frame_idx, side="left"))
+    if right <= 0:
+        return np.array([[x[0], y[0]]], dtype=np.float32)
+    if right >= len(z):
+        return np.array([[x[-1], y[-1]]], dtype=np.float32)
+
+    left = right - 1
+    z0, z1 = z[left], z[right]
+    if z1 == z0:
+        return np.array([[x[right], y[right]]], dtype=np.float32)
+
+    t = (frame_idx - z0) / (z1 - z0)
+    px = x[left] + t * (x[right] - x[left])
+    py = y[left] + t * (y[right] - y[left])
+    return np.array([[px, py]], dtype=np.float32)
 
 
 def get_system_memory_info():
@@ -803,11 +895,12 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
             raise FileNotFoundError(f"File missing: {volume_source}")
 
         if volume_source.is_dir():
-            zero_count = num_digits_for_n_files(len(list(volume_source.iterdir())))
+            source_frame_paths = _sorted_tif_paths(volume_source)
+            zero_count = num_digits_for_n_files(len(source_frame_paths))
             convert_args = [(path, volume_folder.joinpath(f"{str(i).zfill(zero_count)}"))
-                            for i, path in enumerate(volume_source.iterdir())]
-            with tf.TiffFile(next(volume_folder.iterdir())) as img:
-                input_shape = (len(list(volume_folder.iterdir())), img.pages[0].shape[0], img.pages[0].shape[1])
+                            for i, path in enumerate(source_frame_paths)]
+            with tf.TiffFile(source_frame_paths[0]) as img:
+                input_shape = (len(source_frame_paths), img.pages[0].shape[0], img.pages[0].shape[1])
         else:
             with tf.TiffFile(volume_source) as img:
                 zero_count = num_digits_for_n_files(len(img.pages))
@@ -815,8 +908,13 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
                                 for i in range(len(img.pages))]
                 input_shape = (len(img.pages), img.pages[0].shape[0], img.pages[0].shape[1])
 
-        input_point = np.array([[input_shape[1] // 2, input_shape[2] // 2]]).astype(np.float32)
+        input_point = np.array([[input_shape[1] // 2, input_shape[2] // 2]], dtype=np.float32)
         input_label = np.array([1]).astype(np.int32)
+        annotation_points = load_annotation_points(volume_source)
+        if annotation_points is None:
+            print("No annotation points in TIFF metadata, using center-point fallback.")
+        else:
+            print(f"Loaded {len(annotation_points)} annotation points from TIFF metadata.")
 
         with Pool(8) as pool:
             if predictor_type == "ImagePredictor":
@@ -868,29 +966,38 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
             await asyncio.sleep(0.001)
             print("Video Predictor Initial State Set.")
 
-            annotation_frames = list(range(0, input_shape[0], 200))
+            if annotation_points is not None:
+                video_annotation_samples = _annotation_samples_for_video(annotation_points, input_shape[0])
+            else:
+                video_annotation_samples = [(frame, input_point) for frame in range(0, input_shape[0], 200)]
+
+            annotation_frames = [frame for frame, _ in video_annotation_samples]
             print(f"Annotation frames to process: {annotation_frames} from {input_shape}")
 
-            if not annotation_frames:
-                raise RuntimeError("No annotation frames generated - video may be too short")
+            if not video_annotation_samples:
+                if annotation_points is not None:
+                    print("All metadata annotation z-values were out of bounds, using center-point fallback.")
+                    video_annotation_samples = [(frame, input_point) for frame in range(0, input_shape[0], 200)]
+                if not video_annotation_samples:
+                    raise RuntimeError("No annotation frames generated - video may be too short")
 
-            print(f"Point set shape: {input_point.shape}, Labels shape: {input_label.shape}")
-            print(f"Adding points to {len(annotation_frames)} frames...")
+            print(f"Labels shape: {input_label.shape}")
+            print(f"Adding points to {len(video_annotation_samples)} frames...")
 
             added_count = 0
 
-            for i, frame in enumerate(annotation_frames):
+            for i, (frame, frame_points) in enumerate(video_annotation_samples):
                 try:
                     predictor.add_new_points_or_box(
                         inference_state=inference_state,
                         frame_idx=frame,
                         obj_id=1,
-                        points=input_point,
-                        labels=input_label,
+                        points=frame_points,
+                        labels=np.ones(len(frame_points), dtype=np.int32),
                     )
                     added_count += 1
                     print(f"Added points to frame {frame}")
-                    update_step(job_id, 1, 10 + i / (len(annotation_frames) * 10))
+                    update_step(job_id, 1, 10 + i / (len(video_annotation_samples) * 10))
                     await asyncio.sleep(0.001)
                 except Exception as e:
                     print(f"Error adding points to frame {frame}: {type(e).__name__}: {e}\n{traceback.print_exc()}")
@@ -927,10 +1034,14 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
                       f"Threading at error: {threading.active_count()}")
                 raise
         else:
-            for i, img_path in enumerate(list(volume_folder.iterdir())):
+            for i, img_path in enumerate(sorted(volume_folder.iterdir())):
+                if annotation_points is not None:
+                    frame_point = _annotation_point_for_frame(annotation_points, i)
+                else:
+                    frame_point = input_point
                 predictor.set_image(tf.imread(img_path))
                 masks, _scores, _logits = predictor.predict(
-                    point_coords=input_point,
+                    point_coords=frame_point,
                     point_labels=input_label,
                     multimask_output=False,
                 )
