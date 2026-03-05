@@ -88,6 +88,25 @@ def _read_annotation_points_from_tiff(tiff_path: Path) -> Optional[np.ndarray]:
     return arr[:, :3]
 
 
+def default_annotations(input_shape: tuple):
+    """
+    Create fallback annotations based on periodic center points when specific annotation points are missing.
+
+    Parameters
+    ----------
+    input_shape : tuple
+        X,Y,Z shape of straightened volume.
+
+    Returns
+    -------
+    np.ndarray
+        Array with shape ``(N, 3)`` containing ``[x, y, z]`` annotation points at center points,
+        with interval based on config.ANNOTATION_INTERVAL
+    """
+    return np.ndarray([(input_shape[1] // 2, input_shape[0] // 2, z)
+                       for z in range(input_shape[0] + 1, config.FALLBACK_ANNOTATION_INTERVAL)])
+
+
 def load_annotation_points(volume_source: Path) -> Optional[np.ndarray]:
     """
     Load annotation points from a straightened-volume input.

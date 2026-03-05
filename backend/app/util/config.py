@@ -34,6 +34,9 @@ INTERNAL_VOLUME_PATH = "/ouroboros-volume" if _running_in_docker() else os.geten
 )
 CHECKPOINT_DIR = os.path.join(INTERNAL_VOLUME_PATH, PLUGIN_NAME, "chkpts")
 
+# Interval of fallback annotation points.
+FALLBACK_ANNOTATION_INTERVAL = os.getenv("FALLBACK_ANNOTATION_INTERVAL", 200)
+
 # Frame loading mode for SAM2 VideoPredictor
 # Set to "sync" for synchronous loading (safer, slower) or "async" for asynchronous (faster, may have threading issues)
 FRAME_LOADING_MODE = os.getenv("SAM2_FRAME_LOADING_MODE", "sync").lower()
