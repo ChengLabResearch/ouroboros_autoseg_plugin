@@ -71,7 +71,10 @@ async def run_video_predictor(
     if not video_annotation_samples:
         if annotation_points is not None:
             print("All metadata annotation z-values were out of bounds, using center-point fallback.")
-            video_annotation_samples = _annotation_samples_for_video(default_annotations(input_shape))
+            video_annotation_samples = _annotation_samples_for_video(
+                default_annotations(input_shape),
+                input_shape[0],
+            )
         if not video_annotation_samples:
             raise RuntimeError("No annotation frames generated - video may be too short")
 
