@@ -46,27 +46,27 @@ export default function SAM3Page() {
     useEffect(() => {
         let cancelled = false;
         let timer: ReturnType<typeof setTimeout> | null = null;
+        const statusUrls = ['/docker-status', `${BACKEND_URL}/startup-status`];
 
-        const check = async () => {
-            try {
-                const res = await fetch(`${BACKEND_URL}/startup-status`);
-                if(res.ok) {
+        const check = async (): Promise<void> => {
+            for (const statusUrl of statusUrls) {
+                try {
+                    const res = await fetch(statusUrl);
+                    if (!res.ok) continue;
                     const data: BackendStatus = await res.json();
                     if (!cancelled) {
-                        setConnected(true);
+                        setConnected(Boolean(data.is_ready));
                         setBackendStatus(data);
                     }
-                } else {
-                    if (!cancelled) {
-                        setConnected(false);
-                        setBackendStatus(null);
-                    }
+                    return;
+                } catch {
+                    // Try next source.
                 }
-            } catch(e) {
-                if (!cancelled) {
-                    setConnected(false);
-                    setBackendStatus(null);
-                }
+            }
+
+            if (!cancelled) {
+                setConnected(false);
+                setBackendStatus(null);
             }
         };
 

@@ -26,11 +26,23 @@ export default function ProgressPanel({
     backendStatus: BackendStatus | null,
     reconnected?: boolean
 }) {
-    const backendLabel = !connected
-        ? 'Disconnected'
-        : backendStatus?.is_ready
-            ? 'Ready'
-            : 'Starting';
+    const hasBackendError = Boolean(
+        backendStatus?.initialization_steps?.some(
+            (step) => step.status === 'error'
+        )
+    );
+    const backendLabel = connected
+        ? 'Ready'
+        : hasBackendError
+            ? 'Error'
+            : backendStatus
+                ? 'Building'
+                : 'Disconnected';
+    const backendLabelClass = connected
+        ? styles.statusCompleted
+        : hasBackendError
+            ? styles.statusWarning
+            : styles.statusPending;
 
     return (
         <div className={styles.container}>
@@ -45,7 +57,7 @@ export default function ProgressPanel({
                 <div className={styles.backendStatusBlock}>
                     <div className={styles.backendStatusHeader}>
                         <span>Docker Backend</span>
-                        <span className={`${styles.backendStatusBadge} ${connected ? styles.statusCompleted : styles.statusWarning}`}>
+                        <span className={`${styles.backendStatusBadge} ${backendLabelClass}`}>
                             {backendLabel}
                         </span>
                     </div>
@@ -54,7 +66,7 @@ export default function ProgressPanel({
                             Reconnected to an active run.
                         </div>
                     )}
-                    {connected && backendStatus && (
+                    {backendStatus && (
                         <div className={styles.backendSteps}>
                             {backendStatus.initialization_steps.map((step) => (
                                 <div key={step.name} className={styles.backendStepRow}>

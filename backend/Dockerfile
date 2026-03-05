@@ -12,12 +12,10 @@ RUN apt-get update && apt-get install -y \
 # Mitigate pip CVEs (including CVE-2023-5752 and CVE-2025-8869).
 RUN python -m pip install --no-cache-dir --upgrade "pip>=25.3"
 
-COPY pyproject.toml .
+COPY . .
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu121
 RUN pip install --no-cache-dir "wheel>=0.46.2"
 RUN pip install --no-cache-dir .
-
-COPY . .
 
 EXPOSE 8686
 
