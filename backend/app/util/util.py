@@ -88,9 +88,11 @@ def _read_annotation_points_from_tiff(tiff_path: Path) -> Optional[np.ndarray]:
     return arr[:, :3]
 
 
-def default_annotations(input_shape: tuple):
+def default_annotations(input_shape: tuple[int, int, int]) -> np.ndarray:
     """
     Create fallback annotations based on periodic center points when specific annotation points are missing.
+    As annotations are at the start and end point, iteration starts and 0 and always adds on an endcap.
+    (This can create a double point in rare situations but that should not be an issue).
 
     Parameters
     ----------
@@ -103,8 +105,13 @@ def default_annotations(input_shape: tuple):
         Array with shape ``(N, 3)`` containing ``[x, y, z]`` annotation points at center points,
         with interval based on config.ANNOTATION_INTERVAL
     """
-    return np.ndarray([(input_shape[1] // 2, input_shape[0] // 2, z)
-                       for z in range(input_shape[0] + 1, config.FALLBACK_ANNOTATION_INTERVAL)])
+    if input_shape[0]:
+        return np.array([(input_shape[2] // 2, input_shape[1] // 2, z)
+                        for z in range(0, input_shape[0], config.FALLBACK_ANNOTATION_INTERVAL)]
+                        + [(input_shape[2] // 2, input_shape[1] // 2, input_shape[0] - 1)],
+                        dtype=np.float32)
+    else:
+        return np.empty((0, 3), dtype=np.float32)
 
 
 def load_annotation_points(volume_source: Path) -> Optional[np.ndarray]:
