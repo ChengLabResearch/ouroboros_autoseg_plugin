@@ -5,6 +5,13 @@ import ProgressPanel, { BackendStatus, ProgressItem } from '../components/Progre
 import VisualizePanel from '../components/VisualizePanel';
 import { BACKEND_URL } from '../config';
 
+type RunOptions = {
+    filePath: string;
+    outputFile: string;
+    modelType: string;
+    predictor_type: string;
+};
+
 export default function SAM3Page() {
     const [prog, setProg] = useState<ProgressItem[]>([]);
     const [run, setRun] = useState(false);
@@ -26,13 +33,17 @@ export default function SAM3Page() {
     const setStoredJobId = (id: string) => {
         try {
             localStorage.setItem(storageKey, id);
-        } catch {}
+        } catch (error) {
+            console.warn('Failed to persist job id in localStorage', error);
+        }
     };
 
     const clearStoredJobId = () => {
         try {
             localStorage.removeItem(storageKey);
-        } catch {}
+        } catch (error) {
+            console.warn('Failed to clear job id in localStorage', error);
+        }
     };
 
     const scheduleReconnectBannerClear = () => {
@@ -87,7 +98,7 @@ export default function SAM3Page() {
         };
     }, []);
 
-    const handleRun = async (opts: any) => {
+    const handleRun = async (opts: RunOptions) => {
         setRun(true);
         setProg([
             {name: 'Transferring', progress: 0},
@@ -113,7 +124,10 @@ export default function SAM3Page() {
             } else {
                 setRun(false);
             }
-        } catch(e) { console.error(e); setRun(false); }
+        } catch (error) {
+            console.error(error);
+            setRun(false);
+        }
     };
 
     useEffect(() => {
@@ -171,7 +185,7 @@ export default function SAM3Page() {
     }, [connected, run, jobId]);
 
     useEffect(() => {
-        let interval: any;
+        let interval: ReturnType<typeof setInterval> | null = null;
         if(run && jobId) {
             interval = setInterval(async () => {
                 try {
@@ -189,10 +203,14 @@ export default function SAM3Page() {
                         setJobId(null);
                         clearStoredJobId();
                     }
-                } catch(e) {}
+                } catch (error) {
+                    console.error('Failed to poll job status', error);
+                }
             }, 500);
         }
-        return () => clearInterval(interval);
+        return () => {
+            if (interval) clearInterval(interval);
+        };
     }, [run, jobId]);
 
     useEffect(() => {

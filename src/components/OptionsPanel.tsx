@@ -2,8 +2,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import styles from '../assets/styles.module.css';
 import { BACKEND_URL } from '../config';
 
+type SubmitPayload = {
+    filePath: string;
+    outputFile: string;
+    modelType: string;
+    predictor_type: string;
+};
+
 type Props = { 
-    onSubmit: (d: any) => void; 
+    onSubmit: (d: SubmitPayload) => void; 
     isRunning: boolean; 
     connected: boolean;
 };
@@ -48,13 +55,16 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                     return first ?? null;
                 }
                 if (data && typeof data === 'object') {
+                    const dataObj = data as Record<string, unknown>;
                     const keys = ['path', 'filePath', 'filepath', 'file_path', 'uri', 'url'];
                     for (const key of keys) {
-                        const val = (data as any)[key];
+                        const val = dataObj[key];
                         if (typeof val === 'string') return val;
                     }
                 }
-            } catch {}
+            } catch {
+                return trimmed;
+            }
         }
         return trimmed;
     };
@@ -80,15 +90,22 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
         fn: (file: File) => unknown;
     };
 
+    type HostBridgeWindow = Window & {
+        electronAPI?: { getPathForFile?: (file: File) => unknown };
+        electronApi?: { getPathForFile?: (file: File) => unknown };
+        electron?: { getPathForFile?: (file: File) => unknown };
+        ouroboros?: { getPathForFile?: (file: File) => unknown };
+    };
+
     const getHostPathBridgeCandidates = (): FilePathBridge[] => {
-        const host = window as any;
-        const candidates: FilePathBridge[] = [
+        const host = window as HostBridgeWindow;
+        const candidates: Array<{ name: string; fn?: (file: File) => unknown }> = [
             { name: 'window.electronAPI.getPathForFile', fn: host?.electronAPI?.getPathForFile },
             { name: 'window.electronApi.getPathForFile', fn: host?.electronApi?.getPathForFile },
             { name: 'window.electron.getPathForFile', fn: host?.electron?.getPathForFile },
             { name: 'window.ouroboros.getPathForFile', fn: host?.ouroboros?.getPathForFile }
         ];
-        return candidates.filter((entry) => typeof entry.fn === 'function');
+        return candidates.filter((entry): entry is FilePathBridge => typeof entry.fn === 'function');
     };
 
     const resolvePathViaHostBridge = async (file: File, bridgeCandidates: FilePathBridge[]): Promise<string | null> => {
@@ -106,7 +123,9 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                                 : null;
                     if (candidatePath && candidatePath.trim()) return candidatePath.trim();
                 }
-            } catch {}
+            } catch {
+                continue;
+            }
         }
 
         return null;
@@ -131,9 +150,9 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                 if (item.kind === 'file') {
                     const file = item.getAsFile();
                     if (file) {
-                        const anyFile = file as any;
-                        if (typeof anyFile.path === 'string' && anyFile.path) {
-                            addCandidate(`items[file:${index}].path`, anyFile.path);
+                        const fileWithPath = file as File & { path?: string };
+                        if (typeof fileWithPath.path === 'string' && fileWithPath.path) {
+                            addCandidate(`items[file:${index}].path`, fileWithPath.path);
                         }
                         const bridgePath = await resolvePathViaHostBridge(file, bridgeCandidates);
                         if (bridgePath) {
@@ -147,9 +166,9 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
 
         if (dt.files && dt.files.length > 0) {
             const file = dt.files[0];
-            const anyFile = file as any;
-            if (typeof anyFile.path === 'string' && anyFile.path) {
-                addCandidate('files[0].path', anyFile.path);
+            const fileWithPath = file as File & { path?: string };
+            if (typeof fileWithPath.path === 'string' && fileWithPath.path) {
+                addCandidate('files[0].path', fileWithPath.path);
             }
             const bridgePath = await resolvePathViaHostBridge(file, bridgeCandidates);
             if (bridgePath) {

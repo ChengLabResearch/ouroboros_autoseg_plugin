@@ -1,12 +1,44 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { viteStaticCopy } from 'vite-plugin-static-copy'
-// @ts-ignore - Node builtin types are not configured in this repo's tsconfig.node.
+// @ts-expect-error - Node builtin types are not configured in this repo's tsconfig.node.
 import { execSync } from 'child_process'
-// @ts-ignore - Node builtin types are not configured in this repo's tsconfig.node.
+// @ts-expect-error - Node builtin types are not configured in this repo's tsconfig.node.
 import { existsSync, readFileSync } from 'fs'
-// @ts-ignore - Node builtin types are not configured in this repo's tsconfig.node.
+// @ts-expect-error - Node builtin types are not configured in this repo's tsconfig.node.
 import { join } from 'path'
+
+type ComposeService = {
+	State?: string
+	state?: string
+}
+
+type BuildSessionStatus = {
+	phase?: string
+	error?: string | null
+	session_id?: string | null
+}
+
+type MiddlewareResponse = {
+	setHeader: (name: string, value: string) => void
+	end: (body: string) => void
+}
+
+type MiddlewareHandler = (_req: unknown, res: MiddlewareResponse) => void
+
+type ViteServerLike = {
+	middlewares: {
+		use: (path: string, handler: MiddlewareHandler) => void
+	}
+}
+
+function asComposeService(value: unknown): ComposeService | null {
+	if (!value || typeof value !== 'object') return null
+	const raw = value as Record<string, unknown>
+	const state = typeof raw.state === 'string' ? raw.state : undefined
+	const State = typeof raw.State === 'string' ? raw.State : undefined
+	return { state, State }
+}
 
 function detectComposeFile(): string {
 	try {
@@ -17,19 +49,32 @@ function detectComposeFile(): string {
 	}
 }
 
-function parseComposePsJson(raw: string): any[] {
+function parseComposePsJson(raw: string): ComposeService[] {
 	const trimmed = raw.trim()
 	if (!trimmed) return []
 
 	try {
-		const parsed = JSON.parse(trimmed)
-		return Array.isArray(parsed) ? parsed : [parsed]
+		const parsed: unknown = JSON.parse(trimmed)
+		if (Array.isArray(parsed)) {
+			return parsed
+				.map(asComposeService)
+				.filter((service): service is ComposeService => Boolean(service))
+		}
+		const service = asComposeService(parsed)
+		return service ? [service] : []
 	} catch {
 		// Older/newer compose versions may output one JSON object per line.
 		return trimmed
 			.split('\n')
 			.filter((line) => line.trim().indexOf('{') === 0)
-			.map((line) => JSON.parse(line))
+			.map((line) => {
+				try {
+					return asComposeService(JSON.parse(line))
+				} catch {
+					return null
+				}
+			})
+			.filter((service): service is ComposeService => Boolean(service))
 	}
 }
 
@@ -38,17 +83,19 @@ function dockerStatusPlugin() {
 	const composePath = `backend/${composeFile}`
 	const statusFile = join('.', '.docker-build-status.json')
 
-	function readBuildSessionStatus(): any | null {
+	function readBuildSessionStatus(): BuildSessionStatus | null {
 		if (!existsSync(statusFile)) return null
 		try {
-			return JSON.parse(readFileSync(statusFile, 'utf8'))
+			const parsed: unknown = JSON.parse(readFileSync(statusFile, 'utf8'))
+			if (!parsed || typeof parsed !== 'object') return null
+			return parsed as BuildSessionStatus
 		} catch {
 			return null
 		}
 	}
 
-	const handler = (_req: any, res: any) => {
-		let services: any[] = []
+	const handler: MiddlewareHandler = (_req, res) => {
+		let services: ComposeService[] = []
 		let dockerError: string | null = null
 		const session = readBuildSessionStatus()
 		const sessionPhase = typeof session?.phase === 'string' ? session.phase : null
@@ -59,8 +106,12 @@ function dockerStatusPlugin() {
 				{ encoding: 'utf8' }
 			)
 			services = parseComposePsJson(output)
-		} catch (error: any) {
-			dockerError = error?.message ?? 'Docker query failed'
+		} catch (error: unknown) {
+			if (error instanceof Error) {
+				dockerError = error.message
+			} else {
+				dockerError = 'Docker query failed'
+			}
 		}
 
 		const states = services.map((s) =>
@@ -111,10 +162,10 @@ function dockerStatusPlugin() {
 
 	return {
 		name: 'docker-status-plugin',
-		configureServer(server: any) {
+		configureServer(server: ViteServerLike) {
 			server.middlewares.use('/docker-status', handler)
 		},
-		configurePreviewServer(server: any) {
+		configurePreviewServer(server: ViteServerLike) {
 			server.middlewares.use('/docker-status', handler)
 		}
 	}
@@ -128,10 +179,13 @@ export default defineConfig({
 			'/api': {
 				target: 'http://localhost:8686',
 				changeOrigin: true,
-				configure: (proxy: any) => {
+				configure: (proxy) => {
 					// Backend is expected to be unavailable briefly during docker startup.
 					// Swallow proxy error logs to avoid noisy dev output.
-					proxy.on('error', () => {})
+					const proxyWithOn = proxy as { on?: (event: string, listener: () => void) => void }
+					proxyWithOn.on?.('error', () => {
+						return
+					})
 				},
 				rewrite: (path) => path.replace(/^\/api/, '')
 			}
