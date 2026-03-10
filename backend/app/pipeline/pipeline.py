@@ -8,6 +8,7 @@ import time
 import traceback
 
 import numpy as np
+from PIL import Image
 import tifffile as tf
 
 from ..util import config
@@ -141,13 +142,93 @@ async def run_image_predictor(
     result_stack: np.ndarray,
     job_id: str,
 ):
+    def _spatial_hw(image: np.ndarray) -> tuple[int, int]:
+        if image.ndim == 2:
+            return image.shape
+        if image.ndim == 3:
+            # Prefer HWC when last dim looks like channels.
+            if image.shape[-1] in {1, 3, 4}:
+                return image.shape[0], image.shape[1]
+            # Fall back to CHW.
+            return image.shape[1], image.shape[2]
+        raise ValueError(f"Unsupported image shape for predictor: {image.shape}")
+
+    def _to_pil_rgb(image: np.ndarray) -> Image.Image:
+        """Convert TIFF arrays to RGB PIL images so SAM3 reads H/W correctly."""
+        if image.ndim == 2:
+            return Image.fromarray(image).convert("RGB")
+        if image.ndim != 3:
+            raise ValueError(f"Unsupported image shape for SAM3: {image.shape}")
+
+        if image.shape[0] in {1, 3, 4} and image.shape[-1] not in {1, 3, 4}:
+            image = np.moveaxis(image, 0, -1)
+
+        if image.shape[-1] == 1:
+            image = np.repeat(image, 3, axis=-1)
+        elif image.shape[-1] > 3:
+            image = image[..., :3]
+
+        return Image.fromarray(image).convert("RGB")
+
+    def _point_to_cxcywh(point_coords: np.ndarray, height: int, width: int) -> list[float]:
+        """Convert an XY point to a tiny normalized CXCYWH box for SAM3 geometric prompts."""
+        x, y = point_coords[0]
+        cx = float(np.clip(x / max(width - 1, 1), 0.0, 1.0))
+        cy = float(np.clip(y / max(height - 1, 1), 0.0, 1.0))
+        # Keep a minimal prompt area (2 pixels), with a small lower bound for tiny images.
+        bw = max(2.0 / max(width, 1), 1e-3)
+        bh = max(2.0 / max(height, 1), 1e-3)
+        return [cx, cy, bw, bh]
+
+    def _sam3_masks_from_state(state: dict, image_shape: tuple[int, int]) -> np.ndarray:
+        masks = state.get("masks")
+        if masks is None:
+            raise RuntimeError("SAM3 processor did not return masks in state")
+
+        if hasattr(masks, "detach"):
+            masks = masks.detach()
+        if hasattr(masks, "cpu"):
+            masks = masks.cpu()
+        if hasattr(masks, "numpy"):
+            masks = masks.numpy()
+
+        masks = np.asarray(masks)
+        if masks.size == 0:
+            return np.zeros(image_shape, dtype=np.uint8)
+
+        # Sam3Processor commonly returns [N, 1, H, W] boolean masks.
+        if masks.ndim == 4 and masks.shape[1] == 1:
+            masks = masks[:, 0]
+        if masks.ndim == 3:
+            masks = masks[0]
+        return masks
+
     for i, img_path in enumerate(sorted(volume_folder.iterdir())):
-        predictor.set_image(tf.imread(img_path))
-        masks, _scores, _logits = predictor.predict(
-            point_coords=_annotation_point_for_frame(annotation_points, i),
-            point_labels=input_label,
-            multimask_output=False,
-        )
+        image = tf.imread(img_path)
+        height, width = _spatial_hw(image)
+        point_coords = _annotation_point_for_frame(annotation_points, i)
+
+        if hasattr(predictor, "predict"):
+            predictor.set_image(image)
+            masks, _scores, _logits = predictor.predict(
+                point_coords=point_coords,
+                point_labels=input_label,
+                multimask_output=False,
+            )
+        elif hasattr(predictor, "add_geometric_prompt"):
+            # Sam3Processor expects either PIL or CHW. Passing PIL avoids HWC shape ambiguity.
+            state = predictor.set_image(_to_pil_rgb(image))
+            state = predictor.add_geometric_prompt(
+                box=_point_to_cxcywh(point_coords, height, width),
+                label=bool(input_label[0]) if len(input_label) > 0 else True,
+                state=state,
+            )
+            masks = _sam3_masks_from_state(state, (height, width))
+        else:
+            raise AttributeError(
+                "Predictor does not expose a supported image inference interface "
+                "(expected either `.predict()` or `.add_geometric_prompt()`)."
+            )
 
         if masks.ndim == 3:
             masks = masks[0]
@@ -254,7 +335,12 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
             raise e
         await asyncio.sleep(0.001)
 
-        result_stack = np.zeros(input_shape, dtype=np.uint8)
+        # Write inference output directly to a memory-mapped TIFF at the final volume path.
+        volume_result.parent.mkdir(exist_ok=True, parents=True)
+        if volume_result.exists():
+            volume_result.unlink()
+        result_stack = tf.memmap(volume_result, shape=input_shape, dtype=np.uint8)
+        result_stack[:] = 0
 
         if predictor_type == "VideoPredictor":
             await run_video_predictor(
@@ -280,8 +366,8 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
         update_step(job_id, 1, 100)
 
         # 3. Saving
-        volume_result.parent.mkdir(exist_ok=True, parents=True)
-        tf.imwrite(volume_result, result_stack)
+        result_stack.flush()
+        del result_stack
         update_step(job_id, 2, 50)
 
         # Robust copy back

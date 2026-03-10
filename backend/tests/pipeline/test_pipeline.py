@@ -28,6 +28,26 @@ class _FakeImagePredictor:
         return mask, None, None
 
 
+class _FakeSam3ImageProcessor:
+    def __init__(self):
+        self.images = []
+        self.boxes = []
+        self.labels = []
+
+    def set_image(self, image):
+        shape = getattr(image, "shape", None)
+        if shape is None and hasattr(image, "size"):
+            shape = (image.size[1], image.size[0])
+        self.images.append(shape)
+        return {"image_shape": shape}
+
+    def add_geometric_prompt(self, box, label, state):
+        self.boxes.append(box)
+        self.labels.append(label)
+        state["masks"] = np.array([[[[True, False], [False, True]]]], dtype=bool)
+        return state
+
+
 class _FakeMaskTensor:
     def __init__(self, arr):
         self._arr = arr
@@ -148,6 +168,38 @@ class PipelineTests(unittest.TestCase):
             np.testing.assert_array_equal(result_stack[0], expected)
             np.testing.assert_array_equal(result_stack[1], expected)
             self.assertEqual(app_config.jobs["job-1"]["steps"][1]["progress"], 100)
+
+    def test_run_image_predictor_supports_sam3_processor_interface(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            volume_folder = Path(tmpdir)
+            tf.imwrite(volume_folder / "000.tif", np.zeros((2, 2), dtype=np.uint8))
+            tf.imwrite(volume_folder / "001.tif", np.zeros((2, 2), dtype=np.uint8))
+
+            self._seed_job("job-1")
+
+            result_stack = np.zeros((2, 2, 2), dtype=np.uint8)
+            annotation_points = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32)
+            input_label = np.array([1], dtype=np.int32)
+            predictor = _FakeSam3ImageProcessor()
+
+            asyncio.run(
+                app_pipeline.run_image_predictor(
+                    predictor=predictor,
+                    volume_folder=volume_folder,
+                    annotation_points=annotation_points,
+                    input_label=input_label,
+                    input_shape=(2, 2, 2),
+                    result_stack=result_stack,
+                    job_id="job-1",
+                )
+            )
+
+            expected = np.array([[255, 0], [0, 255]], dtype=np.uint8)
+            np.testing.assert_array_equal(result_stack[0], expected)
+            np.testing.assert_array_equal(result_stack[1], expected)
+            self.assertEqual(app_config.jobs["job-1"]["steps"][1]["progress"], 100)
+            self.assertEqual(len(predictor.boxes), 2)
+            self.assertEqual(predictor.labels, [True, True])
 
     def test_run_video_predictor_success_updates_result_stack(self):
         predictor = _FakeVideoPredictorSuccess()
