@@ -199,6 +199,8 @@ async def process_stack(req: ProcessRequest, background_tasks: BackgroundTasks):
         req.output_file,
         req.model_type,
         req.predictor_type,
+        req.overlay_annotation_points,
+        req.annotation_overlay_intensity,
     )
     return {"job_id": job_id, "status": "started"}
 

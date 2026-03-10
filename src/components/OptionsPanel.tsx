@@ -7,6 +7,7 @@ type SubmitPayload = {
     outputFile: string;
     modelType: string;
     predictor_type: string;
+    overlayAnnotationPoints: boolean;
 };
 
 type Props = { 
@@ -20,6 +21,7 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
     const [outFp, setOutFp] = useState('');
     const [model, setModel] = useState('sam2_hiera_base_plus');
     const [predictor, setPredictor] = useState('ImagePredictor');
+    const [overlayAnnotationPoints, setOverlayAnnotationPoints] = useState(false);
     const [token, setToken] = useState('');
     const inputFileRef = useRef<HTMLInputElement | null>(null);
     const outputFileRef = useRef<HTMLInputElement | null>(null);
@@ -347,7 +349,13 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                     <span className={styles.headerTitle}>OPTIONS</span>
                     <button 
                         className={styles.playBtn} 
-                        onClick={() => onSubmit({filePath: fp, outputFile: outFp, modelType: model, predictor_type: predictor})} 
+                        onClick={() => onSubmit({
+                            filePath: fp,
+                            outputFile: outFp,
+                            modelType: model,
+                            predictor_type: predictor,
+                            overlayAnnotationPoints
+                        })} 
                         disabled={!canRun}
                         title="Run Segmentation"
                     >
@@ -410,6 +418,18 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                                     <option value="sam3">SAM3</option>
                                 </optgroup>
                             </select>
+                        </div>
+                    </div>
+
+                    <div className={styles.row}>
+                        <span className={styles.label}>Draw Prompts</span>
+                        <div className={styles.inputContainer}>
+                            <input
+                                type="checkbox"
+                                checked={overlayAnnotationPoints}
+                                onChange={(e) => setOverlayAnnotationPoints(e.target.checked)}
+                                title="Overlay annotation prompt points with intensity 127"
+                            />
                         </div>
                     </div>
                 </div>

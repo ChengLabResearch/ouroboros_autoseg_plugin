@@ -224,7 +224,18 @@ class MainTests(unittest.TestCase):
         self.assertEqual(len(bg.tasks), 1)
         task = bg.tasks[0]
         self.assertIs(task.func, main.run_pipeline)
-        self.assertEqual(task.args, ("job-abc", req.file_path, req.output_file, req.model_type, req.predictor_type))
+        self.assertEqual(
+            task.args,
+            (
+                "job-abc",
+                req.file_path,
+                req.output_file,
+                req.model_type,
+                req.predictor_type,
+                req.overlay_annotation_points,
+                req.annotation_overlay_intensity,
+            ),
+        )
 
     def test_get_status_success_and_not_found(self):
         app_config.jobs = {"job1": {"status": "running"}}

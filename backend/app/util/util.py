@@ -24,6 +24,8 @@ class ProcessRequest(BaseModel):
     output_file: str
     model_type: str
     predictor_type: str
+    overlay_annotation_points: bool = False
+    annotation_overlay_intensity: int = 127
 
 
 def get_shared_memory_info():

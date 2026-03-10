@@ -10,6 +10,7 @@ type RunOptions = {
     outputFile: string;
     modelType: string;
     predictor_type: string;
+    overlayAnnotationPoints: boolean;
 };
 
 export default function SAM3Page() {
@@ -114,7 +115,8 @@ export default function SAM3Page() {
                     file_path: opts.filePath, 
                     output_file: opts.outputFile,
                     model_type: opts.modelType,
-                    predictor_type: opts.predictor_type
+                    predictor_type: opts.predictor_type,
+                    overlay_annotation_points: opts.overlayAnnotationPoints
                 })
             });
             const data = await res.json();

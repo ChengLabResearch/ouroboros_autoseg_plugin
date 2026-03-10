@@ -201,6 +201,33 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(len(predictor.boxes), 2)
             self.assertEqual(predictor.labels, [True, True])
 
+    def test_run_image_predictor_overlays_annotation_markers_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            volume_folder = Path(tmpdir)
+            tf.imwrite(volume_folder / "000.tif", np.zeros((2, 2), dtype=np.uint8))
+
+            self._seed_job("job-1")
+
+            result_stack = np.zeros((1, 2, 2), dtype=np.uint8)
+            annotation_points = np.array([[1.0, 1.0, 0.0]], dtype=np.float32)
+            input_label = np.array([1], dtype=np.int32)
+
+            asyncio.run(
+                app_pipeline.run_image_predictor(
+                    predictor=_FakeImagePredictor(),
+                    volume_folder=volume_folder,
+                    annotation_points=annotation_points,
+                    input_label=input_label,
+                    input_shape=(1, 2, 2),
+                    result_stack=result_stack,
+                    job_id="job-1",
+                    overlay_annotation_points=True,
+                    annotation_overlay_intensity=127,
+                )
+            )
+
+            self.assertEqual(result_stack[0, 1, 1], 127)
+
     def test_run_video_predictor_success_updates_result_stack(self):
         predictor = _FakeVideoPredictorSuccess()
         result_stack = np.zeros((1, 2, 2), dtype=np.uint8)
@@ -227,6 +254,39 @@ class PipelineTests(unittest.TestCase):
         expected = np.array([[1, 0], [0, 1]], dtype=np.uint8)
         np.testing.assert_array_equal(result_stack[0], expected)
         self.assertEqual(len(predictor.added), 1)
+
+    def test_run_video_predictor_overlays_annotation_markers_when_enabled(self):
+        predictor = _FakeVideoPredictorSuccess()
+        result_stack = np.zeros((1, 5, 5), dtype=np.uint8)
+
+        class _FakeVideoPredictorSuccess5x5(_FakeVideoPredictorSuccess):
+            def propagate_in_video(self, _inference_state):
+                yield 0, [1], [_FakeMaskLogit(np.zeros((5, 5), dtype=np.float32))]
+
+        predictor = _FakeVideoPredictorSuccess5x5()
+
+        with patch("backend.app.pipeline.pipeline.get_system_memory_info", return_value={"cpu": 1}), patch(
+            "backend.app.pipeline.pipeline.get_shared_memory_info",
+            return_value={"shm": 1},
+        ), patch("backend.app.pipeline.pipeline.update_step"), patch(
+            "backend.app.pipeline.pipeline.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            asyncio.run(
+                app_pipeline.run_video_predictor(
+                    predictor=predictor,
+                    volume_folder=Path("/tmp"),
+                    input_shape=(1, 5, 5),
+                    annotation_points=np.array([[2.0, 2.0, 0.0]], dtype=np.float32),
+                    input_label=np.array([1], dtype=np.int32),
+                    result_stack=result_stack,
+                    job_id="job-1",
+                    overlay_annotation_points=True,
+                    annotation_overlay_intensity=127,
+                )
+            )
+
+        self.assertEqual(result_stack[0, 2, 2], 127)
 
     def test_run_video_predictor_raises_on_async_loader_exception(self):
         with patch("backend.app.pipeline.pipeline.get_system_memory_info", return_value={"cpu": 1}), patch(

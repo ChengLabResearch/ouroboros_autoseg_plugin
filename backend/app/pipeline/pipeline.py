@@ -29,6 +29,51 @@ from ..util.util import (
     default_annotations
 )
 
+ANNOTATION_MARKER_INTENSITY = 127
+
+
+def _draw_annotation_star(mask_slice: np.ndarray, point_xy: np.ndarray, intensity: int):
+    """
+    Draw a small star marker centered on an XY point into a 2D mask slice.
+    """
+    if mask_slice.ndim != 2:
+        raise ValueError(f"Expected 2D mask slice, got shape {mask_slice.shape}")
+
+    x = int(np.rint(float(point_xy[0])))
+    y = int(np.rint(float(point_xy[1])))
+    h, w = mask_slice.shape
+    value = np.uint8(np.clip(intensity, 0, 255))
+
+    offsets = [
+        (0, 0),
+        (1, 0), (-1, 0), (0, 1), (0, -1),
+        (1, 1), (1, -1), (-1, 1), (-1, -1),
+        (2, 0), (-2, 0), (0, 2), (0, -2),
+    ]
+
+    for dx, dy in offsets:
+        xx = x + dx
+        yy = y + dy
+        if 0 <= xx < w and 0 <= yy < h:
+            mask_slice[yy, xx] = value
+
+
+def _overlay_annotation_markers(mask_slice: np.ndarray, points_xy: np.ndarray, intensity: int):
+    """
+    Draw star markers for one or more XY points on a 2D mask slice.
+    """
+    if points_xy is None:
+        return
+
+    points_xy = np.asarray(points_xy, dtype=np.float32)
+    if points_xy.size == 0:
+        return
+    if points_xy.ndim == 1:
+        points_xy = points_xy[None, :]
+
+    for point_xy in points_xy:
+        _draw_annotation_star(mask_slice, point_xy, intensity)
+
 
 async def run_video_predictor(
     predictor,
@@ -38,6 +83,8 @@ async def run_video_predictor(
     input_label: np.ndarray,
     result_stack: np.ndarray,
     job_id: str,
+    overlay_annotation_points: bool = False,
+    annotation_overlay_intensity: int = ANNOTATION_MARKER_INTENSITY,
 ):
     # Initialize video predictor state
     # Use CPU offloading to handle large video volumes without OOM
@@ -79,6 +126,8 @@ async def run_video_predictor(
         if not video_annotation_samples:
             raise RuntimeError("No annotation frames generated - video may be too short")
 
+    prompt_points_by_frame = {frame_idx: points for frame_idx, points in video_annotation_samples}
+
     print(f"Labels shape: {input_label.shape}")
     print(f"Adding points to {len(video_annotation_samples)} frames...")
 
@@ -115,6 +164,12 @@ async def run_video_predictor(
 
             try:
                 result_stack[frame] = (mask_logits[0] > 0.0).cpu().numpy()
+                if overlay_annotation_points:
+                    _overlay_annotation_markers(
+                        result_stack[frame],
+                        prompt_points_by_frame.get(frame),
+                        annotation_overlay_intensity,
+                    )
                 pct = int(((frame + 1) / input_shape[0]) * 100)
                 update_step(job_id, 1, 20 + 0.8 * pct)
                 await asyncio.sleep(0.001)
@@ -141,6 +196,8 @@ async def run_image_predictor(
     input_shape: tuple[int, int, int],
     result_stack: np.ndarray,
     job_id: str,
+    overlay_annotation_points: bool = False,
+    annotation_overlay_intensity: int = ANNOTATION_MARKER_INTENSITY,
 ):
     def _spatial_hw(image: np.ndarray) -> tuple[int, int]:
         if image.ndim == 2:
@@ -234,12 +291,22 @@ async def run_image_predictor(
             masks = masks[0]
 
         result_stack[i] = (masks > 0).astype(np.uint8) * 255
+        if overlay_annotation_points:
+            _overlay_annotation_markers(result_stack[i], point_coords, annotation_overlay_intensity)
         pct = int(((i + 1) / input_shape[0]) * 100)
         update_step(job_id, 1, pct)
         await asyncio.sleep(0.001)
 
 
-async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type: str, predictor_type: str):
+async def run_pipeline(
+    job_id: str,
+    host_path: str,
+    output_path: str,
+    model_type: str,
+    predictor_type: str,
+    overlay_annotation_points: bool = False,
+    annotation_overlay_intensity: int = ANNOTATION_MARKER_INTENSITY,
+):
     """
     Execute the full segmentation pipeline for an image stack.
 
@@ -351,6 +418,8 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
                 input_label=input_label,
                 result_stack=result_stack,
                 job_id=job_id,
+                overlay_annotation_points=overlay_annotation_points,
+                annotation_overlay_intensity=annotation_overlay_intensity,
             )
         else:
             await run_image_predictor(
@@ -361,6 +430,8 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
                 input_shape=input_shape,
                 result_stack=result_stack,
                 job_id=job_id,
+                overlay_annotation_points=overlay_annotation_points,
+                annotation_overlay_intensity=annotation_overlay_intensity,
             )
 
         update_step(job_id, 1, 100)
