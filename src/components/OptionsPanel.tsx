@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import styles from '../assets/styles.module.css';
 import { BACKEND_URL } from '../config';
 
@@ -14,6 +14,8 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
     const [model, setModel] = useState('sam2_hiera_base_plus');
     const [predictor, setPredictor] = useState('ImagePredictor');
     const [token, setToken] = useState('');
+    const inputFileRef = useRef<HTMLInputElement | null>(null);
+    const outputFileRef = useRef<HTMLInputElement | null>(null);
 
     type DownloadState = 'idle' | 'downloading' | 'downloaded' | 'error';
     const [sam2State, setSam2State] = useState<DownloadState>('idle');
@@ -57,14 +59,87 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
         return trimmed;
     };
 
-    const extractPathFromDataTransfer = (dt: DataTransfer): string | null => {
+    const isLikelyAbsolutePath = (value: string): boolean => {
+        const v = value.trim();
+        if (!v) return false;
+        return (
+            v.startsWith('/') ||
+            v.startsWith('\\\\') ||
+            /^[A-Za-z]:[\\/]/.test(v)
+        );
+    };
+
+    type DropCandidate = {
+        source: string;
+        value: string;
+        isPathLike: boolean;
+    };
+
+    type FilePathBridge = {
+        name: string;
+        fn: (file: File) => unknown;
+    };
+
+    const getHostPathBridgeCandidates = (): FilePathBridge[] => {
+        const host = window as any;
+        const candidates: FilePathBridge[] = [
+            { name: 'window.electronAPI.getPathForFile', fn: host?.electronAPI?.getPathForFile },
+            { name: 'window.electronApi.getPathForFile', fn: host?.electronApi?.getPathForFile },
+            { name: 'window.electron.getPathForFile', fn: host?.electron?.getPathForFile },
+            { name: 'window.ouroboros.getPathForFile', fn: host?.ouroboros?.getPathForFile }
+        ];
+        return candidates.filter((entry) => typeof entry.fn === 'function');
+    };
+
+    const resolvePathViaHostBridge = async (file: File, bridgeCandidates: FilePathBridge[]): Promise<string | null> => {
+        for (const fn of bridgeCandidates) {
+            try {
+                const raw = await Promise.resolve(fn.fn(file));
+                if (typeof raw === 'string' && raw.trim()) return raw.trim();
+                if (raw && typeof raw === 'object') {
+                    const obj = raw as Record<string, unknown>;
+                    const candidatePath =
+                        typeof obj.path === 'string'
+                            ? obj.path
+                            : typeof obj.filePath === 'string'
+                                ? obj.filePath
+                                : null;
+                    if (candidatePath && candidatePath.trim()) return candidatePath.trim();
+                }
+            } catch {}
+        }
+
+        return null;
+    };
+
+    const extractPathFromDataTransfer = async (dt: DataTransfer): Promise<string | null> => {
+        let fileNameFallback: string | null = null;
+        const candidates: DropCandidate[] = [];
+        const bridgeCandidates = getHostPathBridgeCandidates();
+        const addCandidate = (source: string, value: string | null) => {
+            const parsed = value ? parseTextToPath(value) : null;
+            if (!parsed) return;
+            candidates.push({
+                source,
+                value: parsed,
+                isPathLike: parsed.startsWith('file://') || isLikelyAbsolutePath(parsed)
+            });
+        };
+
         if (dt.items && dt.items.length > 0) {
-            for (const item of Array.from(dt.items)) {
+            for (const [index, item] of Array.from(dt.items).entries()) {
                 if (item.kind === 'file') {
                     const file = item.getAsFile();
                     if (file) {
                         const anyFile = file as any;
-                        return (typeof anyFile.path === 'string' && anyFile.path) || file.name || null;
+                        if (typeof anyFile.path === 'string' && anyFile.path) {
+                            addCandidate(`items[file:${index}].path`, anyFile.path);
+                        }
+                        const bridgePath = await resolvePathViaHostBridge(file, bridgeCandidates);
+                        if (bridgePath) {
+                            addCandidate(`items[file:${index}].bridge`, bridgePath);
+                        }
+                        fileNameFallback = fileNameFallback ?? file.name ?? null;
                     }
                 }
             }
@@ -73,18 +148,25 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
         if (dt.files && dt.files.length > 0) {
             const file = dt.files[0];
             const anyFile = file as any;
-            return (typeof anyFile.path === 'string' && anyFile.path) || file.name || null;
+            if (typeof anyFile.path === 'string' && anyFile.path) {
+                addCandidate('files[0].path', anyFile.path);
+            }
+            const bridgePath = await resolvePathViaHostBridge(file, bridgeCandidates);
+            if (bridgePath) {
+                addCandidate('files[0].bridge', bridgePath);
+            }
+            fileNameFallback = fileNameFallback ?? file.name ?? null;
         }
 
         const types = Array.from(dt.types || []);
         const preferredTypes = [
-            'text/uri-list',
-            'text/plain',
-            'application/json',
-            'text/json',
             'application/x-ouroboros-path',
             'application/x-ouroboros-file',
-            'application/x-file-path'
+            'application/x-file-path',
+            'text/uri-list',
+            'application/json',
+            'text/json',
+            'text/plain'
         ];
 
         const orderedTypes = [
@@ -100,20 +182,21 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                     .split(/\r?\n/)
                     .map((entry) => entry.trim())
                     .find((entry) => entry && !entry.startsWith('#'));
-                if (line) return normalizeFileUri(line);
+                if (line) addCandidate(type, normalizeFileUri(line));
                 continue;
             }
-            const parsed = parseTextToPath(raw);
-            if (parsed) return parsed;
+            addCandidate(type, raw);
         }
 
-        return null;
+        const selectedPathLike = candidates.find((candidate) => candidate.isPathLike)?.value ?? null;
+        const selected = selectedPathLike ?? candidates[0]?.value ?? fileNameFallback;
+        return selected;
     };
 
-    const handleDrop = (e: React.DragEvent, setFn: (s: string) => void) => {
+    const handleDrop = async (e: React.DragEvent, setFn: (s: string) => void) => {
         e.preventDefault();
         e.stopPropagation();
-        const data = extractPathFromDataTransfer(e.dataTransfer);
+        const data = await extractPathFromDataTransfer(e.dataTransfer);
         if (data) setFn(data);
     };
 
@@ -124,6 +207,52 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
             e.dataTransfer.dropEffect = 'copy';
         }
     };
+
+    useEffect(() => {
+        const isInputTarget = (target: EventTarget | null) => {
+            if (!(target instanceof Node)) return false;
+            return Boolean(inputFileRef.current?.contains(target));
+        };
+
+        const isOutputTarget = (target: EventTarget | null) => {
+            if (!(target instanceof Node)) return false;
+            return Boolean(outputFileRef.current?.contains(target));
+        };
+
+        const handleNativeDragOverCapture = (event: DragEvent) => {
+            if (!isInputTarget(event.target) && !isOutputTarget(event.target)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.dataTransfer) {
+                event.dataTransfer.dropEffect = 'copy';
+            }
+        };
+
+        const handleNativeDropCapture = async (event: DragEvent) => {
+            const onInput = isInputTarget(event.target);
+            const onOutput = isOutputTarget(event.target);
+            if (!onInput && !onOutput) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            const dt = event.dataTransfer;
+            if (!dt) return;
+
+            const data = await extractPathFromDataTransfer(dt);
+            if (data) {
+                if (onInput) setFp(data);
+                if (onOutput) setOutFp(data);
+            }
+        };
+
+        document.addEventListener('dragover', handleNativeDragOverCapture, true);
+        document.addEventListener('drop', handleNativeDropCapture, true);
+        return () => {
+            document.removeEventListener('dragover', handleNativeDragOverCapture, true);
+            document.removeEventListener('drop', handleNativeDropCapture, true);
+        };
+    }, []);
 
     const refreshModelStatuses = async () => {
         if (!connected) return;
@@ -212,10 +341,12 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                         <span className={styles.label}>Input File</span>
                         <div className={styles.inputContainer}>
                             <input 
+                                ref={inputFileRef}
                                 className={styles.input} 
                                 value={fp} 
                                 onChange={e => setFp(e.target.value)} 
                                 placeholder="Drag file here..." 
+                                onDropCapture={(e) => handleDrop(e, setFp)}
                                 onDrop={(e) => handleDrop(e, setFp)} 
                                 onDragOver={handleDragOver} 
                             />
@@ -226,10 +357,12 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                         <span className={styles.label}>Output File</span>
                         <div className={styles.inputContainer}>
                             <input 
+                                ref={outputFileRef}
                                 className={styles.input} 
                                 value={outFp} 
                                 onChange={e => setOutFp(e.target.value)} 
                                 placeholder="/path/to/output.tif" 
+                                onDropCapture={(e) => handleDrop(e, setOutFp)}
                                 onDrop={(e) => handleDrop(e, setOutFp)} 
                                 onDragOver={handleDragOver} 
                             />
