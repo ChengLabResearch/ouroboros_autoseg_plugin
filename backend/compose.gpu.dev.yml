@@ -1,0 +1,26 @@
+services:
+  our_autoseg:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8686 --reload --reload-dir /app/app
+    ports:
+      - "8686:8686"
+    volumes:
+      - ./app:/app/app
+      - ouroboros-volume:/ouroboros-volume
+    environment:
+      - VOLUME_MOUNT_PATH=/ouroboros-volume
+      - VOLUME_SERVER_URL=http://host.docker.internal:3001
+      # Frame loading mode: "sync" (safer, slower) or "async" (faster, may have threading issues)
+      - SAM2_FRAME_LOADING_MODE=async
+    shm_size: 1gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  ouroboros-volume:
+    external: true

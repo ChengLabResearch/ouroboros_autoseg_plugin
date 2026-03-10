@@ -1,0 +1,19 @@
+services:
+  our_autoseg:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8686 --reload --reload-dir /app/app
+    ports:
+      - "8686:8686"
+    volumes:
+      - ./app:/app/app
+      - ouroboros-volume:/ouroboros-volume
+    environment:
+      - VOLUME_MOUNT_PATH=/ouroboros-volume
+      - VOLUME_SERVER_URL=http://host.docker.internal:3001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    shm_size: 1gb
+
+volumes:
+  ouroboros-volume:
+    external: true
