@@ -65,7 +65,9 @@ const TRACKED_MODEL_STATUS: &[&str] = &["sam2_hiera_base_plus", "sam3"];
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub plugin_name: String,
+    pub volume_name: String,
     pub volume_server_url: String,
+    pub huggingface_base_url: String,
     pub internal_volume_path: PathBuf,
     pub checkpoint_dir: PathBuf,
     pub fallback_annotation_interval: usize,
@@ -75,8 +77,11 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn from_env() -> Result<Self, AppError> {
         let plugin_name = "sam3-segmentation".to_string();
+        let volume_name = "ouroboros-volume".to_string();
         let volume_server_url = std::env::var("VOLUME_SERVER_URL")
             .unwrap_or_else(|_| "http://host.docker.internal:3001".to_string());
+        let huggingface_base_url = std::env::var("HUGGINGFACE_BASE_URL")
+            .unwrap_or_else(|_| "https://huggingface.co".to_string());
         let internal_volume_path = if running_in_docker() {
             PathBuf::from("/ouroboros-volume")
         } else {
@@ -101,7 +106,9 @@ impl AppConfig {
 
         Ok(Self {
             plugin_name,
+            volume_name,
             volume_server_url,
+            huggingface_base_url,
             internal_volume_path,
             checkpoint_dir,
             fallback_annotation_interval,
@@ -119,13 +126,31 @@ impl AppConfig {
         TRACKED_MODEL_STATUS
     }
 
+    pub fn plugin_root(&self) -> PathBuf {
+        self.internal_volume_path.join(&self.plugin_name)
+    }
+
     pub fn checkpoint_path(&self, model_name: &str) -> PathBuf {
-        self.checkpoint_dir.join(format!("{model_name}.pt"))
+        match self.model_descriptor(model_name) {
+            Some(descriptor) => self.checkpoint_dir.join(descriptor.checkpoint_file),
+            None => self.checkpoint_dir.join(format!("{model_name}.pt")),
+        }
     }
 
     pub fn ensure_checkpoint_dir(&self) -> Result<(), AppError> {
         std::fs::create_dir_all(&self.checkpoint_dir)?;
         Ok(())
+    }
+
+    pub fn volume_server_endpoint(&self, path: &str) -> String {
+        let base = self.volume_server_url.trim_end_matches('/');
+        let path = path.trim_start_matches('/');
+        format!("{base}/{path}")
+    }
+
+    pub fn huggingface_resolve_url(&self, repo: &str, filename: &str) -> String {
+        let base = self.huggingface_base_url.trim_end_matches('/');
+        format!("{base}/{repo}/resolve/main/{filename}")
     }
 }
 

@@ -1,12 +1,21 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{config::AppConfig, error::AppError};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VolumeFileMapping {
     pub source_path: String,
     pub target_path: String,
+}
+
+impl VolumeFileMapping {
+    pub fn new(source_path: impl Into<String>, target_path: impl Into<String>) -> Self {
+        Self {
+            source_path: source_path.into(),
+            target_path: target_path.into(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -17,15 +26,17 @@ struct VolumeOperationRequest<'a> {
     files: &'a [VolumeFileMapping],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeOperationOk {
+    pub message: String,
+}
+
 pub async fn ping(client: &reqwest::Client, config: &AppConfig) -> Result<(), AppError> {
     let response = client
-        .get(format!("{}/", config.volume_server_url))
+        .get(config.volume_server_endpoint("/"))
         .send()
         .await?;
-    if response.status().is_success()
-        || response.status() == reqwest::StatusCode::NOT_FOUND
-        || response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED
-    {
+    if is_ping_status_healthy(response.status()) {
         Ok(())
     } else {
         Err(AppError::upstream(format!(
@@ -39,7 +50,7 @@ pub async fn copy_to_volume(
     client: &reqwest::Client,
     config: &AppConfig,
     files: &[VolumeFileMapping],
-) -> Result<(), AppError> {
+) -> Result<VolumeOperationOk, AppError> {
     perform_operation(client, config, "copy-to-volume", files).await
 }
 
@@ -47,7 +58,7 @@ pub async fn copy_to_host(
     client: &reqwest::Client,
     config: &AppConfig,
     files: &[VolumeFileMapping],
-) -> Result<(), AppError> {
+) -> Result<VolumeOperationOk, AppError> {
     perform_operation(client, config, "copy-to-host", files).await
 }
 
@@ -56,22 +67,44 @@ async fn perform_operation(
     config: &AppConfig,
     path: &str,
     files: &[VolumeFileMapping],
-) -> Result<(), AppError> {
-    let url = format!("{}/{}", config.volume_server_url, path);
-    let request = VolumeOperationRequest {
-        volume_name: "ouroboros-volume",
-        plugin_folder_name: &config.plugin_name,
-        files,
-    };
+) -> Result<VolumeOperationOk, AppError> {
+    let url = config.volume_server_endpoint(path);
+    let request = build_operation_request(config, files);
 
     let response = client.post(url).json(&request).send().await?;
-    if response.status().is_success() {
-        Ok(())
+    let status = response.status();
+    let message = response.text().await.unwrap_or_default();
+    if status.is_success() {
+        Ok(VolumeOperationOk { message })
     } else {
-        let message = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "volume operation failed".to_string());
-        Err(AppError::upstream(message))
+        Err(AppError::upstream(volume_failure_message(status, &message)))
     }
 }
+
+fn is_ping_status_healthy(status: reqwest::StatusCode) -> bool {
+    status.is_success()
+        || status == reqwest::StatusCode::NOT_FOUND
+        || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+}
+
+fn build_operation_request<'a>(
+    config: &'a AppConfig,
+    files: &'a [VolumeFileMapping],
+) -> VolumeOperationRequest<'a> {
+    VolumeOperationRequest {
+        volume_name: &config.volume_name,
+        plugin_folder_name: &config.plugin_name,
+        files,
+    }
+}
+
+fn volume_failure_message(status: reqwest::StatusCode, message: &str) -> String {
+    if message.trim().is_empty() {
+        format!("Volume operation failed with status {status}")
+    } else {
+        message.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests;

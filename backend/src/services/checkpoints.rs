@@ -1,4 +1,7 @@
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
@@ -58,7 +61,7 @@ pub async fn download_model(
                 .as_deref()
                 .filter(|token| !token.trim().is_empty())
                 .ok_or_else(|| AppError::bad_request("Authentication Token required for SAM 3"))?;
-            let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
+            let url = config.huggingface_resolve_url(repo, filename);
             download_to_path(client, &url, Some(token), &target_path).await?;
         }
     }
@@ -75,6 +78,8 @@ async fn download_to_path(
     bearer_token: Option<&str>,
     target_path: &Path,
 ) -> Result<(), AppError> {
+    let partial_path = prepare_download_target(target_path).await?;
+
     let mut request = client.get(url);
     if let Some(token) = bearer_token {
         request = request.bearer_auth(token);
@@ -82,20 +87,72 @@ async fn download_to_path(
 
     let response = request.send().await?;
     if !response.status().is_success() {
-        return Err(AppError::upstream(format!(
-            "Failed to download checkpoint: {}",
-            response.status()
+        let status = response.status();
+        let message = response.text().await.unwrap_or_default();
+        return Err(AppError::upstream(download_failure_message(
+            status, &message,
         )));
     }
 
-    let mut file = tokio::fs::File::create(target_path).await?;
+    let mut file = tokio::fs::File::create(&partial_path).await?;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        file.write_all(&bytes).await?;
+        let bytes = match chunk {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&partial_path).await;
+                return Err(AppError::Http(error));
+            }
+        };
+        if let Err(error) = file.write_all(&bytes).await {
+            let _ = tokio::fs::remove_file(&partial_path).await;
+            return Err(AppError::Io(error));
+        }
     }
-    file.flush().await?;
+    if let Err(error) = file.flush().await {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        return Err(AppError::Io(error));
+    }
+    drop(file);
+    tokio::fs::rename(&partial_path, target_path).await?;
     Ok(())
+}
+
+fn partial_download_path(target_path: &Path) -> PathBuf {
+    let file_name = target_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("checkpoint");
+    target_path.with_file_name(format!("{file_name}.part"))
+}
+
+async fn prepare_download_target(target_path: &Path) -> Result<PathBuf, AppError> {
+    if let Some(parent) = target_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    let partial_path = partial_download_path(target_path);
+    match tokio::fs::metadata(&partial_path).await {
+        Ok(metadata) if metadata.is_file() => {
+            tokio::fs::remove_file(&partial_path).await?;
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            tokio::fs::remove_dir_all(&partial_path).await?;
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(AppError::Io(error)),
+    }
+
+    Ok(partial_path)
+}
+
+fn download_failure_message(status: reqwest::StatusCode, message: &str) -> String {
+    if message.trim().is_empty() {
+        format!("Failed to download checkpoint: {status}")
+    } else {
+        format!("Failed to download checkpoint: {status} ({message})")
+    }
 }
 
 async fn file_exists(path: &Path) -> Result<bool, AppError> {
@@ -113,3 +170,6 @@ async fn path_is_directory(path: &Path) -> Result<bool, AppError> {
         Err(error) => Err(AppError::Io(error)),
     }
 }
+
+#[cfg(test)]
+mod tests;

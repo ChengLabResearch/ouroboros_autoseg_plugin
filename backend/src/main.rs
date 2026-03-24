@@ -1,16 +1,6 @@
-mod api;
-mod app_state;
-mod config;
-mod domain;
-mod error;
-mod imaging;
-mod inference;
-mod services;
-
 use std::error::Error;
 
-use app_state::AppState;
-use config::AppConfig;
+use ouroboros_autoseg_plugin_backend::{api, app_state::AppState, config::AppConfig};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
