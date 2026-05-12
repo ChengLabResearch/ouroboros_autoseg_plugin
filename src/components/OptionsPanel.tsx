@@ -27,6 +27,7 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
     type DownloadState = 'idle' | 'downloading' | 'downloaded' | 'error';
     const [sam2State, setSam2State] = useState<DownloadState>('idle');
     const [sam3State, setSam3State] = useState<DownloadState>('idle');
+    const [candleSam3Available, setCandleSam3Available] = useState(false);
 
     const normalizeFileUri = (uri: string): string => {
         let cleaned = uri.trim();
@@ -283,6 +284,7 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
             const data = await res.json();
             setSam2State(data?.models?.sam2_hiera_base_plus ? 'downloaded' : 'idle');
             setSam3State(data?.models?.sam3 ? 'downloaded' : 'idle');
+            setCandleSam3Available(Boolean(data?.models?.candle_sam3));
         } catch (e) {
             console.error('Failed to fetch model status:', e);
         }
@@ -292,6 +294,7 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
         if (!connected) {
             setSam2State('idle');
             setSam3State('idle');
+            setCandleSam3Available(false);
             return;
         }
         refreshModelStatuses();
@@ -408,6 +411,7 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                                 </optgroup>
                                 <optgroup label="SAM 3">
                                     <option value="sam3">SAM3</option>
+                                    <option value="candle_sam3">SAM3 (Candle)</option>
                                 </optgroup>
                             </select>
                         </div>
@@ -430,6 +434,14 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                         >
                             {buttonLabel(sam2State)}
                         </button>
+                    </div>
+
+                    {/* SAM3 (Candle) — no download needed; binary ships with Docker, checkpoint shared with SAM3 */}
+                    <div className={styles.row}>
+                        <span className={styles.label}>SAM3 (Candle)</span>
+                        <span className={candleSam3Available ? styles.statusAvailable : styles.statusUnavailable}>
+                            {candleSam3Available ? 'Available' : 'Unavailable'}
+                        </span>
                     </div>
 
                     {/* SAM 3 */}

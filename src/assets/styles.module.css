@@ -261,6 +261,25 @@
     background: rgba(255, 183, 77, 0.12);
 }
 
+.statusAvailable {
+    font-size: 0.75rem;
+    font-family: 'Poppins', sans-serif;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid rgba(125, 217, 125, 0.45);
+    color: #7dd97d;
+    background: rgba(125, 217, 125, 0.12);
+}
+.statusUnavailable {
+    font-size: 0.75rem;
+    font-family: 'Poppins', sans-serif;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid rgba(176, 190, 197, 0.35);
+    color: #b0bec5;
+    background: rgba(176, 190, 197, 0.1);
+}
+
 /* VisualizePanel Specific */
 .vizPlaceholder {
     background-color: var(--panel-background); 
