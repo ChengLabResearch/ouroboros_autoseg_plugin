@@ -129,3 +129,6 @@ pub fn interpolated_point_for_frame(
         y: left.y + t * (right_point.y - left.y),
     })
 }
+
+#[cfg(test)]
+mod tests;
