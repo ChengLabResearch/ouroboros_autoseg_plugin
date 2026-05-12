@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use candle_core::Device;
+use candle_transformers::models::sam3;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
@@ -9,6 +11,12 @@ use crate::{
     inference::registry::ModelRegistry,
 };
 
+pub struct Sam3ModelHandle {
+    pub image_model: Arc<sam3::Sam3ImageModel>,
+    pub tracker: Arc<sam3::Sam3TrackerModel>,
+    pub device: Device,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     config: Arc<AppConfig>,
@@ -16,6 +24,7 @@ pub struct AppState {
     jobs: Arc<RwLock<HashMap<String, JobRecord>>>,
     startup_status: Arc<RwLock<StartupStatus>>,
     model_registry: Arc<Mutex<ModelRegistry>>,
+    sam3_handle: Arc<RwLock<Option<Arc<Sam3ModelHandle>>>>,
     inference_limit: Arc<Semaphore>,
 }
 
@@ -31,6 +40,7 @@ impl AppState {
             jobs: Arc::new(RwLock::new(HashMap::new())),
             startup_status: Arc::new(RwLock::new(StartupStatus::pending())),
             model_registry: Arc::new(Mutex::new(ModelRegistry::new())),
+            sam3_handle: Arc::new(RwLock::new(None)),
             inference_limit: Arc::new(Semaphore::new(1)),
         })
     }
@@ -52,7 +62,16 @@ impl AppState {
     }
 
     pub async fn ml_runtime_ready(&self) -> bool {
-        self.model_registry.lock().await.runtime_ready()
+        self.sam3_handle.read().await.is_some()
+    }
+
+    pub async fn sam3_handle(&self) -> Option<Arc<Sam3ModelHandle>> {
+        self.sam3_handle.read().await.clone()
+    }
+
+    pub async fn set_sam3_handle(&self, handle: Sam3ModelHandle) {
+        *self.sam3_handle.write().await = Some(Arc::new(handle));
+        self.model_registry.lock().await.mark_ready();
     }
 
     pub async fn create_job(&self, job_id: String) -> JobRecord {

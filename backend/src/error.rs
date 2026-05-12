@@ -13,6 +13,8 @@ pub enum AppError {
     #[error("{0}")]
     NotImplemented(String),
     #[error("{0}")]
+    Internal(String),
+    #[error("{0}")]
     Upstream(String),
     #[error("{0}")]
     Io(#[from] std::io::Error),
@@ -35,6 +37,10 @@ impl AppError {
         Self::NotImplemented(message.into())
     }
 
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::Internal(message.into())
+    }
+
     pub fn upstream(message: impl Into<String>) -> Self {
         Self::Upstream(message.into())
     }
@@ -46,8 +52,10 @@ impl IntoResponse for AppError {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
+            Self::Internal(_) | Self::Io(_) | Self::Http(_) | Self::Json(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
-            Self::Io(_) | Self::Http(_) | Self::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         (status, self.to_string()).into_response()
