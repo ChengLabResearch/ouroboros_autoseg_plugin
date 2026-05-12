@@ -235,6 +235,74 @@ class CandleSam3Adapter:
             masks.append(self.load_mask_png(mask_path))
         return masks
 
+    def predict_video(
+        self,
+        video_path: Path,
+        seed_point: "CandleSam3Point",
+        output_dir: Path,
+        num_frames: int,
+        *,
+        prompt: Optional[str] = None,
+    ) -> list[np.ndarray]:
+        """
+        Run video prediction for a folder of image frames through candle-sam3.
+
+        Seeds object 1 on frame 0 with ``seed_point`` and propagates forward
+        through all ``num_frames`` frames. Returns one binary ``uint8`` mask
+        per frame in forward order.
+
+        Mask files are expected at
+        ``<output_dir>/masks/frame_XXXXXX_obj_000001.png`` — the naming
+        convention written by candle-sam3's video export path.
+
+        Parameters
+        ----------
+        video_path : Path
+            Directory of sorted image frames (JPEG/PNG) to segment.
+        seed_point : CandleSam3Point
+            Normalized [0, 1] click-point used to seed object 1 on frame 0.
+        output_dir : Path
+            Directory where candle-sam3 writes its ``masks/`` subdirectory.
+        num_frames : int
+            Expected number of output frames. Used to enumerate mask files.
+        prompt : str or None
+            Optional text prompt forwarded as ``--video-prompt``.
+
+        Returns
+        -------
+        list of numpy.ndarray
+            One ``uint8`` (0 or 255) mask array per frame.
+
+        Raises
+        ------
+        CandleSam3AdapterError
+            If the binary fails or any expected mask file is missing.
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = self._base_cmd() + [
+            "--video", str(video_path),
+            "--point", f"{seed_point.x},{seed_point.y}",
+            "--point-label", str(seed_point.label),
+            "--output-dir", str(output_dir),
+        ]
+        if prompt:
+            cmd += ["--video-prompt", prompt]
+
+        self._run_binary(cmd)
+
+        masks_dir = output_dir / "masks"
+        masks: list[np.ndarray] = []
+        for i in range(num_frames):
+            mask_path = masks_dir / f"frame_{i:06d}_obj_000001.png"
+            if not mask_path.is_file():
+                raise CandleSam3AdapterError(
+                    f"candle-sam3 produced no video mask for frame {i} at {mask_path}"
+                )
+            masks.append(self.load_mask_png(mask_path))
+        return masks
+
     def _base_cmd(self) -> list[str]:
         """Build the base ``sam3`` invocation independent of subcommand args."""
         cmd: list[str] = [str(self.binary_path)]

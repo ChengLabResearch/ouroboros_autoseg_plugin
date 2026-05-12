@@ -201,12 +201,12 @@ class NetworkTests(unittest.TestCase):
             predictor = app_network.get_predictor("sam3", "ImagePredictor")
         self.assertEqual(predictor, ("sam3", "sam3-image-model"))
 
-    def test_get_predictor_candle_sam3_requires_image_predictor(self):
+    def test_get_predictor_candle_sam3_unknown_predictor_type_raises(self):
         app_config.loaded_model_name = None
         app_config.loaded_predictor = None
         with self.assertRaises(ValueError) as ctx:
-            app_network.get_predictor("candle_sam3", "VideoPredictor")
-        self.assertIn("ImagePredictor", str(ctx.exception))
+            app_network.get_predictor("candle_sam3", "BadPredictor")
+        self.assertIn("BadPredictor", str(ctx.exception))
 
     def test_get_predictor_candle_sam3_missing_checkpoint_raises(self):
         app_config.loaded_model_name = None
@@ -238,8 +238,6 @@ class NetworkTests(unittest.TestCase):
         app_config.loaded_model_name = None
         app_config.loaded_predictor = None
 
-        sentinel = object()
-
         class _AvailableAdapter:
             def __init__(self, *_, **__):
                 self.created = True
@@ -247,7 +245,6 @@ class NetworkTests(unittest.TestCase):
             def is_available(self):
                 return True
 
-        # Patch the class to return our sentinel via init
         def fake_ctor(*args, **kwargs):
             return _AvailableAdapter(*args, **kwargs)
 
@@ -256,6 +253,28 @@ class NetworkTests(unittest.TestCase):
             side_effect=fake_ctor,
         ) as mocked_adapter:
             predictor = app_network.get_predictor("candle_sam3", "ImagePredictor")
+        self.assertTrue(getattr(predictor, "created", False))
+        mocked_adapter.assert_called_once()
+
+    def test_get_predictor_candle_sam3_video_predictor_success(self):
+        app_config.loaded_model_name = None
+        app_config.loaded_predictor = None
+
+        class _AvailableAdapter:
+            def __init__(self, *_, **__):
+                self.created = True
+
+            def is_available(self):
+                return True
+
+        def fake_ctor(*args, **kwargs):
+            return _AvailableAdapter(*args, **kwargs)
+
+        with patch("backend.app.util.network.os.path.isfile", return_value=True), patch(
+            "backend.app.util.network.CandleSam3Adapter",
+            side_effect=fake_ctor,
+        ) as mocked_adapter:
+            predictor = app_network.get_predictor("candle_sam3", "VideoPredictor")
         self.assertTrue(getattr(predictor, "created", False))
         mocked_adapter.assert_called_once()
 

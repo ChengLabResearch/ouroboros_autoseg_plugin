@@ -223,9 +223,9 @@ def get_predictor(model_name: str, predictor_type: str):
             raise ValueError(f"Unknown predictor type: {predictor_type}")
 
     elif model_name == "candle_sam3":
-        if predictor_type != "ImagePredictor":
+        if predictor_type not in ("ImagePredictor", "VideoPredictor"):
             raise ValueError(
-                f"candle_sam3 currently supports only ImagePredictor (got {predictor_type})"
+                f"candle_sam3 supports ImagePredictor and VideoPredictor (got {predictor_type})"
             )
 
         sam3_checkpoint = os.path.join(config.CHECKPOINT_DIR, "sam3.pt")

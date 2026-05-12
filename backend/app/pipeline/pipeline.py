@@ -187,6 +187,51 @@ async def run_candle_sam3_image_predictor(
         await asyncio.sleep(0.001)
 
 
+async def run_candle_sam3_video_predictor(
+    adapter: CandleSam3Adapter,
+    volume_folder: Path,
+    annotation_points: np.ndarray,
+    input_shape: tuple[int, int, int],
+    result_stack: np.ndarray,
+    job_id: str,
+):
+    """
+    Drive candle-sam3 video prediction over the JPEG frames in ``volume_folder``.
+
+    Seeds object 1 on frame 0 using the first annotation point and propagates
+    forward through all frames. Masks are read from the binary's
+    ``masks/frame_XXXXXX_obj_000001.png`` output pattern.
+
+    Note: candle-sam3 video mode seeds a single object on frame 0 only;
+    multi-frame annotation seeding is not supported by the upstream CLI.
+    """
+    height, width = int(input_shape[1]), int(input_shape[2])
+
+    seed_pt = _annotation_point_for_frame(annotation_points, 0)[0]
+    x_norm, y_norm = CandleSam3Adapter.normalize_xy(
+        float(seed_pt[0]), float(seed_pt[1]), width=width, height=height
+    )
+    seed = CandleSam3Point(x=x_norm, y=y_norm, label=1)
+
+    output_dir = volume_folder.parent / f"{volume_folder.name}_candle_sam3_video_out"
+    masks = adapter.predict_video(
+        video_path=volume_folder,
+        seed_point=seed,
+        output_dir=output_dir,
+        num_frames=input_shape[0],
+    )
+
+    for i, mask in enumerate(masks):
+        if mask.shape != (height, width):
+            mask = np.asarray(
+                PILImage.fromarray(mask).resize((width, height), resample=PILImage.NEAREST)
+            )
+        result_stack[i] = mask
+        pct = int(((i + 1) / input_shape[0]) * 100)
+        update_step(job_id, 1, pct)
+        await asyncio.sleep(0.001)
+
+
 async def run_image_predictor(
     predictor,
     volume_folder: Path,
@@ -312,7 +357,16 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
 
         result_stack = np.zeros(input_shape, dtype=np.uint8)
 
-        if use_candle_sam3:
+        if use_candle_sam3 and predictor_type == "VideoPredictor":
+            await run_candle_sam3_video_predictor(
+                adapter=predictor,
+                volume_folder=volume_folder,
+                annotation_points=annotation_points,
+                input_shape=input_shape,
+                result_stack=result_stack,
+                job_id=job_id,
+            )
+        elif use_candle_sam3:
             await run_candle_sam3_image_predictor(
                 adapter=predictor,
                 volume_folder=volume_folder,

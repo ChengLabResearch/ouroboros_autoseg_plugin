@@ -256,6 +256,154 @@ class PredictImageBatchTests(unittest.TestCase):
         self.assertNotIn("--cpu", cmd)
 
 
+class PredictVideoTests(unittest.TestCase):
+    """Tests for CandleSam3Adapter.predict_video."""
+
+    def _make_adapter(self) -> CandleSam3Adapter:
+        return CandleSam3Adapter(binary_path="/fake/sam3")
+
+    def _write_video_masks(self, output_dir: Path, num_frames: int, *, fill: int = 255) -> None:
+        masks_dir = output_dir / "masks"
+        masks_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(num_frames):
+            _make_mask_png(
+                masks_dir / f"frame_{i:06d}_obj_000001.png",
+                height=4,
+                width=6,
+                fill=fill,
+            )
+
+    def test_predict_video_returns_masks_in_order(self):
+        adapter = self._make_adapter()
+        seed = CandleSam3Point(x=0.5, y=0.5, label=1)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_dir = Path(tmpdir) / "frames"
+            video_dir.mkdir()
+            output_dir = Path(tmpdir) / "out"
+
+            def _fake_run(cmd):
+                self._write_video_masks(output_dir, num_frames=3)
+                return None
+
+            adapter._run_binary = _fake_run
+            masks = adapter.predict_video(video_dir, seed, output_dir, num_frames=3)
+
+        self.assertEqual(len(masks), 3)
+        for mask in masks:
+            self.assertEqual(mask.shape, (4, 6))
+            np.testing.assert_array_equal(mask, np.full((4, 6), 255, dtype=np.uint8))
+
+    def test_predict_video_passes_correct_cli_args(self):
+        adapter = self._make_adapter()
+        seed = CandleSam3Point(x=0.25, y=0.75, label=1)
+        captured: list[list[str]] = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_dir = Path(tmpdir) / "frames"
+            video_dir.mkdir()
+            output_dir = Path(tmpdir) / "out"
+
+            def _fake_run(cmd):
+                captured.append(list(cmd))
+                self._write_video_masks(output_dir, num_frames=1)
+                return None
+
+            adapter._run_binary = _fake_run
+            adapter.predict_video(video_dir, seed, output_dir, num_frames=1)
+
+        self.assertEqual(len(captured), 1)
+        cmd = captured[0]
+        self.assertIn("--video", cmd)
+        video_idx = cmd.index("--video")
+        self.assertEqual(cmd[video_idx + 1], str(video_dir))
+        self.assertIn("--point", cmd)
+        point_idx = cmd.index("--point")
+        self.assertEqual(cmd[point_idx + 1], "0.25,0.75")
+        self.assertIn("--point-label", cmd)
+        label_idx = cmd.index("--point-label")
+        self.assertEqual(cmd[label_idx + 1], "1")
+
+    def test_predict_video_includes_video_prompt_when_given(self):
+        adapter = self._make_adapter()
+        seed = CandleSam3Point(x=0.5, y=0.5)
+        captured: list[list[str]] = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_dir = Path(tmpdir) / "frames"
+            video_dir.mkdir()
+            output_dir = Path(tmpdir) / "out"
+
+            def _fake_run(cmd):
+                captured.append(list(cmd))
+                self._write_video_masks(output_dir, num_frames=1)
+                return None
+
+            adapter._run_binary = _fake_run
+            adapter.predict_video(video_dir, seed, output_dir, num_frames=1, prompt="a cell")
+
+        cmd = captured[0]
+        self.assertIn("--video-prompt", cmd)
+        prompt_idx = cmd.index("--video-prompt")
+        self.assertEqual(cmd[prompt_idx + 1], "a cell")
+
+    def test_predict_video_omits_video_prompt_when_none(self):
+        adapter = self._make_adapter()
+        seed = CandleSam3Point(x=0.5, y=0.5)
+        captured: list[list[str]] = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_dir = Path(tmpdir) / "frames"
+            video_dir.mkdir()
+            output_dir = Path(tmpdir) / "out"
+
+            def _fake_run(cmd):
+                captured.append(list(cmd))
+                self._write_video_masks(output_dir, num_frames=1)
+                return None
+
+            adapter._run_binary = _fake_run
+            adapter.predict_video(video_dir, seed, output_dir, num_frames=1)
+
+        self.assertNotIn("--video-prompt", captured[0])
+
+    def test_predict_video_missing_mask_raises_adapter_error(self):
+        adapter = self._make_adapter()
+        seed = CandleSam3Point(x=0.5, y=0.5)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_dir = Path(tmpdir) / "frames"
+            video_dir.mkdir()
+            output_dir = Path(tmpdir) / "out"
+
+            def _fake_run(cmd):
+                return None
+
+            adapter._run_binary = _fake_run
+            with self.assertRaises(CandleSam3AdapterError) as ctx:
+                adapter.predict_video(video_dir, seed, output_dir, num_frames=2)
+
+        self.assertIn("frame 0", str(ctx.exception))
+
+    def test_predict_video_creates_output_dir_if_missing(self):
+        adapter = self._make_adapter()
+        seed = CandleSam3Point(x=0.5, y=0.5)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_dir = Path(tmpdir) / "frames"
+            video_dir.mkdir()
+            output_dir = Path(tmpdir) / "nested" / "output"
+
+            def _fake_run(cmd):
+                self._write_video_masks(output_dir, num_frames=1)
+                return None
+
+            adapter._run_binary = _fake_run
+            adapter.predict_video(video_dir, seed, output_dir, num_frames=1)
+
+            self.assertTrue(output_dir.is_dir())
+
+
 class RunBinaryTests(unittest.TestCase):
     def test_called_process_error_raises_adapter_error(self):
         adapter = CandleSam3Adapter(binary_path="/bin/false")

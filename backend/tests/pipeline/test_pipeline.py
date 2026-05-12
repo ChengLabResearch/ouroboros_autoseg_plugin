@@ -586,6 +586,7 @@ class _StubCandleSam3Adapter(CandleSam3Adapter):
         super().__init__(binary_path="/fake/sam3")
         self.mask_value = mask_value
         self.captured_jobs = None
+        self.captured_video_call = None
 
     def _run_binary(self, cmd):
         return None
@@ -595,6 +596,16 @@ class _StubCandleSam3Adapter(CandleSam3Adapter):
         return [
             np.full((4, 6), self.mask_value, dtype=np.uint8) for _ in self.captured_jobs
         ]
+
+    def predict_video(self, video_path, seed_point, output_dir, num_frames, *, prompt=None):
+        self.captured_video_call = {
+            "video_path": video_path,
+            "seed_point": seed_point,
+            "output_dir": output_dir,
+            "num_frames": num_frames,
+            "prompt": prompt,
+        }
+        return [np.full((4, 6), self.mask_value, dtype=np.uint8) for _ in range(num_frames)]
 
 
 class CandleSam3PipelineTests(unittest.TestCase):
@@ -727,6 +738,147 @@ class CandleSam3PipelineTests(unittest.TestCase):
 
                 self.assertEqual(app_config.jobs["job-1"]["status"], "completed")
                 mock_candle.assert_awaited_once()
+                mock_image.assert_not_awaited()
+                mock_video.assert_not_awaited()
+
+
+class CandleSam3VideoPipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.jobs_original = copy.deepcopy(app_config.jobs)
+
+    def tearDown(self):
+        app_config.jobs = self.jobs_original
+
+    def _seed_job(self, job_id="job-1"):
+        app_config.jobs[job_id] = {
+            "status": "running",
+            "steps": [
+                {"name": "Transferring", "progress": 0},
+                {"name": "Inference", "progress": 0},
+                {"name": "Saving", "progress": 0},
+            ],
+            "updated_at": 0,
+        }
+
+    def test_run_candle_sam3_video_predictor_writes_result_stack(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            volume_folder = Path(tmpdir) / "frames"
+            volume_folder.mkdir()
+
+            self._seed_job("job-1")
+            adapter = _StubCandleSam3Adapter(mask_value=128)
+            result_stack = np.zeros((3, 4, 6), dtype=np.uint8)
+            annotation_points = np.array(
+                [[3.0, 2.0, 0.0], [3.0, 2.0, 1.0], [3.0, 2.0, 2.0]], dtype=np.float32
+            )
+
+            asyncio.run(
+                app_pipeline.run_candle_sam3_video_predictor(
+                    adapter=adapter,
+                    volume_folder=volume_folder,
+                    annotation_points=annotation_points,
+                    input_shape=(3, 4, 6),
+                    result_stack=result_stack,
+                    job_id="job-1",
+                )
+            )
+
+            self.assertIsNotNone(adapter.captured_video_call)
+            call = adapter.captured_video_call
+            self.assertEqual(call["num_frames"], 3)
+            self.assertEqual(call["video_path"], volume_folder)
+            # Seed point is from frame 0: x=3/6=0.5, y=2/4=0.5
+            self.assertAlmostEqual(call["seed_point"].x, 0.5, places=4)
+            self.assertAlmostEqual(call["seed_point"].y, 0.5, places=4)
+            self.assertEqual(call["seed_point"].label, 1)
+            # All frames written to result_stack
+            np.testing.assert_array_equal(
+                result_stack[0], np.full((4, 6), 128, dtype=np.uint8)
+            )
+            self.assertEqual(app_config.jobs["job-1"]["steps"][1]["progress"], 100)
+
+    def test_run_candle_sam3_video_predictor_resizes_if_wrong_shape(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            volume_folder = Path(tmpdir) / "frames"
+            volume_folder.mkdir()
+
+            self._seed_job("job-1")
+            # Adapter returns 4x6 masks but input_shape says 8x12
+            adapter = _StubCandleSam3Adapter(mask_value=255)
+            result_stack = np.zeros((1, 8, 12), dtype=np.uint8)
+            annotation_points = np.array([[6.0, 4.0, 0.0]], dtype=np.float32)
+
+            asyncio.run(
+                app_pipeline.run_candle_sam3_video_predictor(
+                    adapter=adapter,
+                    volume_folder=volume_folder,
+                    annotation_points=annotation_points,
+                    input_shape=(1, 8, 12),
+                    result_stack=result_stack,
+                    job_id="job-1",
+                )
+            )
+
+            self.assertEqual(result_stack[0].shape, (8, 12))
+            np.testing.assert_array_equal(
+                result_stack[0], np.full((8, 12), 255, dtype=np.uint8)
+            )
+
+    def test_run_pipeline_candle_sam3_video_dispatches_to_video_runner(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("backend.app.pipeline.pipeline.config.INTERNAL_VOLUME_PATH", tmpdir):
+                plugin_root = Path(tmpdir, app_config.PLUGIN_NAME)
+                plugin_root.mkdir(parents=True, exist_ok=True)
+                source = plugin_root / "input.tif"
+                tf.imwrite(source, np.zeros((2, 3, 4), dtype=np.uint8))
+
+                self._seed_job("job-1")
+                pool = _RecordingPool()
+
+                with patch("backend.app.pipeline.pipeline.Pool", return_value=pool), patch(
+                    "backend.app.pipeline.pipeline.copy_to_volume",
+                    new=AsyncMock(return_value=(True, "")),
+                ), patch(
+                    "backend.app.pipeline.pipeline.copy_to_host",
+                    new=AsyncMock(return_value=(True, "")),
+                ), patch(
+                    "backend.app.pipeline.pipeline.get_predictor",
+                    return_value=_StubCandleSam3Adapter(),
+                ), patch(
+                    "backend.app.pipeline.pipeline.load_annotation_points",
+                    return_value=np.array([[1.0, 1.0, 0.0]], dtype=np.float32),
+                ), patch(
+                    "backend.app.pipeline.pipeline.run_candle_sam3_video_predictor",
+                    new=AsyncMock(),
+                ) as mock_candle_video, patch(
+                    "backend.app.pipeline.pipeline.run_candle_sam3_image_predictor",
+                    new=AsyncMock(),
+                ) as mock_candle_image, patch(
+                    "backend.app.pipeline.pipeline.run_image_predictor",
+                    new=AsyncMock(),
+                ) as mock_image, patch(
+                    "backend.app.pipeline.pipeline.run_video_predictor",
+                    new=AsyncMock(),
+                ) as mock_video, patch(
+                    "backend.app.pipeline.pipeline.asyncio.sleep",
+                    new=AsyncMock(),
+                ), patch("backend.app.pipeline.pipeline.shutil.rmtree"), patch(
+                    "backend.app.pipeline.pipeline.time.time",
+                    return_value=789.0,
+                ):
+                    asyncio.run(
+                        app_pipeline.run_pipeline(
+                            "job-1",
+                            "/host/input.tif",
+                            "/host/output.tif",
+                            "candle_sam3",
+                            "VideoPredictor",
+                        )
+                    )
+
+                self.assertEqual(app_config.jobs["job-1"]["status"], "completed")
+                mock_candle_video.assert_awaited_once()
+                mock_candle_image.assert_not_awaited()
                 mock_image.assert_not_awaited()
                 mock_video.assert_not_awaited()
 
