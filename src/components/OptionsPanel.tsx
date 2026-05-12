@@ -407,7 +407,8 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                                     <option value="sam2_hiera_large">SAM2 Large</option>
                                 </optgroup>
                                 <optgroup label="SAM 3">
-                                    <option value="sam3">SAM3</option>
+                                    <option value="sam3">SAM3 (Python)</option>
+                                    <option value="candle_sam3">SAM3 (Candle / Rust)</option>
                                 </optgroup>
                             </select>
                         </div>
