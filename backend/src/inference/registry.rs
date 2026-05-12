@@ -3,6 +3,7 @@ use std::collections::HashSet;
 #[derive(Debug)]
 pub struct ModelRegistry {
     supported_models: HashSet<&'static str>,
+    ready: bool,
 }
 
 impl ModelRegistry {
@@ -15,11 +16,18 @@ impl ModelRegistry {
             "sam3",
         ]);
 
-        Self { supported_models }
+        Self {
+            supported_models,
+            ready: false,
+        }
+    }
+
+    pub fn mark_ready(&mut self) {
+        self.ready = true;
     }
 
     pub fn runtime_ready(&self) -> bool {
-        false
+        self.ready
     }
 
     pub fn supports_model(&self, model_name: &str) -> bool {
