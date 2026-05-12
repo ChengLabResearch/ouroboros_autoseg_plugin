@@ -152,7 +152,7 @@ async fn prepare_generates_default_annotations_for_missing_metadata() {
 }
 
 #[tokio::test]
-async fn run_stages_frames_before_returning_inference_stub() {
+async fn run_requires_sam3_model_before_staging() {
     let root = unique_temp_dir();
     let state = test_state(root.clone());
     let plugin_root = state.config().plugin_root();
@@ -161,12 +161,12 @@ async fn run_stages_frames_before_returning_inference_stub() {
 
     let error = run(&state, "job-1", &sample_request("ImagePredictor"))
         .await
-        .expect_err("pipeline should still be inference stubbed");
+        .expect_err("run without loaded model should fail");
 
-    assert_eq!(
-        error.to_string(),
-        "Rust TIFF staging and prompt plumbing are wired, but Candle inference is not wired yet"
+    assert!(
+        error.to_string().contains("SAM3 model not loaded"),
+        "unexpected error: {error}"
     );
-    assert!(plugin_root.join("input-stack_temp").join("0.tif").exists());
-    assert!(plugin_root.join("input-stack_temp").join("1.tif").exists());
+    // Staging should not have happened since the model check is first.
+    assert!(!plugin_root.join("input-stack_temp").exists());
 }

@@ -1,13 +1,22 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use crate::{
-    app_state::AppState,
+    app_state::{AppState, Sam3ModelHandle},
     domain::{paths::parse_mixed_path, requests::ProcessRequest},
     error::AppError,
     imaging::{
-        annotations::{default_annotations, AnnotationPoint, VolumeShape},
+        annotations::{
+            annotation_samples_for_video, default_annotations, interpolated_point_for_frame,
+            AnnotationPoint, VolumeShape,
+        },
+        output::write_mask_stack,
         preprocess::{stage_input_frames, PreparedFrame, PreparedFrameEncoding},
         tiff_io::{inspect_volume, read_volume_frames, VolumeInput},
+    },
+    inference::{
+        candle_sam3::{CandleSam3ImageSegmenter, CandleSam3VideoSegmenter},
+        image::{FrameMask, ImageSegmenter},
+        video::VideoSegmenter,
     },
     services::volume::VolumeFileMapping,
 };
@@ -100,12 +109,11 @@ pub async fn prepare(
 pub async fn run(state: &AppState, job_id: &str, request: &ProcessRequest) -> Result<(), AppError> {
     request.validate()?;
 
-    let plan = plan(state, request)?;
-    if !plan.volume_source.exists() {
-        return Err(AppError::not_implemented(
-            "Rust TIFF staging and prompt plumbing are wired, but volume transfer and Candle inference are not wired yet",
-        ));
-    }
+    let handle = state.sam3_handle().await.ok_or_else(|| {
+        AppError::not_implemented("SAM3 model not loaded — download sam3.pt first")
+    })?;
+
+    state.update_job_step(job_id, 0, 5).await;
 
     let prepared = prepare(state, request).await?;
     if prepared.plan.temp_volume_dir.exists() {
@@ -113,11 +121,55 @@ pub async fn run(state: &AppState, job_id: &str, request: &ProcessRequest) -> Re
     }
     tokio::fs::create_dir_all(&prepared.plan.temp_volume_dir).await?;
     stage_input_frames(&prepared.staged_frames).await?;
-    state.update_job_step(job_id, 1, 5).await;
+    state.update_job_step(job_id, 1, 30).await;
 
-    Err(AppError::not_implemented(
-        "Rust TIFF staging and prompt plumbing are wired, but Candle inference is not wired yet",
-    ))
+    let masks = match request.predictor_type.as_str() {
+        "ImagePredictor" => run_image_predictor(&handle, &prepared).await?,
+        "VideoPredictor" => run_video_predictor(&handle, &prepared).await?,
+        _ => unreachable!("validated by ProcessRequest::validate"),
+    };
+    state.update_job_step(job_id, 2, 70).await;
+
+    if let Some(parent) = prepared.plan.volume_output.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    write_mask_stack(&prepared.plan.volume_output, &masks).await?;
+    tokio::fs::remove_dir_all(&prepared.plan.temp_volume_dir).await?;
+    state.update_job_step(job_id, 3, 100).await;
+
+    Ok(())
+}
+
+async fn run_image_predictor(
+    handle: &Arc<Sam3ModelHandle>,
+    prepared: &PreparedPipelineInput,
+) -> Result<Vec<FrameMask>, AppError> {
+    let segmenter = CandleSam3ImageSegmenter {
+        handle: handle.clone(),
+    };
+    let mut masks = Vec::with_capacity(prepared.staged_frames.len());
+    for (i, staged) in prepared.staged_frames.iter().enumerate() {
+        let prompts = interpolated_point_for_frame(&prepared.annotation_points, i)
+            .map(|p| vec![p])
+            .unwrap_or_default();
+        let mask = segmenter.segment(&staged.frame, &prompts).await?;
+        masks.push(mask);
+    }
+    Ok(masks)
+}
+
+async fn run_video_predictor(
+    handle: &Arc<Sam3ModelHandle>,
+    prepared: &PreparedPipelineInput,
+) -> Result<Vec<FrameMask>, AppError> {
+    let segmenter = CandleSam3VideoSegmenter {
+        handle: handle.clone(),
+    };
+    let video_prompts =
+        annotation_samples_for_video(&prepared.annotation_points, prepared.staged_frames.len());
+    segmenter
+        .segment_video(&prepared.plan.temp_volume_dir, &video_prompts)
+        .await
 }
 
 fn frame_name_width(frame_count: usize) -> usize {
