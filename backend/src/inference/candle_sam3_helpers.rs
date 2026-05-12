@@ -1,6 +1,7 @@
 use candle_core::{Device, Tensor};
 use candle_nn::ops;
 use candle_transformers::models::sam3;
+use image::GenericImageView;
 
 use crate::{
     error::AppError,
@@ -115,6 +116,82 @@ pub fn threshold_mask_logits_to_frame(
     let pixels: Vec<u8> = rows
         .iter()
         .flat_map(|row| row.iter().map(|&v| if v > 0.5 { 255 } else { 0 }))
+        .collect();
+    Ok(FrameMask {
+        width: out_width,
+        height: out_height,
+        pixels,
+    })
+}
+
+/// Read the pixel dimensions of the first sorted image file in `frames_dir`.
+/// Used by the video segmenter to normalise pixel-coord annotation points.
+pub fn first_frame_dimensions(frames_dir: &std::path::Path) -> Result<(usize, usize), AppError> {
+    let mut entries: Vec<_> = std::fs::read_dir(frames_dir)
+        .map_err(|e| AppError::internal(e.to_string()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| matches!(ext, "jpg" | "jpeg" | "png" | "tif" | "tiff"))
+                .unwrap_or(false)
+        })
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    let first = entries
+        .first()
+        .ok_or_else(|| AppError::bad_request("frames_dir contains no image files"))?;
+    let img = image::ImageReader::open(first.path())
+        .map_err(|e| AppError::internal(e.to_string()))?
+        .decode()
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    Ok((img.width() as usize, img.height() as usize))
+}
+
+/// Extract a binary `FrameMask` from the union of all tracked objects on a
+/// single video frame.  The `masks` tensor on each `ObjectFrameOutput` holds
+/// probability values; pixels where any object's probability > 0.5 become 255.
+pub fn video_frame_to_mask(
+    objects: &[candle_transformers::models::sam3::ObjectFrameOutput],
+    out_width: usize,
+    out_height: usize,
+) -> Result<FrameMask, AppError> {
+    if objects.is_empty() {
+        return Ok(FrameMask {
+            width: out_width,
+            height: out_height,
+            pixels: vec![0u8; out_width * out_height],
+        });
+    }
+    // Merge masks from all tracked objects (union).
+    let n = out_width * out_height;
+    let mut merged = vec![0.0f32; n];
+    for obj in objects {
+        let probs_2d = obj
+            .masks
+            .squeeze(0)
+            .or_else(|_| obj.masks.i(0))
+            .and_then(|t| t.squeeze(0).or_else(|_| Ok(t)))
+            .and_then(|t| {
+                t.upsample_bilinear2d(out_height, out_width, false)
+                    .or_else(|_| Ok(t))
+            })
+            .map_err(|e: candle_core::Error| AppError::internal(e.to_string()))?;
+        let flat = probs_2d
+            .flatten_all()
+            .map_err(|e| AppError::internal(e.to_string()))?
+            .to_vec1::<f32>()
+            .map_err(|e| AppError::internal(e.to_string()))?;
+        for (dst, src) in merged.iter_mut().zip(flat.iter()) {
+            if *src > *dst {
+                *dst = *src;
+            }
+        }
+    }
+    let pixels: Vec<u8> = merged
+        .iter()
+        .map(|&v| if v > 0.5 { 255 } else { 0 })
         .collect();
     Ok(FrameMask {
         width: out_width,

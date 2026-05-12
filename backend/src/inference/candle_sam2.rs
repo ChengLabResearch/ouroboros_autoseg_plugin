@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
@@ -39,7 +39,7 @@ impl ImageSegmenter for CandleSam2ImageSegmenter {
 impl VideoSegmenter for CandleSam2VideoSegmenter {
     async fn segment_video(
         &self,
-        _frame_count: usize,
+        _frames_dir: &Path,
         _prompts: &[VideoFramePrompt],
     ) -> Result<Vec<FrameMask>, AppError> {
         Err(AppError::not_implemented(format!(
