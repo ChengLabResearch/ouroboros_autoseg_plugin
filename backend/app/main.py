@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from .pipeline.pipeline import run_pipeline
 from .util import config, network
+from .util.candle_sam3 import CandleSam3Adapter
 from .util.util import DownloadRequest, ProcessRequest
 
 app = FastAPI()
@@ -87,6 +88,11 @@ async def get_model_status():
     for model_name in tracked_models:
         checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f"{model_name}.pt")
         statuses[model_name] = os.path.isfile(checkpoint_path)
+
+    sam3_checkpoint = os.path.join(config.CHECKPOINT_DIR, "sam3.pt")
+    statuses["candle_sam3"] = (
+        os.path.isfile(sam3_checkpoint) and CandleSam3Adapter().is_available()
+    )
 
     return {
         "checkpoint_dir": config.CHECKPOINT_DIR,

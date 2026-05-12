@@ -7,6 +7,7 @@ import requests
 import torch
 
 from . import config
+from .candle_sam3 import CandleSam3Adapter
 
 
 # --- Imports for SAM2/SAM3 ---
@@ -29,10 +30,16 @@ except ImportError as ie:
     Sam3Processor = None
 
 
+def _candle_sam3_available() -> bool:
+    """Return True when the candle-sam3 binary is configured and executable."""
+    return CandleSam3Adapter().is_available()
+
+
 def models_available() -> bool:
     return (
         (build_sam2 is not None and SAM2ImagePredictor is not None)
         or (build_sam3_video_predictor is not None and Sam3Processor is not None)
+        or _candle_sam3_available()
     )
 
 
@@ -214,6 +221,31 @@ def get_predictor(model_name: str, predictor_type: str):
             )
         else:
             raise ValueError(f"Unknown predictor type: {predictor_type}")
+
+    elif model_name == "candle_sam3":
+        if predictor_type != "ImagePredictor":
+            raise ValueError(
+                f"candle_sam3 currently supports only ImagePredictor (got {predictor_type})"
+            )
+
+        sam3_checkpoint = os.path.join(config.CHECKPOINT_DIR, "sam3.pt")
+        if not os.path.isfile(sam3_checkpoint):
+            raise FileNotFoundError(
+                f"SAM3 checkpoint not found at {sam3_checkpoint}. "
+                "Please use the 'Models' section to download it with your authentication token."
+            )
+
+        adapter = CandleSam3Adapter(
+            checkpoint_path=sam3_checkpoint,
+            tokenizer_path=os.getenv("SAM3_TOKENIZER_PATH"),
+            cpu=(device == "cpu"),
+        )
+        if not adapter.is_available():
+            raise FileNotFoundError(
+                f"candle-sam3 binary not found or not executable at {adapter.binary_path}. "
+                "Set SAM3_BINARY_PATH or install the binary."
+            )
+        config.loaded_predictor = adapter
 
     elif model_name.startswith("sam3"):
         if Sam3Processor is None:

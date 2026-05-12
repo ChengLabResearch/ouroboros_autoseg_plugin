@@ -8,12 +8,14 @@ from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import tifffile as tf
+from PIL import Image as PILImage
 
 _TEST_VOLUME_ROOT = tempfile.mkdtemp(prefix="ouroboros-test-volume-")
 os.environ["VOLUME_MOUNT_PATH"] = _TEST_VOLUME_ROOT
 
 from backend.app.pipeline import pipeline as app_pipeline  # noqa: E402
 from backend.app.util import config as app_config  # noqa: E402
+from backend.app.util.candle_sam3 import CandleSam3Adapter  # noqa: E402
 
 
 class _FakeImagePredictor:
@@ -577,6 +579,156 @@ class PipelineTests(unittest.TestCase):
 
                 self.assertEqual(app_config.jobs["job-1"]["status"], "error")
                 self.assertEqual(app_config.jobs["job-1"]["updated_at"], 203.0)
+
+
+class _StubCandleSam3Adapter(CandleSam3Adapter):
+    def __init__(self, mask_value: int = 255):
+        super().__init__(binary_path="/fake/sam3")
+        self.mask_value = mask_value
+        self.captured_jobs = None
+
+    def _run_binary(self, cmd):
+        return None
+
+    def predict_image_batch(self, jobs, output_dir, *, mask_filename="mask.png"):
+        self.captured_jobs = list(jobs)
+        return [
+            np.full((4, 6), self.mask_value, dtype=np.uint8) for _ in self.captured_jobs
+        ]
+
+
+class CandleSam3PipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.jobs_original = copy.deepcopy(app_config.jobs)
+
+    def tearDown(self):
+        app_config.jobs = self.jobs_original
+
+    def _seed_job(self, job_id="job-1"):
+        app_config.jobs[job_id] = {
+            "status": "running",
+            "steps": [
+                {"name": "Transferring", "progress": 0},
+                {"name": "Inference", "progress": 0},
+                {"name": "Saving", "progress": 0},
+            ],
+            "updated_at": 0,
+        }
+
+    def test_run_candle_sam3_image_predictor_resizes_and_writes_stack(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            volume_folder = Path(tmpdir) / "frames"
+            volume_folder.mkdir()
+            tf.imwrite(volume_folder / "000.tif", np.zeros((2, 2), dtype=np.uint8))
+            tf.imwrite(volume_folder / "001.tif", np.zeros((2, 2), dtype=np.uint8))
+
+            self._seed_job("job-1")
+            adapter = _StubCandleSam3Adapter()
+            result_stack = np.zeros((2, 3, 4), dtype=np.uint8)
+            annotation_points = np.array(
+                [[2.0, 1.0, 0.0], [2.0, 1.0, 1.0]], dtype=np.float32
+            )
+
+            asyncio.run(
+                app_pipeline.run_candle_sam3_image_predictor(
+                    adapter=adapter,
+                    volume_folder=volume_folder,
+                    annotation_points=annotation_points,
+                    input_shape=(2, 3, 4),
+                    result_stack=result_stack,
+                    job_id="job-1",
+                )
+            )
+
+            self.assertEqual(len(adapter.captured_jobs), 2)
+            np.testing.assert_array_equal(
+                result_stack[0], np.full((3, 4), 255, dtype=np.uint8)
+            )
+            np.testing.assert_array_equal(
+                result_stack[1], np.full((3, 4), 255, dtype=np.uint8)
+            )
+            self.assertEqual(app_config.jobs["job-1"]["steps"][1]["progress"], 100)
+
+            for i, job in enumerate(adapter.captured_jobs):
+                self.assertEqual(job.name, f"frame_{i:06d}")
+                self.assertEqual(len(job.points), 1)
+                self.assertAlmostEqual(job.points[0].x, 0.5, places=4)
+                self.assertAlmostEqual(job.points[0].y, 1.0 / 3.0, places=4)
+
+    def test_run_candle_sam3_image_predictor_raises_on_frame_count_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            volume_folder = Path(tmpdir) / "frames"
+            volume_folder.mkdir()
+            tf.imwrite(volume_folder / "000.tif", np.zeros((2, 2), dtype=np.uint8))
+
+            self._seed_job("job-1")
+
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(
+                    app_pipeline.run_candle_sam3_image_predictor(
+                        adapter=_StubCandleSam3Adapter(),
+                        volume_folder=volume_folder,
+                        annotation_points=np.array([[1.0, 1.0, 0.0]], dtype=np.float32),
+                        input_shape=(2, 2, 2),
+                        result_stack=np.zeros((2, 2, 2), dtype=np.uint8),
+                        job_id="job-1",
+                    )
+                )
+            self.assertIn("Frame count mismatch", str(ctx.exception))
+
+    def test_run_pipeline_candle_sam3_dispatches_to_candle_runner(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("backend.app.pipeline.pipeline.config.INTERNAL_VOLUME_PATH", tmpdir):
+                plugin_root = Path(tmpdir, app_config.PLUGIN_NAME)
+                plugin_root.mkdir(parents=True, exist_ok=True)
+                source = plugin_root / "input.tif"
+                tf.imwrite(source, np.zeros((2, 3, 4), dtype=np.uint8))
+
+                self._seed_job("job-1")
+                pool = _RecordingPool()
+
+                with patch("backend.app.pipeline.pipeline.Pool", return_value=pool), patch(
+                    "backend.app.pipeline.pipeline.copy_to_volume",
+                    new=AsyncMock(return_value=(True, "")),
+                ), patch(
+                    "backend.app.pipeline.pipeline.copy_to_host",
+                    new=AsyncMock(return_value=(True, "")),
+                ), patch(
+                    "backend.app.pipeline.pipeline.get_predictor",
+                    return_value=_StubCandleSam3Adapter(),
+                ), patch(
+                    "backend.app.pipeline.pipeline.load_annotation_points",
+                    return_value=np.array([[1.0, 1.0, 0.0]], dtype=np.float32),
+                ), patch(
+                    "backend.app.pipeline.pipeline.run_candle_sam3_image_predictor",
+                    new=AsyncMock(),
+                ) as mock_candle, patch(
+                    "backend.app.pipeline.pipeline.run_image_predictor",
+                    new=AsyncMock(),
+                ) as mock_image, patch(
+                    "backend.app.pipeline.pipeline.run_video_predictor",
+                    new=AsyncMock(),
+                ) as mock_video, patch(
+                    "backend.app.pipeline.pipeline.asyncio.sleep",
+                    new=AsyncMock(),
+                ), patch("backend.app.pipeline.pipeline.shutil.rmtree"), patch(
+                    "backend.app.pipeline.pipeline.time.time",
+                    return_value=789.0,
+                ):
+                    asyncio.run(
+                        app_pipeline.run_pipeline(
+                            "job-1",
+                            "/host/input.tif",
+                            "/host/output.tif",
+                            "candle_sam3",
+                            "ImagePredictor",
+                        )
+                    )
+
+                self.assertEqual(app_config.jobs["job-1"]["status"], "completed")
+                mock_candle.assert_awaited_once()
+                mock_image.assert_not_awaited()
+                mock_video.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -10,7 +10,10 @@ import traceback
 import numpy as np
 import tifffile as tf
 
+from PIL import Image as PILImage
+
 from ..util import config
+from ..util.candle_sam3 import CandleSam3Adapter, CandleSam3Job, CandleSam3Point
 from ..util.network import copy_to_host, copy_to_volume, get_predictor
 from ..util.util import (
     _annotation_point_for_frame,
@@ -132,6 +135,58 @@ async def run_video_predictor(
         raise
 
 
+async def run_candle_sam3_image_predictor(
+    adapter: CandleSam3Adapter,
+    volume_folder: Path,
+    annotation_points: np.ndarray,
+    input_shape: tuple[int, int, int],
+    result_stack: np.ndarray,
+    job_id: str,
+):
+    """
+    Drive a candle-sam3 image-batch run for every frame in ``volume_folder``
+    using the per-frame interpolated annotation point as the geometry prompt.
+
+    Each frame becomes one job in the batch manifest. The result mask is
+    binarized, resized to ``(H, W)`` if needed, and written into
+    ``result_stack`` at the matching index.
+    """
+    frame_paths = sorted(volume_folder.iterdir())
+    if len(frame_paths) != input_shape[0]:
+        raise RuntimeError(
+            f"Frame count mismatch: expected {input_shape[0]} from input_shape, "
+            f"found {len(frame_paths)} files in {volume_folder}"
+        )
+    height, width = int(input_shape[1]), int(input_shape[2])
+
+    jobs: list[CandleSam3Job] = []
+    for i, img_path in enumerate(frame_paths):
+        pt = _annotation_point_for_frame(annotation_points, i)[0]
+        x_norm, y_norm = CandleSam3Adapter.normalize_xy(
+            float(pt[0]), float(pt[1]), width=width, height=height
+        )
+        jobs.append(
+            CandleSam3Job(
+                name=f"frame_{i:06d}",
+                image=img_path,
+                points=[CandleSam3Point(x=x_norm, y=y_norm, label=1)],
+            )
+        )
+
+    output_dir = volume_folder.parent / f"{volume_folder.name}_candle_sam3_out"
+    masks = adapter.predict_image_batch(jobs, output_dir)
+
+    for i, mask in enumerate(masks):
+        if mask.shape != (height, width):
+            mask = np.asarray(
+                PILImage.fromarray(mask).resize((width, height), resample=PILImage.NEAREST)
+            )
+        result_stack[i] = mask
+        pct = int(((i + 1) / input_shape[0]) * 100)
+        update_step(job_id, 1, pct)
+        await asyncio.sleep(0.001)
+
+
 async def run_image_predictor(
     predictor,
     volume_folder: Path,
@@ -233,6 +288,7 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
         else:
             print(f"Loaded {len(annotation_points)} annotation points from TIFF metadata.")
 
+        use_candle_sam3 = model_type == "candle_sam3"
         with Pool(8) as pool:
             if predictor_type == "ImagePredictor":
                 pool.starmap(downsample, convert_args)
@@ -256,7 +312,16 @@ async def run_pipeline(job_id: str, host_path: str, output_path: str, model_type
 
         result_stack = np.zeros(input_shape, dtype=np.uint8)
 
-        if predictor_type == "VideoPredictor":
+        if use_candle_sam3:
+            await run_candle_sam3_image_predictor(
+                adapter=predictor,
+                volume_folder=volume_folder,
+                annotation_points=annotation_points,
+                input_shape=input_shape,
+                result_stack=result_stack,
+                job_id=job_id,
+            )
+        elif predictor_type == "VideoPredictor":
             await run_video_predictor(
                 predictor=predictor,
                 volume_folder=volume_folder,

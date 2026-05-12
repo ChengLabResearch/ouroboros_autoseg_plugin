@@ -201,6 +201,75 @@ class NetworkTests(unittest.TestCase):
             predictor = app_network.get_predictor("sam3", "ImagePredictor")
         self.assertEqual(predictor, ("sam3", "sam3-image-model"))
 
+    def test_get_predictor_candle_sam3_requires_image_predictor(self):
+        app_config.loaded_model_name = None
+        app_config.loaded_predictor = None
+        with self.assertRaises(ValueError) as ctx:
+            app_network.get_predictor("candle_sam3", "VideoPredictor")
+        self.assertIn("ImagePredictor", str(ctx.exception))
+
+    def test_get_predictor_candle_sam3_missing_checkpoint_raises(self):
+        app_config.loaded_model_name = None
+        app_config.loaded_predictor = None
+        with patch("backend.app.util.network.os.path.isfile", return_value=False):
+            with self.assertRaises(FileNotFoundError):
+                app_network.get_predictor("candle_sam3", "ImagePredictor")
+
+    def test_get_predictor_candle_sam3_missing_binary_raises(self):
+        app_config.loaded_model_name = None
+        app_config.loaded_predictor = None
+
+        class _UnavailableAdapter:
+            def __init__(self, *_, **__):
+                self.binary_path = "/missing/sam3"
+
+            def is_available(self):
+                return False
+
+        with patch("backend.app.util.network.os.path.isfile", return_value=True), patch(
+            "backend.app.util.network.CandleSam3Adapter",
+            _UnavailableAdapter,
+        ):
+            with self.assertRaises(FileNotFoundError) as ctx:
+                app_network.get_predictor("candle_sam3", "ImagePredictor")
+        self.assertIn("candle-sam3 binary", str(ctx.exception))
+
+    def test_get_predictor_candle_sam3_success_returns_adapter(self):
+        app_config.loaded_model_name = None
+        app_config.loaded_predictor = None
+
+        sentinel = object()
+
+        class _AvailableAdapter:
+            def __init__(self, *_, **__):
+                self.created = True
+
+            def is_available(self):
+                return True
+
+        # Patch the class to return our sentinel via init
+        def fake_ctor(*args, **kwargs):
+            return _AvailableAdapter(*args, **kwargs)
+
+        with patch("backend.app.util.network.os.path.isfile", return_value=True), patch(
+            "backend.app.util.network.CandleSam3Adapter",
+            side_effect=fake_ctor,
+        ) as mocked_adapter:
+            predictor = app_network.get_predictor("candle_sam3", "ImagePredictor")
+        self.assertTrue(getattr(predictor, "created", False))
+        mocked_adapter.assert_called_once()
+
+    def test_models_available_includes_candle_sam3(self):
+        with patch("backend.app.util.network.build_sam2", None), patch(
+            "backend.app.util.network.SAM2ImagePredictor", None
+        ), patch("backend.app.util.network.build_sam3_video_predictor", None), patch(
+            "backend.app.util.network.Sam3Processor", None
+        ), patch(
+            "backend.app.util.network._candle_sam3_available",
+            return_value=True,
+        ):
+            self.assertTrue(app_network.models_available())
+
 
 if __name__ == "__main__":
     unittest.main()
