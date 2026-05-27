@@ -1,5 +1,6 @@
 # ── Stage 1: build the Rust backend ──────────────────────────────────────────
-FROM rust:1.84-slim-bookworm AS builder
+# Rust 1.88+ is required by the locked image dependency; it also supports edition 2024 manifests.
+FROM rust:1.88-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     git \

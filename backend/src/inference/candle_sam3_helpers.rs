@@ -1,7 +1,6 @@
-use candle_core::{Device, Tensor};
+use candle_core::{Device, IndexOp, Tensor};
 use candle_nn::ops;
 use candle_transformers::models::sam3;
-use image::GenericImageView;
 
 use crate::{
     error::AppError,
