@@ -140,8 +140,8 @@ def download_file(url, dest):
 
 
 def download_sam3_checkpoint(model_name: str, hf_token: str, target_path: str):
-    repo_id = "facebook/sam3"
-    filename = f"{model_name}.pt"
+    repo_id = "ChongCong/Medical-SAM3"
+    filename = "checkpoint.pt"
     print(f"Fetching {filename} from Hugging Face...")
     cached_path = hf_hub_download(repo_id=repo_id, filename=filename, token=hf_token)
     shutil.copy(cached_path, target_path)
@@ -187,8 +187,7 @@ def get_predictor(model_name: str, predictor_type: str):
     print(f"Loading Model: {model_name} (Predictor: {predictor_type}) on {device}...")
 
     config.ensure_checkpoint_dir()
-    checkpoint_name = f"{model_name}.pt"
-    checkpoint_path = os.path.join(config.CHECKPOINT_DIR, checkpoint_name)
+    checkpoint_path = config.checkpoint_path(model_name)
 
     if model_name in config.SAM2_CONFIGS:
         if SAM2ImagePredictor is None:

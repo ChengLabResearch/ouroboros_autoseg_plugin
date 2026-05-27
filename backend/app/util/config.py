@@ -24,6 +24,10 @@ SAM2_URLS = {
     "sam2_hiera_large": "https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt",
 }
 
+CHECKPOINT_FILES = {
+    "sam3": "medical_sam3.pt",
+}
+
 
 def _running_in_docker() -> bool:
     return Path("/.dockerenv").exists() or os.getenv("RUNNING_IN_DOCKER") == "1"
@@ -75,6 +79,14 @@ def ensure_checkpoint_dir():
     Directory creation is deferred until checkpoint download/use-time.
     """
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+
+def checkpoint_filename(model_name: str) -> str:
+    return CHECKPOINT_FILES.get(model_name, f"{model_name}.pt")
+
+
+def checkpoint_path(model_name: str) -> str:
+    return os.path.join(CHECKPOINT_DIR, checkpoint_filename(model_name))
 
 
 def mark_initialization_complete():

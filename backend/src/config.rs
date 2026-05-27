@@ -52,10 +52,10 @@ const MODEL_CATALOG: &[ModelDescriptor] = &[
     },
     ModelDescriptor {
         model_name: "sam3",
-        checkpoint_file: "sam3.pt",
+        checkpoint_file: "medical_sam3.pt",
         download_source: DownloadSource::HuggingFace {
-            repo: "facebook/sam3",
-            filename: "sam3.pt",
+            repo: "ChongCong/Medical-SAM3",
+            filename: "checkpoint.pt",
         },
     },
 ];

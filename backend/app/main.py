@@ -85,7 +85,7 @@ async def get_model_status():
     tracked_models = ["sam2_hiera_base_plus", "sam3"]
     statuses = {}
     for model_name in tracked_models:
-        checkpoint_path = os.path.join(config.CHECKPOINT_DIR, f"{model_name}.pt")
+        checkpoint_path = config.checkpoint_path(model_name)
         statuses[model_name] = os.path.isfile(checkpoint_path)
 
     return {
@@ -120,7 +120,7 @@ async def download_model(req: DownloadRequest):
     try:
         model_name = req.model_type
         os.makedirs(config.CHECKPOINT_DIR, exist_ok=True)
-        target_path = os.path.join(config.CHECKPOINT_DIR, f"{model_name}.pt")
+        target_path = config.checkpoint_path(model_name)
 
         if os.path.isfile(target_path):
             print(f"Model {model_name} already exists.")

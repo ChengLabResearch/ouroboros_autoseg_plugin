@@ -38,7 +38,7 @@ class MainTests(unittest.TestCase):
 
     def test_get_model_status_reports_files(self):
         def fake_isfile(path):
-            return str(path).endswith("sam3.pt")
+            return str(path).endswith("medical_sam3.pt")
 
         with patch("backend.app.main.os.path.isfile", side_effect=fake_isfile):
             status = asyncio.run(main.get_model_status())

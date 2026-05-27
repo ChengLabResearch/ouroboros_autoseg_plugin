@@ -7,7 +7,10 @@ use super::{
     download_failure_message, download_model, model_status, partial_download_path,
     prepare_download_target,
 };
-use crate::{config::AppConfig, domain::requests::DownloadRequest};
+use crate::{
+    config::{AppConfig, DownloadSource},
+    domain::requests::DownloadRequest,
+};
 
 fn unique_temp_dir() -> PathBuf {
     let path = std::env::temp_dir().join(format!("ouroboros-rust-phase2-{}", Uuid::new_v4()));
@@ -35,7 +38,8 @@ async fn model_status_reports_existing_checkpoints() {
     let root = unique_temp_dir();
     let config = test_config("https://huggingface.co", root.clone());
     std::fs::create_dir_all(&config.checkpoint_dir).expect("checkpoint dir");
-    std::fs::write(config.checkpoint_dir.join("sam3.pt"), b"weights").expect("write checkpoint");
+    std::fs::write(config.checkpoint_dir.join("medical_sam3.pt"), b"weights")
+        .expect("write checkpoint");
 
     let status = model_status(&config).await.expect("status succeeds");
     assert_eq!(status.models.get("sam2_hiera_base_plus"), Some(&false));
@@ -101,7 +105,8 @@ async fn download_model_reports_existing_files() {
     let root = unique_temp_dir();
     let config = test_config("https://huggingface.co", root);
     std::fs::create_dir_all(&config.checkpoint_dir).expect("checkpoint dir");
-    std::fs::write(config.checkpoint_dir.join("sam3.pt"), b"weights").expect("write checkpoint");
+    std::fs::write(config.checkpoint_dir.join("medical_sam3.pt"), b"weights")
+        .expect("write checkpoint");
     let client = reqwest::Client::new();
 
     let response = download_model(
@@ -119,11 +124,29 @@ async fn download_model_reports_existing_files() {
 }
 
 #[test]
+fn sam3_descriptor_uses_medical_sam3_checkpoint() {
+    let root = unique_temp_dir();
+    let config = test_config("https://huggingface.co", root);
+    let descriptor = config
+        .model_descriptor("sam3")
+        .expect("sam3 descriptor should exist");
+
+    assert_eq!(descriptor.checkpoint_file, "medical_sam3.pt");
+    match descriptor.download_source {
+        DownloadSource::HuggingFace { repo, filename } => {
+            assert_eq!(repo, "ChongCong/Medical-SAM3");
+            assert_eq!(filename, "checkpoint.pt");
+        }
+        DownloadSource::PublicUrl(_) => panic!("sam3 should use Hugging Face"),
+    }
+}
+
+#[test]
 fn partial_download_path_appends_part_suffix() {
-    let target_path = PathBuf::from("/tmp/checkpoints/sam3.pt");
+    let target_path = PathBuf::from("/tmp/checkpoints/medical_sam3.pt");
     assert_eq!(
         partial_download_path(&target_path),
-        PathBuf::from("/tmp/checkpoints/sam3.pt.part")
+        PathBuf::from("/tmp/checkpoints/medical_sam3.pt.part")
     );
 }
 
