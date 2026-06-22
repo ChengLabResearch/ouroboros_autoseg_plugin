@@ -14,7 +14,7 @@ use crate::{
         tiff_io::{inspect_volume, read_volume_frames, VolumeInput},
     },
     inference::{
-        candle_sam3::{CandleSam3ImageSegmenter, CandleSam3VideoSegmenter},
+        candle_sam3::{load_sam3_handle, CandleSam3ImageSegmenter, CandleSam3VideoSegmenter},
         image::{FrameMask, ImageSegmenter},
         video::VideoSegmenter,
     },
@@ -109,9 +109,7 @@ pub async fn prepare(
 pub async fn run(state: &AppState, job_id: &str, request: &ProcessRequest) -> Result<(), AppError> {
     request.validate()?;
 
-    let handle = state.sam3_handle().await.ok_or_else(|| {
-        AppError::not_implemented("SAM3 model not loaded — download sam3.pt first")
-    })?;
+    let handle = model_handle_for_request(state, &request.model_type).await?;
 
     state.update_job_step(job_id, 0, 5).await;
 
@@ -138,6 +136,41 @@ pub async fn run(state: &AppState, job_id: &str, request: &ProcessRequest) -> Re
     state.update_job_step(job_id, 3, 100).await;
 
     Ok(())
+}
+
+async fn model_handle_for_request(
+    state: &AppState,
+    model_type: &str,
+) -> Result<Arc<Sam3ModelHandle>, AppError> {
+    let descriptor = state
+        .config()
+        .model_descriptor(model_type)
+        .ok_or_else(|| AppError::bad_request(format!("Unknown model type: {model_type}")))?;
+    if !matches!(descriptor.model_name, "sam3" | "medical_sam3") {
+        return Err(AppError::bad_request(format!(
+            "Unsupported SAM3 model type: {model_type}"
+        )));
+    }
+    if let Some(handle) = state.sam3_handle(descriptor.model_name).await {
+        return Ok(handle);
+    }
+
+    let checkpoint_path = state.config().checkpoint_path(descriptor.model_name);
+    if !checkpoint_path.exists() {
+        return Err(AppError::not_found(format!(
+            "SAM3 checkpoint missing — download {} first",
+            descriptor.checkpoint_file
+        )));
+    }
+
+    let model_name = descriptor.model_name.to_string();
+    let handle = tokio::task::spawn_blocking(move || {
+        load_sam3_handle(model_name, &checkpoint_path, candle_core::Device::Cpu)
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))??;
+
+    Ok(state.set_sam3_handle(handle).await)
 }
 
 async fn run_image_predictor(

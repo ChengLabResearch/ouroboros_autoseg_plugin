@@ -10,8 +10,8 @@ use crate::{
     imaging::tiff_io::ImageFrame,
     inference::{
         candle_sam3_helpers::{
-            build_geometry_prompt, first_frame_dimensions, frame_to_chw_tensor,
-            normalize_for_sam3, threshold_mask_logits_to_frame, video_frame_to_mask,
+            build_geometry_prompt, first_frame_dimensions, frame_to_chw_tensor, normalize_for_sam3,
+            threshold_mask_logits_to_frame, video_frame_to_mask,
         },
         image::{FrameMask, ImageSegmenter, PositivePointPrompt},
         video::{VideoFramePrompt, VideoSegmenter},
@@ -30,6 +30,7 @@ pub struct CandleSam3VideoSegmenter {
 
 /// Load SAM3 image and tracker models from a `.pt` checkpoint.
 pub fn load_sam3_handle(
+    model_name: String,
     checkpoint_path: &std::path::Path,
     device: candle_core::Device,
 ) -> Result<Sam3ModelHandle, AppError> {
@@ -38,9 +39,11 @@ pub fn load_sam3_handle(
     let image_model =
         sam3::Sam3ImageModel::from_checkpoint_source(&config, &source, DType::F32, &device)
             .map_err(|e| AppError::internal(e.to_string()))?;
-    let tracker = sam3::Sam3TrackerModel::from_checkpoint_source(&config, &source, DType::F32, &device)
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    let tracker =
+        sam3::Sam3TrackerModel::from_checkpoint_source(&config, &source, DType::F32, &device)
+            .map_err(|e| AppError::internal(e.to_string()))?;
     Ok(Sam3ModelHandle {
+        model_name,
         image_model: Arc::new(image_model),
         tracker: Arc::new(tracker),
         device,
@@ -74,7 +77,8 @@ fn run_image_inference(
 
     let chw = frame_to_chw_tensor(frame, device)?;
     let preprocessed = normalize_for_sam3(
-        &chw.unsqueeze(0).map_err(|e| AppError::internal(e.to_string()))?,
+        &chw.unsqueeze(0)
+            .map_err(|e| AppError::internal(e.to_string()))?,
         config.image.image_size,
         &config.image.image_mean,
         &config.image.image_std,
@@ -130,8 +134,8 @@ fn run_video_inference(
 ) -> Result<Vec<FrameMask>, AppError> {
     let (frame_width, frame_height) = first_frame_dimensions(frames_dir)?;
 
-    let source = sam3::VideoSource::from_path(frames_dir)
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    let source =
+        sam3::VideoSource::from_path(frames_dir).map_err(|e| AppError::internal(e.to_string()))?;
     let session_options = sam3::VideoSessionOptions {
         tokenizer_path: None,
         memory_profile: sam3::VideoMemoryProfile::LowMemory,
@@ -178,7 +182,14 @@ fn run_video_inference(
             box_labels: None,
         };
         predictor
-            .add_prompt(&session_id, vfp.frame_index, session_prompt, None, true, false)
+            .add_prompt(
+                &session_id,
+                vfp.frame_index,
+                session_prompt,
+                None,
+                true,
+                false,
+            )
             .map_err(|e| AppError::internal(e.to_string()))?;
     }
 

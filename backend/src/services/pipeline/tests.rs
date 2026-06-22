@@ -152,7 +152,7 @@ async fn prepare_generates_default_annotations_for_missing_metadata() {
 }
 
 #[tokio::test]
-async fn run_requires_sam3_model_before_staging() {
+async fn run_requires_downloaded_sam3_checkpoint_before_staging() {
     let root = unique_temp_dir();
     let state = test_state(root.clone());
     let plugin_root = state.config().plugin_root();
@@ -161,12 +161,12 @@ async fn run_requires_sam3_model_before_staging() {
 
     let error = run(&state, "job-1", &sample_request("ImagePredictor"))
         .await
-        .expect_err("run without loaded model should fail");
+        .expect_err("run without downloaded model should fail");
 
     assert!(
-        error.to_string().contains("SAM3 model not loaded"),
+        error.to_string().contains("SAM3 checkpoint missing"),
         "unexpected error: {error}"
     );
-    // Staging should not have happened since the model check is first.
+    // Staging should not have happened since the model availability check is first.
     assert!(!plugin_root.join("input-stack_temp").exists());
 }

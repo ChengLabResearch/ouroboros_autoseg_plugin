@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub struct Sam3ModelHandle {
+    pub model_name: String,
     pub image_model: Arc<sam3::Sam3ImageModel>,
     pub tracker: Arc<sam3::Sam3TrackerModel>,
     pub device: Device,
@@ -65,13 +66,19 @@ impl AppState {
         self.sam3_handle.read().await.is_some()
     }
 
-    pub async fn sam3_handle(&self) -> Option<Arc<Sam3ModelHandle>> {
-        self.sam3_handle.read().await.clone()
+    pub async fn sam3_handle(&self, model_name: &str) -> Option<Arc<Sam3ModelHandle>> {
+        self.sam3_handle
+            .read()
+            .await
+            .clone()
+            .filter(|handle| handle.model_name == model_name)
     }
 
-    pub async fn set_sam3_handle(&self, handle: Sam3ModelHandle) {
-        *self.sam3_handle.write().await = Some(Arc::new(handle));
+    pub async fn set_sam3_handle(&self, handle: Sam3ModelHandle) -> Arc<Sam3ModelHandle> {
+        let handle = Arc::new(handle);
+        *self.sam3_handle.write().await = Some(handle.clone());
         self.model_registry.lock().await.mark_ready();
+        handle
     }
 
     pub async fn create_job(&self, job_id: String) -> JobRecord {
