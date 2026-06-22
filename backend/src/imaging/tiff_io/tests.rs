@@ -47,6 +47,70 @@ async fn inspect_volume_reads_geometry_and_metadata_from_single_file() {
 }
 
 #[tokio::test]
+async fn inspect_volume_rejects_malformed_annotation_metadata_from_single_file() {
+    let root = unique_temp_dir();
+    let stack_path = root.join("stack.tif");
+    write_tiff_pages(
+        &stack_path,
+        &[WritableTiffPage {
+            width: 2,
+            height: 2,
+            channels: 1,
+            pixels: vec![0, 1, 2, 3],
+            description: Some(r#"{"annotation_points": [[1.0, 2.0]]}"#.to_string()),
+        }],
+    )
+    .expect("write stack");
+
+    let err = inspect_volume(&stack_path)
+        .await
+        .expect_err("malformed metadata should be rejected");
+    assert!(
+        err.to_string()
+            .contains("Malformed annotation_points metadata"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn inspect_volume_rejects_malformed_annotation_metadata_from_directory() {
+    let root = unique_temp_dir();
+    let frame_dir = root.join("frames");
+    std::fs::create_dir_all(&frame_dir).expect("create frame dir");
+    write_tiff_pages(
+        &frame_dir.join("00.tif"),
+        &[WritableTiffPage {
+            width: 2,
+            height: 2,
+            channels: 1,
+            pixels: vec![0, 1, 2, 3],
+            description: Some(r#"{"annotation_points": "center"}"#.to_string()),
+        }],
+    )
+    .expect("write malformed frame");
+    write_tiff_pages(
+        &frame_dir.join("01.tif"),
+        &[WritableTiffPage {
+            width: 2,
+            height: 2,
+            channels: 1,
+            pixels: vec![4, 5, 6, 7],
+            description: None,
+        }],
+    )
+    .expect("write frame");
+
+    let err = inspect_volume(&frame_dir)
+        .await
+        .expect_err("malformed metadata should be rejected");
+    assert!(
+        err.to_string()
+            .contains("Malformed annotation_points metadata"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
 async fn read_volume_frames_round_trips_written_tiff_pages() {
     let root = unique_temp_dir();
     let stack_path = root.join("stack.tif");

@@ -272,7 +272,7 @@ fn inspect_volume_sync(path: &Path) -> Result<VolumeInput, AppError> {
                 height: first_page.height,
                 width: first_page.width,
             },
-            annotation_points: parse_annotation_points(first_page.description.as_deref()),
+            annotation_points: parse_annotation_points(first_page.description.as_deref())?,
         })
     } else {
         let parsed = read_tiff_file(path)?;
@@ -288,7 +288,7 @@ fn inspect_volume_sync(path: &Path) -> Result<VolumeInput, AppError> {
                 height: first_page.height,
                 width: first_page.width,
             },
-            annotation_points: parse_annotation_points(first_page.description.as_deref()),
+            annotation_points: parse_annotation_points(first_page.description.as_deref())?,
         })
     }
 }
@@ -338,28 +338,78 @@ fn matches_tiff_extension(path: &Path) -> bool {
     )
 }
 
-fn parse_annotation_points(description: Option<&str>) -> Option<Vec<AnnotationPoint>> {
-    let description = description?;
-    let metadata: Value = serde_json::from_str(description).ok()?;
-    let rows = metadata.get("annotation_points")?.as_array()?;
+fn parse_annotation_points(
+    description: Option<&str>,
+) -> Result<Option<Vec<AnnotationPoint>>, AppError> {
+    let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let metadata: Value = match serde_json::from_str(description) {
+        Ok(value) => value,
+        Err(err) if description.contains("annotation_points") => {
+            return Err(annotation_metadata_error(format!(
+                "ImageDescription contains annotation_points but is not valid JSON: {err}"
+            )));
+        }
+        Err(_) => return Ok(None),
+    };
+    let Some(rows_value) = metadata.get("annotation_points") else {
+        return Ok(None);
+    };
+    let rows = rows_value.as_array().ok_or_else(|| {
+        annotation_metadata_error("annotation_points must be an array of [x, y, z] rows")
+    })?;
     if rows.is_empty() {
-        return None;
+        return Err(annotation_metadata_error(
+            "annotation_points must contain at least one [x, y, z] row",
+        ));
     }
 
     let mut points = Vec::with_capacity(rows.len());
-    for row in rows {
-        let values = row.as_array()?;
-        if values.len() < 3 {
-            return None;
+    for (row_index, row) in rows.iter().enumerate() {
+        let values = row.as_array().ok_or_else(|| {
+            annotation_metadata_error(format!(
+                "annotation_points[{row_index}] must be an [x, y, z] array"
+            ))
+        })?;
+        if values.len() != 3 {
+            return Err(annotation_metadata_error(format!(
+                "annotation_points[{row_index}] must contain exactly three coordinates: x, y, z"
+            )));
         }
         points.push(AnnotationPoint {
-            x: values[0].as_f64()? as f32,
-            y: values[1].as_f64()? as f32,
-            z: values[2].as_f64()? as f32,
+            x: parse_annotation_coordinate(&values[0], row_index, "x")?,
+            y: parse_annotation_coordinate(&values[1], row_index, "y")?,
+            z: parse_annotation_coordinate(&values[2], row_index, "z")?,
         });
     }
 
-    Some(points)
+    Ok(Some(points))
+}
+
+fn parse_annotation_coordinate(
+    value: &Value,
+    row_index: usize,
+    axis: &str,
+) -> Result<f32, AppError> {
+    let value = value.as_f64().ok_or_else(|| {
+        annotation_metadata_error(format!(
+            "annotation_points[{row_index}].{axis} must be a number"
+        ))
+    })? as f32;
+    if !value.is_finite() {
+        return Err(annotation_metadata_error(format!(
+            "annotation_points[{row_index}].{axis} must be finite"
+        )));
+    }
+    Ok(value)
+}
+
+fn annotation_metadata_error(message: impl Into<String>) -> AppError {
+    AppError::bad_request(format!(
+        "Malformed annotation_points metadata: {}",
+        message.into()
+    ))
 }
 
 fn read_tiff_file(path: &Path) -> Result<ParsedTiff, AppError> {
