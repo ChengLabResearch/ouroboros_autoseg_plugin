@@ -15,6 +15,9 @@ __pycache__
 .venv
 target
 backend/target
+.docker-build-status.json
+sam2_hiera_base_plus.pt
+sam2_heira_base_plus.pt
 
 # Editor directories and files
 .vscode/*
