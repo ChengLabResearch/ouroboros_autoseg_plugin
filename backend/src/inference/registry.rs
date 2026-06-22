@@ -14,7 +14,7 @@ impl ModelRegistry {
             "sam2_hiera_base_plus",
             "sam2_hiera_large",
             "sam3",
-            "candle_sam3",
+            "medical_sam3",
         ]);
 
         Self {

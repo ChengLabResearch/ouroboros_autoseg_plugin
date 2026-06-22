@@ -43,8 +43,8 @@ class MainTests(unittest.TestCase):
         with patch("backend.app.main.os.path.isfile", side_effect=fake_isfile):
             status = asyncio.run(main.get_model_status())
         self.assertIn("checkpoint_dir", status)
-        self.assertEqual(status["models"]["sam2_hiera_base_plus"], False)
-        self.assertEqual(status["models"]["sam3"], True)
+        self.assertEqual(status["models"]["sam3"], False)
+        self.assertEqual(status["models"]["medical_sam3"], True)
 
     def test_refresh_startup_status_completed(self):
         app_config.startup_status = {
@@ -131,8 +131,21 @@ class MainTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         mocked_download.assert_called_once()
 
-    def test_download_model_sam3_success(self):
+    def test_download_model_official_sam3_success(self):
         req = DownloadRequest(model_type="sam3", hf_token="token")
+        with patch("backend.app.main.os.makedirs"), patch(
+            "backend.app.main.os.path.isfile",
+            return_value=False,
+        ), patch(
+            "backend.app.main.os.path.isdir",
+            return_value=False,
+        ), patch("backend.app.main.network.download_sam3_checkpoint") as mocked_download:
+            result = asyncio.run(main.download_model(req))
+        self.assertEqual(result["status"], "success")
+        mocked_download.assert_called_once()
+
+    def test_download_model_medical_sam3_without_token_success(self):
+        req = DownloadRequest(model_type="medical_sam3")
         with patch("backend.app.main.os.makedirs"), patch(
             "backend.app.main.os.path.isfile",
             return_value=False,
@@ -156,7 +169,7 @@ class MainTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as ctx:
                 asyncio.run(main.download_model(req))
         self.assertEqual(ctx.exception.status_code, 500)
-        self.assertIn("Authentication Token required for SAM 3", str(ctx.exception.detail))
+        self.assertIn("Authentication Token required for SAM3 (Official)", str(ctx.exception.detail))
 
     def test_download_model_sam3_download_failure_raises_http_500(self):
         req = DownloadRequest(model_type="sam3", hf_token="token")

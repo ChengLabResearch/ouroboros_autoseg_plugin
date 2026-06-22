@@ -139,11 +139,13 @@ def download_file(url, dest):
         raise Exception(f"Failed to download checkpoint: {response.status_code}")
 
 
-def download_sam3_checkpoint(model_name: str, hf_token: str, target_path: str):
-    repo_id = "ChongCong/Medical-SAM3"
-    filename = "checkpoint.pt"
+def download_sam3_checkpoint(model_name: str, hf_token: str | None, target_path: str):
+    source = config.SAM3_SOURCES[model_name]
+    repo_id = source["repo_id"]
+    filename = source["filename"]
+    token = hf_token if source["requires_token"] else None
     print(f"Fetching {filename} from Hugging Face...")
-    cached_path = hf_hub_download(repo_id=repo_id, filename=filename, token=hf_token)
+    cached_path = hf_hub_download(repo_id=repo_id, filename=filename, token=token)
     shutil.copy(cached_path, target_path)
 
 
@@ -214,14 +216,14 @@ def get_predictor(model_name: str, predictor_type: str):
         else:
             raise ValueError(f"Unknown predictor type: {predictor_type}")
 
-    elif model_name.startswith("sam3"):
+    elif model_name in config.SAM3_SOURCES:
         if Sam3Processor is None:
             raise ImportError("SAM3 library not found/installed")
 
         if not os.path.isfile(checkpoint_path):
             raise FileNotFoundError(
                 f"SAM3 checkpoint not found at {checkpoint_path}. "
-                "Please use the 'Models' section to download it with your authentication token."
+                "Please use the 'Models' section to download it first."
             )
 
         if predictor_type == "ImagePredictor":

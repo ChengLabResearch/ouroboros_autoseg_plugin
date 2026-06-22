@@ -11,6 +11,7 @@ pub enum DownloadSource {
     HuggingFace {
         repo: &'static str,
         filename: &'static str,
+        requires_token: bool,
     },
 }
 
@@ -52,15 +53,25 @@ const MODEL_CATALOG: &[ModelDescriptor] = &[
     },
     ModelDescriptor {
         model_name: "sam3",
+        checkpoint_file: "sam3.pt",
+        download_source: DownloadSource::HuggingFace {
+            repo: "facebook/sam3",
+            filename: "sam3.pt",
+            requires_token: true,
+        },
+    },
+    ModelDescriptor {
+        model_name: "medical_sam3",
         checkpoint_file: "medical_sam3.pt",
         download_source: DownloadSource::HuggingFace {
             repo: "ChongCong/Medical-SAM3",
             filename: "checkpoint.pt",
+            requires_token: false,
         },
     },
 ];
 
-const TRACKED_MODEL_STATUS: &[&str] = &["sam2_hiera_base_plus", "sam3"];
+const TRACKED_MODEL_STATUS: &[&str] = &["sam3", "medical_sam3"];
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {

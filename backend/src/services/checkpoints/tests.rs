@@ -42,8 +42,8 @@ async fn model_status_reports_existing_checkpoints() {
         .expect("write checkpoint");
 
     let status = model_status(&config).await.expect("status succeeds");
-    assert_eq!(status.models.get("sam2_hiera_base_plus"), Some(&false));
-    assert_eq!(status.models.get("sam3"), Some(&true));
+    assert_eq!(status.models.get("sam3"), Some(&false));
+    assert_eq!(status.models.get("medical_sam3"), Some(&true));
 }
 
 #[tokio::test]
@@ -97,7 +97,10 @@ async fn download_model_rejects_missing_hf_token() {
     .await
     .expect_err("missing token should fail");
 
-    assert_eq!(error.to_string(), "Authentication Token required for SAM 3");
+    assert_eq!(
+        error.to_string(),
+        "Authentication Token required for SAM3 (Official)"
+    );
 }
 
 #[tokio::test]
@@ -113,8 +116,8 @@ async fn download_model_reports_existing_files() {
         &config,
         &client,
         &DownloadRequest {
-            model_type: "sam3".to_string(),
-            hf_token: Some("hf_token".to_string()),
+            model_type: "medical_sam3".to_string(),
+            hf_token: None,
         },
     )
     .await
@@ -124,20 +127,48 @@ async fn download_model_reports_existing_files() {
 }
 
 #[test]
-fn sam3_descriptor_uses_medical_sam3_checkpoint() {
+fn sam3_descriptor_uses_official_checkpoint() {
     let root = unique_temp_dir();
     let config = test_config("https://huggingface.co", root);
     let descriptor = config
         .model_descriptor("sam3")
         .expect("sam3 descriptor should exist");
 
-    assert_eq!(descriptor.checkpoint_file, "medical_sam3.pt");
+    assert_eq!(descriptor.checkpoint_file, "sam3.pt");
     match descriptor.download_source {
-        DownloadSource::HuggingFace { repo, filename } => {
-            assert_eq!(repo, "ChongCong/Medical-SAM3");
-            assert_eq!(filename, "checkpoint.pt");
+        DownloadSource::HuggingFace {
+            repo,
+            filename,
+            requires_token,
+        } => {
+            assert_eq!(repo, "facebook/sam3");
+            assert_eq!(filename, "sam3.pt");
+            assert!(requires_token);
         }
         DownloadSource::PublicUrl(_) => panic!("sam3 should use Hugging Face"),
+    }
+}
+
+#[test]
+fn medical_sam3_descriptor_uses_public_medical_checkpoint() {
+    let root = unique_temp_dir();
+    let config = test_config("https://huggingface.co", root);
+    let descriptor = config
+        .model_descriptor("medical_sam3")
+        .expect("medical_sam3 descriptor should exist");
+
+    assert_eq!(descriptor.checkpoint_file, "medical_sam3.pt");
+    match descriptor.download_source {
+        DownloadSource::HuggingFace {
+            repo,
+            filename,
+            requires_token,
+        } => {
+            assert_eq!(repo, "ChongCong/Medical-SAM3");
+            assert_eq!(filename, "checkpoint.pt");
+            assert!(!requires_token);
+        }
+        DownloadSource::PublicUrl(_) => panic!("medical_sam3 should use Hugging Face"),
     }
 }
 

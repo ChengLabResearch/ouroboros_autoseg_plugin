@@ -25,8 +25,24 @@ SAM2_URLS = {
 }
 
 CHECKPOINT_FILES = {
-    "sam3": "medical_sam3.pt",
+    "sam3": "sam3.pt",
+    "medical_sam3": "medical_sam3.pt",
 }
+
+SAM3_SOURCES = {
+    "sam3": {
+        "repo_id": "facebook/sam3",
+        "filename": "sam3.pt",
+        "requires_token": True,
+    },
+    "medical_sam3": {
+        "repo_id": "ChongCong/Medical-SAM3",
+        "filename": "checkpoint.pt",
+        "requires_token": False,
+    },
+}
+
+TRACKED_MODELS = ["sam3", "medical_sam3"]
 
 
 def _running_in_docker() -> bool:

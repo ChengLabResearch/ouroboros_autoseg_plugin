@@ -55,14 +55,22 @@ pub async fn download_model(
         DownloadSource::PublicUrl(url) => {
             download_to_path(client, url, None, &target_path).await?;
         }
-        DownloadSource::HuggingFace { repo, filename } => {
+        DownloadSource::HuggingFace {
+            repo,
+            filename,
+            requires_token,
+        } => {
             let token = request
                 .hf_token
                 .as_deref()
-                .filter(|token| !token.trim().is_empty())
-                .ok_or_else(|| AppError::bad_request("Authentication Token required for SAM 3"))?;
+                .filter(|token| !token.trim().is_empty());
+            if requires_token && token.is_none() {
+                return Err(AppError::bad_request(
+                    "Authentication Token required for SAM3 (Official)",
+                ));
+            }
             let url = config.huggingface_resolve_url(repo, filename);
-            download_to_path(client, &url, Some(token), &target_path).await?;
+            download_to_path(client, &url, token, &target_path).await?;
         }
     }
 

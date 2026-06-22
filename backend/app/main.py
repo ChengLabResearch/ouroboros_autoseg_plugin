@@ -82,9 +82,8 @@ async def get_model_status():
     dict
         Availability flags per model and checkpoint directory path.
     """
-    tracked_models = ["sam2_hiera_base_plus", "sam3"]
     statuses = {}
-    for model_name in tracked_models:
+    for model_name in config.TRACKED_MODELS:
         checkpoint_path = config.checkpoint_path(model_name)
         statuses[model_name] = os.path.isfile(checkpoint_path)
 
@@ -142,9 +141,10 @@ async def download_model(req: DownloadRequest):
             return {"status": "success", "message": f"Downloaded {model_name}"}
 
         # SAM 3 Download
-        elif model_name.startswith("sam3"):
-            if not req.hf_token:
-                raise HTTPException(400, "Authentication Token required for SAM 3")
+        elif model_name in config.SAM3_SOURCES:
+            source = config.SAM3_SOURCES[model_name]
+            if source["requires_token"] and not req.hf_token:
+                raise HTTPException(400, "Authentication Token required for SAM3 (Official)")
 
             try:
                 network.download_sam3_checkpoint(model_name, req.hf_token, target_path)
