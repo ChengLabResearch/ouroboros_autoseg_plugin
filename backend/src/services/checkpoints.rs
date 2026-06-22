@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use futures_util::StreamExt;
@@ -14,6 +15,8 @@ use crate::{
     },
     error::AppError,
 };
+
+const CHECKPOINT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 pub async fn model_status(config: &AppConfig) -> Result<ModelStatusResponse, AppError> {
     let mut models = HashMap::new();
@@ -88,7 +91,7 @@ async fn download_to_path(
 ) -> Result<(), AppError> {
     let partial_path = prepare_download_target(target_path).await?;
 
-    let mut request = client.get(url);
+    let mut request = client.get(url).timeout(CHECKPOINT_DOWNLOAD_TIMEOUT);
     if let Some(token) = bearer_token {
         request = request.bearer_auth(token);
     }
