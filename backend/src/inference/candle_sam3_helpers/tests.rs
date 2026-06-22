@@ -1,4 +1,4 @@
-use candle_core::{Device, DType, Tensor};
+use candle_core::{Device, Tensor};
 
 use crate::{imaging::tiff_io::ImageFrame, inference::image::PositivePointPrompt};
 
@@ -60,9 +60,9 @@ fn normalize_for_sam3_subtracts_mean() {
     let mean = [0.485, 0.456, 0.406];
     let std = [1.0, 1.0, 1.0]; // unit std so only mean subtraction is tested
     let result = normalize_for_sam3(&input, 4, &mean, &std, &Device::Cpu).unwrap();
-    let vals = result.to_vec4::<f32>().unwrap();
+    let vals = result.flatten_all().unwrap().to_vec1::<f32>().unwrap();
     // Channel 0 should be ~0, channels 1 and 2 non-zero
-    assert!(vals[0][0][0][0].abs() < 1e-4);
+    assert!(vals[0].abs() < 1e-4);
 }
 
 #[test]
@@ -132,7 +132,6 @@ fn threshold_mask_logits_upsample_to_larger_output() {
 
 #[test]
 fn first_frame_dimensions_reads_jpeg_in_temp_dir() {
-    use std::io::Write;
     let dir = tempfile::tempdir().unwrap();
     // Write a tiny 3×2 JPEG to the temp dir.
     let img = image::RgbImage::new(3, 2);
