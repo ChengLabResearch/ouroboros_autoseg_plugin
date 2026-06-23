@@ -19,7 +19,7 @@ type Props = {
 export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) {
     const [fp, setFp] = useState('');
     const [outFp, setOutFp] = useState('');
-    const [model, setModel] = useState('sam2_hiera_base_plus');
+    const [model, setModel] = useState('sam3');
     const [predictor, setPredictor] = useState('ImagePredictor');
     const [overlayAnnotationPoints, setOverlayAnnotationPoints] = useState(false);
     const [token, setToken] = useState('');
@@ -27,8 +27,8 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
     const outputFileRef = useRef<HTMLInputElement | null>(null);
 
     type DownloadState = 'idle' | 'downloading' | 'downloaded' | 'error';
-    const [sam2State, setSam2State] = useState<DownloadState>('idle');
-    const [sam3State, setSam3State] = useState<DownloadState>('idle');
+    const [officialSam3State, setOfficialSam3State] = useState<DownloadState>('idle');
+    const [medicalSam3State, setMedicalSam3State] = useState<DownloadState>('idle');
 
     const normalizeFileUri = (uri: string): string => {
         let cleaned = uri.trim();
@@ -283,8 +283,8 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                 return;
             }
             const data = await res.json();
-            setSam2State(data?.models?.sam2_hiera_base_plus ? 'downloaded' : 'idle');
-            setSam3State(data?.models?.sam3 ? 'downloaded' : 'idle');
+            setOfficialSam3State(data?.models?.sam3 ? 'downloaded' : 'idle');
+            setMedicalSam3State(data?.models?.medical_sam3 ? 'downloaded' : 'idle');
         } catch (e) {
             console.error('Failed to fetch model status:', e);
         }
@@ -292,8 +292,8 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
 
     useEffect(() => {
         if (!connected) {
-            setSam2State('idle');
-            setSam3State('idle');
+            setOfficialSam3State('idle');
+            setMedicalSam3State('idle');
             return;
         }
         refreshModelStatuses();
@@ -303,7 +303,7 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
 
     const downloadModel = async (
         modelType: string,
-        hfToken: string,
+        hfToken: string | undefined,
         setState: (s: DownloadState) => void
     ) => {
         setState('downloading');
@@ -311,9 +311,10 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
             const res = await fetch(`${BACKEND_URL}/download-model`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model_type: modelType, hf_token: hfToken })
+                body: JSON.stringify({ model_type: modelType, hf_token: hfToken ?? '' })
             });
             if (res.ok) {
+                setState('downloaded');
                 await refreshModelStatuses();
             } else {
                 console.error(await res.text());
@@ -410,13 +411,8 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                         <span className={styles.label}>Model</span>
                         <div className={styles.inputContainer}>
                             <select className={styles.select} value={model} onChange={e => setModel(e.target.value)}>
-                                <optgroup label="SAM 2">
-                                    <option value="sam2_hiera_base_plus">SAM2 Base+</option>
-                                    <option value="sam2_hiera_large">SAM2 Large</option>
-                                </optgroup>
-                                <optgroup label="SAM 3">
-                                    <option value="sam3">SAM3</option>
-                                </optgroup>
+                                <option value="sam3">Sam3</option>
+                                <option value="medical_sam3">Medical SAM3</option>
                             </select>
                         </div>
                     </div>
@@ -440,41 +436,44 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                 </div>
 
                 <div className={styles.section}>
-                    {/* SAM 2 */}
-                    <div className={styles.row}>
-                        <span className={styles.label}>SAM 2 (Official)</span>
-                        <button 
-                            className={buttonClass(sam2State)}
-                            onClick={() => downloadModel('sam2_hiera_base_plus', '', setSam2State)}
-                            disabled={sam2State === 'downloading' || sam2State === 'downloaded'}
-                        >
-                            {buttonLabel(sam2State)}
-                        </button>
-                    </div>
-
-                    {/* SAM 3 */}
                     <div className={styles.sam3Container}>
                         <div className={styles.row}>
-                            <span className={styles.label}>SAM 3 (Authenticated)</span>
+                            <span className={styles.label}>SAM3 (Official; Authenticated)</span>
                         </div>
                         <div className={styles.row}>
-                            <input 
-                                className={styles.tokenInput} 
-                                type="password" 
-                                value={token} 
-                                onChange={e => setToken(e.target.value)} 
-                                placeholder="Paste HF Token" 
+                            <input
+                                className={styles.tokenInput}
+                                type="password"
+                                value={token}
+                                onChange={e => setToken(e.target.value)}
+                                placeholder="Paste HF Token"
                             />
-                            <button 
-                                className={buttonClass(sam3State)}
-                                onClick={() => downloadModel('sam3', token, setSam3State)}
+                            <button
+                                className={buttonClass(officialSam3State)}
+                                onClick={() => downloadModel('sam3', token, setOfficialSam3State)}
                                 disabled={
-                                    sam3State === 'downloading' ||
-                                    sam3State === 'downloaded' ||
+                                    officialSam3State === 'downloading' ||
+                                    officialSam3State === 'downloaded' ||
                                     !token
                                 }
                             >
-                                {buttonLabel(sam3State)}
+                                {buttonLabel(officialSam3State)}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className={styles.sam3Container}>
+                        <div className={styles.row}>
+                            <span className={styles.label}>SAM3 (Medical)</span>
+                            <button
+                                className={buttonClass(medicalSam3State)}
+                                onClick={() => downloadModel('medical_sam3', undefined, setMedicalSam3State)}
+                                disabled={
+                                    medicalSam3State === 'downloading' ||
+                                    medicalSam3State === 'downloaded'
+                                }
+                            >
+                                {buttonLabel(medicalSam3State)}
                             </button>
                         </div>
                     </div>

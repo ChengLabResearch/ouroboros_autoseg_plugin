@@ -103,6 +103,34 @@ class NetworkTests(unittest.TestCase):
             self.assertTrue(target.is_file())
             self.assertEqual(target.read_bytes(), b"abc")
 
+    def test_download_sam3_checkpoint_uses_official_sam3_source(self):
+        with patch(
+            "backend.app.util.network.hf_hub_download",
+            return_value="/tmp/cached-sam3.pt",
+        ) as mocked_download, patch("backend.app.util.network.shutil.copy") as mocked_copy:
+            app_network.download_sam3_checkpoint("sam3", "token", "/tmp/sam3.pt")
+
+        mocked_download.assert_called_once_with(
+            repo_id="facebook/sam3",
+            filename="sam3.pt",
+            token="token",
+        )
+        mocked_copy.assert_called_once_with("/tmp/cached-sam3.pt", "/tmp/sam3.pt")
+
+    def test_download_sam3_checkpoint_uses_medical_sam3_source_without_token(self):
+        with patch(
+            "backend.app.util.network.hf_hub_download",
+            return_value="/tmp/cached-medical-sam3.pt",
+        ) as mocked_download, patch("backend.app.util.network.shutil.copy") as mocked_copy:
+            app_network.download_sam3_checkpoint("medical_sam3", None, "/tmp/medical_sam3.pt")
+
+        mocked_download.assert_called_once_with(
+            repo_id="ChongCong/Medical-SAM3",
+            filename="checkpoint.pt",
+            token=None,
+        )
+        mocked_copy.assert_called_once_with("/tmp/cached-medical-sam3.pt", "/tmp/medical_sam3.pt")
+
     def test_get_predictor_cache_hit(self):
         sentinel = object()
         app_config.loaded_model_name = "sam2_hiera_tiny_ImagePredictor"

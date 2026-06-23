@@ -179,6 +179,8 @@ export default defineConfig({
 			'/api': {
 				target: 'http://localhost:8686',
 				changeOrigin: true,
+				timeout: 60 * 60 * 1000,
+				proxyTimeout: 60 * 60 * 1000,
 				configure: (proxy) => {
 					// Backend is expected to be unavailable briefly during docker startup.
 					// Swallow proxy error logs to avoid noisy dev output.
