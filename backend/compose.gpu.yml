@@ -2,10 +2,9 @@ services:
   our_autoseg:
     build:
       context: .
+      target: cuda-runtime
       args:
-        # Enable CUDA feature in candle during the Docker build.
-        # The cargo build target in the Dockerfile picks this up via
-        # CARGO_FEATURE_CUDA → Cargo features are set at compile time.
+        # Enable CUDA feature forwarding into Candle during the Docker build.
         CANDLE_FEATURES: cuda
     ports:
       - "8686:8686"

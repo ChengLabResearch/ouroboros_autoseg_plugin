@@ -54,6 +54,15 @@ To get started with developing a plugin:
 
 So normal source edits do not trigger a full image rebuild.
 
+### GPU Backend Images
+
+The GPU compose files use a CUDA-specific Docker target:
+
+- `backend/compose.gpu.yml` for packaged GPU backends
+- `backend/compose.gpu.dev.yml` for local GPU development
+
+Those compose files select the `cuda-runtime` Docker target and pass `CANDLE_FEATURES=cuda`, which forwards the plugin crate's `cuda` feature to the Candle dependencies. Building these images requires an NVIDIA-capable Docker environment with the NVIDIA container toolkit available.
+
 ### `package.json`
 
 The first lines of the package.json are important to identifying your plugin.
