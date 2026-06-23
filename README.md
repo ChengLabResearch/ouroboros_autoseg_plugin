@@ -67,6 +67,15 @@ The GPU compose files use a CUDA-specific Docker target:
 
 Those compose files select the `cuda-runtime` Docker target and pass `CANDLE_FEATURES=cuda`, which forwards the plugin crate's `cuda` feature to the Candle dependencies. Building these images requires an NVIDIA-capable Docker environment with the NVIDIA container toolkit available.
 
+### Registry Backend Images
+
+The `Publish Backend Image` workflow publishes the Rust backend image to GHCR for release tags and commit SHAs:
+
+- `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:<release-tag>`
+- `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>`
+
+The existing `backend/compose.yml` remains the local-build fallback. `backend/compose.registry.yml` is an opt-in packaged compose file for release builds that want to use a prebuilt immutable image by setting `OUROBOROS_AUTOSEG_BACKEND_IMAGE`.
+
 ### `package.json`
 
 The first lines of the package.json are important to identifying your plugin.
