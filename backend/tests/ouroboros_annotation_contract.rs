@@ -30,7 +30,7 @@ from ouroboros.pipeline.slice_parallel_pipeline import build_straightened_tiff_m
 
 class FakeVolumeCache:
     def get_resolution_um(self):
-        return np.array([0.5, 0.25, 1.5], dtype=np.float32)
+        return np.array([0.5, 0.25, 1.5], dtype=float)
 
 
 annotation_points = np.array(
@@ -51,6 +51,24 @@ def metadata_kwargs():
     )
 
 
+def tifffile_writer_kwargs():
+    kwargs = metadata_kwargs()
+    resolution = kwargs.get("resolution")
+    # Keep Ouroboros' ImageDescription metadata unchanged while adapting the
+    # legacy resolution kwarg shape for newer local tifffile versions.
+    if (
+        isinstance(resolution, list)
+        and len(resolution) == 3
+        and "resolutionunit" not in kwargs
+    ):
+        kwargs = {
+            **kwargs,
+            "resolution": resolution[:2],
+            "resolutionunit": resolution[2],
+        }
+    return kwargs
+
+
 output_dir = Path(sys.argv[1])
 output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -59,7 +77,7 @@ stack = tifffile.memmap(
     stack_path,
     shape=(3, 4, 5),
     dtype=np.uint8,
-    **metadata_kwargs(),
+    **tifffile_writer_kwargs(),
 )
 stack[:] = np.arange(stack.size, dtype=np.uint8).reshape(stack.shape)
 stack.flush()
@@ -67,7 +85,7 @@ del stack
 
 frame_dir = output_dir / "straightened"
 frame_dir.mkdir()
-metadata = metadata_kwargs()
+metadata = tifffile_writer_kwargs()
 for frame_index in range(3):
     tifffile.imwrite(
         frame_dir / f"{frame_index:02}.tif",
