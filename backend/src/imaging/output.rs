@@ -2,7 +2,11 @@ use std::path::Path;
 
 use crate::{
     error::AppError,
-    imaging::tiff_io::{write_tiff_pages, WritableTiffPage},
+    imaging::{
+        annotations::{interpolated_point_for_frame, AnnotationPoint},
+        overlay::draw_annotation_star,
+        tiff_io::{write_tiff_pages, WritableTiffPage},
+    },
     inference::image::FrameMask,
 };
 
@@ -40,6 +44,29 @@ pub async fn write_mask_stack(target: &Path, masks: &[FrameMask]) -> Result<(), 
         .collect::<Result<Vec<_>, _>>()?;
 
     write_tiff_pages(target, &pages)
+}
+
+pub async fn write_annotation_overlay_stack(
+    target: &Path,
+    masks: &[FrameMask],
+    annotation_points: &[AnnotationPoint],
+    intensity: u8,
+) -> Result<(), AppError> {
+    let mut overlay_masks = masks.to_vec();
+    for (frame_index, mask) in overlay_masks.iter_mut().enumerate() {
+        if let Some(point) = interpolated_point_for_frame(annotation_points, frame_index) {
+            draw_annotation_star(
+                &mut mask.pixels,
+                mask.width,
+                mask.height,
+                point.x,
+                point.y,
+                intensity,
+            );
+        }
+    }
+
+    write_mask_stack(target, &overlay_masks).await
 }
 
 #[cfg(test)]

@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::{
     app_state::{AppState, Sam3ModelHandle},
@@ -9,7 +12,7 @@ use crate::{
             annotation_samples_for_video, default_annotations, interpolated_point_for_frame,
             AnnotationPoint, VolumeShape,
         },
-        output::write_mask_stack,
+        output::{write_annotation_overlay_stack, write_mask_stack},
         preprocess::{stage_input_frames, PreparedFrame, PreparedFrameEncoding},
         tiff_io::{inspect_volume, read_volume_frames, VolumeInput},
     },
@@ -132,6 +135,15 @@ pub async fn run(state: &AppState, job_id: &str, request: &ProcessRequest) -> Re
         tokio::fs::create_dir_all(parent).await?;
     }
     write_mask_stack(&prepared.plan.volume_output, &masks).await?;
+    if request.overlay_annotation_points {
+        write_annotation_overlay_stack(
+            &annotation_overlay_path(&prepared.plan.volume_output),
+            &masks,
+            &prepared.annotation_points,
+            request.annotation_overlay_intensity,
+        )
+        .await?;
+    }
     tokio::fs::remove_dir_all(&prepared.plan.temp_volume_dir).await?;
     state.update_job_step(job_id, 3, 100).await;
 
@@ -200,9 +212,44 @@ async fn run_video_predictor(
     };
     let video_prompts =
         annotation_samples_for_video(&prepared.annotation_points, prepared.staged_frames.len());
-    segmenter
+    let masks = segmenter
         .segment_video(&prepared.plan.temp_volume_dir, &video_prompts)
-        .await
+        .await?;
+    validate_video_masks(&masks, prepared)?;
+    Ok(masks)
+}
+
+fn validate_video_masks(
+    masks: &[FrameMask],
+    prepared: &PreparedPipelineInput,
+) -> Result<(), AppError> {
+    let expected_frames = prepared.staged_frames.len();
+    if masks.len() != expected_frames {
+        return Err(AppError::upstream(format!(
+            "Video inference returned {} masks for {expected_frames} staged frames",
+            masks.len()
+        )));
+    }
+
+    let expected_width = prepared.volume.geometry.width;
+    let expected_height = prepared.volume.geometry.height;
+    for (index, mask) in masks.iter().enumerate() {
+        if mask.width != expected_width || mask.height != expected_height {
+            return Err(AppError::upstream(format!(
+                "Video inference mask {index} has geometry {}x{}, expected {expected_width}x{expected_height}",
+                mask.width, mask.height
+            )));
+        }
+        if mask.pixels.len() != expected_width * expected_height {
+            return Err(AppError::upstream(format!(
+                "Video inference mask {index} has {} pixels, expected {}",
+                mask.pixels.len(),
+                expected_width * expected_height
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn frame_name_width(frame_count: usize) -> usize {
@@ -217,6 +264,18 @@ fn stage_encoding(predictor_type: &str) -> Result<PreparedFrameEncoding, AppErro
             "Unknown predictor type: {other}"
         ))),
     }
+}
+
+fn annotation_overlay_path(output_path: &Path) -> PathBuf {
+    let extension = output_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("tif");
+    let stem = output_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("segmentation");
+    output_path.with_file_name(format!("{stem}_annotation_overlay.{extension}"))
 }
 
 #[cfg(test)]

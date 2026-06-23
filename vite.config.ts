@@ -203,7 +203,16 @@ export default defineConfig({
 					dest: '.'
 				},
 				{
-					src: 'backend/*',
+					src: [
+						'backend/.dockerignore',
+						'backend/Cargo.lock',
+						'backend/Cargo.toml',
+						'backend/Dockerfile',
+						'backend/compose.gpu.yml',
+						'backend/compose.yml',
+						'backend/docs',
+						'backend/src'
+					],
 					dest: '.'
 				}
 			]
