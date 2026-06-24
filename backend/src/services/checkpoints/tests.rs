@@ -165,7 +165,7 @@ fn medical_sam3_descriptor_uses_public_medical_checkpoint() {
             requires_token,
         } => {
             assert_eq!(repo, "ChongCong/Medical-SAM3");
-            assert_eq!(filename, "checkpoint.pt");
+            assert_eq!(filename, "checkpoint_2D.pt");
             assert!(!requires_token);
         }
         DownloadSource::PublicUrl(_) => panic!("medical_sam3 should use Hugging Face"),
