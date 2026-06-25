@@ -6,6 +6,8 @@ services:
       args:
         # Enable CUDA feature forwarding into Candle during the Docker build.
         CANDLE_FEATURES: cuda
+        # Docker build cannot see the GPU; default to Quadro RTX 5000/Turing.
+        CUDA_COMPUTE_CAP: 75
     ports:
       - "8686:8686"
     volumes:

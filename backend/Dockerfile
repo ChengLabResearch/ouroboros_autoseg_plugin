@@ -59,6 +59,8 @@ COPY . backend/
 
 WORKDIR /build/plugin/backend
 ARG CANDLE_FEATURES=cuda
+ARG CUDA_COMPUTE_CAP=75
+ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
 RUN cargo build --release --features "${CANDLE_FEATURES}" --bin ouroboros-autoseg-plugin-backend
 
 # ── Stage 3: minimal CPU runtime image ───────────────────────────────────────
