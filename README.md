@@ -41,18 +41,22 @@ To get started with developing a plugin:
 
 5. In the main app, go to the first menu dropdown and open the plugin manager. Click the plus, and paste the URL of your plugin (something like `http://localhost:5172`) in the development plugin option.
 
-### Backend Hot Reload (Docker Dev)
+### Backend Development Docker
 
-`npm run dev-backend` now uses backend dev compose files with:
+`npm run dev-backend` uses backend dev compose files with:
 
-- bind-mounted backend source (`backend/app -> /app/app`)
-- `uvicorn --reload` for live Python code reload
-- conditional Docker rebuilds only when one of these files changes:
-  - `backend/pyproject.toml`
-  - `backend/poetry.lock`
+- Rust backend compose files selected by local hardware:
+  - `backend/compose.dev.yml` when no NVIDIA GPU is detected
+  - `backend/compose.gpu.dev.yml` when `nvidia-smi` is available
+- conditional Docker rebuilds only when backend build inputs change:
   - `backend/Dockerfile`
+  - `backend/Cargo.toml`
+  - `backend/Cargo.lock`
+  - `backend/src`
+  - `backend/tests`
+  - backend compose files
 
-So normal source edits do not trigger a full image rebuild.
+Frontend-only edits do not trigger a backend image rebuild. Rust backend edits do rebuild the image because the release-style container compiles the Rust server into the runtime image.
 
 ### `package.json`
 
