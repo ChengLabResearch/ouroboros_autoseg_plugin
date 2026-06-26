@@ -65,7 +65,7 @@ const MODEL_CATALOG: &[ModelDescriptor] = &[
         checkpoint_file: "medical_sam3.pt",
         download_source: DownloadSource::HuggingFace {
             repo: "ChongCong/Medical-SAM3",
-            filename: "checkpoint_2D.pt",
+            filename: "checkpoint_3D.pt",
             requires_token: false,
         },
     },

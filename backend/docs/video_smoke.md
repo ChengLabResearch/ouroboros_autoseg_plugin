@@ -11,25 +11,32 @@ The unit tests lock those options and validate that video propagation output has
 one mask per staged frame, with the same width and height as the straightened
 input volume.
 
-## Manual Biological-Stack Smoke
+## GPU Biological-Stack Smoke
 
-After staging a SAM3 checkpoint and a small straightened stack with
-`annotation_points` metadata in the plugin volume, start the backend and submit a
-video job:
+Use the smoke script for the checkpoint/dataset-dependent portion of AUTO-4. It
+builds the CUDA backend target, verifies Docker GPU access, stages the input
+stack and Medical SAM3 3D checkpoint into the plugin Docker volume, submits a
+`VideoPredictor` request, polls the job, and verifies that the output mask stack
+is present.
 
 ```bash
-curl -X POST http://127.0.0.1:8686/process-stack \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "file_path": "/host/path/straightened-stack.tif",
-    "output_file": "/host/path/segmented.tif",
-    "model_type": "medical_sam3",
-    "predictor_type": "VideoPredictor",
-    "overlay_annotation_points": false
-  }'
+INPUT_STACK=local_data/psd_anno_thing.tif \
+  backend/scripts/biological_video_smoke_gpu.sh
 ```
 
-Then poll `/status/{job_id}`. A valid smoke run should:
+Useful overrides:
+
+```bash
+CHECKPOINT_PATH=/path/to/checkpoint_3D.pt \
+OUTPUT_DIR=/tmp/autoseg-smoke \
+HOST_PORT=18788 \
+  backend/scripts/biological_video_smoke_gpu.sh /path/to/straightened-stack.tif
+```
+
+The script defaults to
+`https://huggingface.co/ChongCong/Medical-SAM3/resolve/main/checkpoint_3D.pt`,
+because the video loader needs the tracker tensors present in the 3D Medical
+SAM3 checkpoint. A valid smoke run should:
 
 - finish without frame-load panics or out-of-memory errors
 - preserve progress updates through polling or UI reconnects
