@@ -177,12 +177,33 @@ async fn model_handle_for_request(
 
     let model_name = descriptor.model_name.to_string();
     let handle = tokio::task::spawn_blocking(move || {
-        load_sam3_handle(model_name, &checkpoint_path, candle_core::Device::Cpu)
+        let device = inference_device()?;
+        load_sam3_handle(model_name, &checkpoint_path, device)
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))??;
 
     Ok(state.set_sam3_handle(handle).await)
+}
+
+fn inference_device() -> Result<candle_core::Device, AppError> {
+    #[cfg(feature = "cuda")]
+    {
+        let ordinal = std::env::var("CUDA_DEVICE_ORDINAL")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        candle_core::Device::new_cuda(ordinal).map_err(|error| {
+            AppError::internal(format!(
+                "CUDA backend was requested but device {ordinal} is unavailable: {error}"
+            ))
+        })
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    {
+        Ok(candle_core::Device::Cpu)
+    }
 }
 
 async fn run_image_predictor(

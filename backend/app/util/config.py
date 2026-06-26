@@ -37,7 +37,7 @@ SAM3_SOURCES = {
     },
     "medical_sam3": {
         "repo_id": "ChongCong/Medical-SAM3",
-        "filename": "checkpoint_2D.pt",
+        "filename": "checkpoint_3D.pt",
         "requires_token": False,
     },
 }
