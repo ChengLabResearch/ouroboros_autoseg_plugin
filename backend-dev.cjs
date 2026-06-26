@@ -2,13 +2,24 @@ const { upAll, downAll } = require('docker-compose')
 const { join } = require('path')
 const { execSync } = require('child_process')
 const { createHash } = require('crypto')
-const { existsSync, readFileSync, writeFileSync } = require('fs')
+const { existsSync, readFileSync, readdirSync, statSync, writeFileSync } = require('fs')
 
 const containerFolder = join(__dirname, 'backend')
 const statusFile = join(__dirname, '.docker-build-status.json')
 const serviceName = 'our_autoseg'
 const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-const dependencyFiles = ['Dockerfile', 'pyproject.toml', 'poetry.lock']
+const dependencyPaths = [
+    '.dockerignore',
+    'Cargo.lock',
+    'Cargo.toml',
+    'Dockerfile',
+    'compose.dev.yml',
+    'compose.gpu.dev.yml',
+    'compose.gpu.yml',
+    'compose.yml',
+    'src',
+    'tests'
+]
 
 function fileHash(path) {
     const hash = createHash('sha256')
@@ -18,18 +29,33 @@ function fileHash(path) {
 
 function computeDependencyHash() {
     const hash = createHash('sha256')
-    for (const file of dependencyFiles) {
-        const filePath = join(containerFolder, file)
-        if (!existsSync(filePath)) {
-            hash.update(`${file}:missing`)
-            continue
-        }
-        hash.update(file)
-        hash.update(':')
-        hash.update(fileHash(filePath))
-        hash.update(';')
+    for (const dependencyPath of dependencyPaths) {
+        updatePathHash(hash, dependencyPath)
     }
     return hash.digest('hex')
+}
+
+function updatePathHash(hash, relativePath) {
+    const absolutePath = join(containerFolder, relativePath)
+    if (!existsSync(absolutePath)) {
+        hash.update(`${relativePath}:missing;`)
+        return
+    }
+
+    const stats = statSync(absolutePath)
+    if (stats.isDirectory()) {
+        hash.update(`${relativePath}:dir;`)
+        for (const child of readdirSync(absolutePath).sort()) {
+            updatePathHash(hash, `${relativePath}/${child}`)
+        }
+        return
+    }
+
+    if (stats.isFile()) {
+        hash.update(`${relativePath}:file:`)
+        hash.update(fileHash(absolutePath))
+        hash.update(';')
+    }
 }
 
 function readPreviousStatus() {
