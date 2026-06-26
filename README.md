@@ -73,8 +73,10 @@ The `Publish Backend Image` workflow publishes the Rust backend image to GHCR fo
 
 - `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:<release-tag>`
 - `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>`
+- `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:<release-tag>-cuda`
+- `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>-cuda`
 
-The existing `backend/compose.yml` remains the local-build fallback. `backend/compose.registry.yml` is an opt-in packaged compose file for release builds that want to use a prebuilt immutable image by setting `OUROBOROS_AUTOSEG_BACKEND_IMAGE`.
+The unsuffixed tags use the CPU runtime target, and the `-cuda` tags use the CUDA runtime target. The existing `backend/compose.yml` remains the local-build fallback. `backend/compose.registry.yml` is an opt-in packaged compose file for release builds that want to use a prebuilt immutable image by setting `OUROBOROS_AUTOSEG_BACKEND_IMAGE`.
 
 ### `package.json`
 
