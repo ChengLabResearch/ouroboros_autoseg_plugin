@@ -1,0 +1,17 @@
+services:
+  our_autoseg:
+    image: ${OUROBOROS_AUTOSEG_BACKEND_IMAGE:?Set OUROBOROS_AUTOSEG_BACKEND_IMAGE to an immutable backend image tag}
+    ports:
+      - "8686:8686"
+    volumes:
+      - ouroboros-volume:/ouroboros-volume
+    environment:
+      - VOLUME_MOUNT_PATH=/ouroboros-volume
+      - VOLUME_SERVER_URL=http://host.docker.internal:3001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    shm_size: 1gb
+
+volumes:
+  ouroboros-volume:
+    external: true
