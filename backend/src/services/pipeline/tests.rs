@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::{plan, prepare, run};
+use super::{annotation_overlay_path, plan, prepare, run, validate_video_masks};
 use crate::{
     app_state::AppState,
     config::AppConfig,
@@ -9,6 +9,7 @@ use crate::{
         preprocess::PreparedFrameEncoding,
         tiff_io::{write_tiff_pages, WritableTiffPage},
     },
+    inference::image::FrameMask,
 };
 use uuid::Uuid;
 
@@ -152,6 +153,102 @@ async fn prepare_generates_default_annotations_for_missing_metadata() {
 }
 
 #[tokio::test]
+async fn validate_video_masks_accepts_expected_frame_count_and_geometry() {
+    let root = unique_temp_dir();
+    let state = test_state(root.clone());
+    let plugin_root = state.config().plugin_root();
+    std::fs::create_dir_all(&plugin_root).expect("create plugin root");
+    write_input_volume(&plugin_root.join("input-stack.tif"), None);
+    let prepared = prepare(&state, &sample_request("VideoPredictor"))
+        .await
+        .expect("prepare pipeline input");
+    let masks = vec![
+        FrameMask {
+            width: 4,
+            height: 2,
+            pixels: vec![0; 8],
+        },
+        FrameMask {
+            width: 4,
+            height: 2,
+            pixels: vec![255; 8],
+        },
+    ];
+
+    validate_video_masks(&masks, &prepared).expect("valid video masks");
+}
+
+#[tokio::test]
+async fn validate_video_masks_rejects_frame_count_geometry_and_pixels() {
+    let root = unique_temp_dir();
+    let state = test_state(root.clone());
+    let plugin_root = state.config().plugin_root();
+    std::fs::create_dir_all(&plugin_root).expect("create plugin root");
+    write_input_volume(&plugin_root.join("input-stack.tif"), None);
+    let prepared = prepare(&state, &sample_request("VideoPredictor"))
+        .await
+        .expect("prepare pipeline input");
+
+    let frame_count_error = validate_video_masks(
+        &[FrameMask {
+            width: 4,
+            height: 2,
+            pixels: vec![0; 8],
+        }],
+        &prepared,
+    )
+    .expect_err("frame count mismatch");
+    assert!(
+        frame_count_error
+            .to_string()
+            .contains("returned 1 masks for 2 staged frames"),
+        "{frame_count_error}"
+    );
+
+    let geometry_error = validate_video_masks(
+        &[
+            FrameMask {
+                width: 3,
+                height: 2,
+                pixels: vec![0; 6],
+            },
+            FrameMask {
+                width: 4,
+                height: 2,
+                pixels: vec![0; 8],
+            },
+        ],
+        &prepared,
+    )
+    .expect_err("geometry mismatch");
+    assert!(
+        geometry_error.to_string().contains("expected 4x2"),
+        "{geometry_error}"
+    );
+
+    let pixel_error = validate_video_masks(
+        &[
+            FrameMask {
+                width: 4,
+                height: 2,
+                pixels: vec![0; 7],
+            },
+            FrameMask {
+                width: 4,
+                height: 2,
+                pixels: vec![0; 8],
+            },
+        ],
+        &prepared,
+    )
+    .expect_err("pixel length mismatch");
+    assert!(
+        pixel_error.to_string().contains("has 7 pixels, expected 8"),
+        "{pixel_error}"
+    );
+}
+
+#[tokio::test]
 async fn run_requires_downloaded_sam3_checkpoint_before_staging() {
     let root = unique_temp_dir();
     let state = test_state(root.clone());
@@ -169,4 +266,12 @@ async fn run_requires_downloaded_sam3_checkpoint_before_staging() {
     );
     // Staging should not have happened since the model availability check is first.
     assert!(!plugin_root.join("input-stack_temp").exists());
+}
+
+#[test]
+fn annotation_overlay_path_keeps_primary_output_clean() {
+    assert_eq!(
+        annotation_overlay_path(Path::new("/tmp/Segmentation/segmented.tif")),
+        PathBuf::from("/tmp/Segmentation/segmented_annotation_overlay.tif")
+    );
 }

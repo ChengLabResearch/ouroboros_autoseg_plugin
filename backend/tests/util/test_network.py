@@ -126,7 +126,7 @@ class NetworkTests(unittest.TestCase):
 
         mocked_download.assert_called_once_with(
             repo_id="ChongCong/Medical-SAM3",
-            filename="checkpoint.pt",
+            filename="checkpoint_3D.pt",
             token=None,
         )
         mocked_copy.assert_called_once_with("/tmp/cached-medical-sam3.pt", "/tmp/medical_sam3.pt")

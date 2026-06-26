@@ -15,7 +15,7 @@ checkpoint is downloaded and loaded.
 | Selector value | Display label | Checkpoint source | Stored checkpoint | Token required | Prompt support |
 | --- | --- | --- | --- | --- | --- |
 | `sam3` | SAM3 | Hugging Face `facebook/sam3`, file `sam3.pt` | `sam3.pt` | Yes | Image points, video points |
-| `medical_sam3` | Medical SAM3 | Hugging Face `ChongCong/Medical-SAM3`, file `checkpoint.pt` | `medical_sam3.pt` | No | Image points, video points |
+| `medical_sam3` | Medical SAM3 | Hugging Face `ChongCong/Medical-SAM3`, file `checkpoint_3D.pt` | `medical_sam3.pt` | No | Image points, video points |
 
 The `/model-status` endpoint reports `sam3` and `medical_sam3` only, matching
 the current production SAM3 surface. The `/download-model` endpoint stores
