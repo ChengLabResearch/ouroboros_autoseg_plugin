@@ -16,6 +16,7 @@
 		"dev-backend": "node backend-dev.cjs",
 		"dev": "concurrently 'npm run dev-frontend' 'npm run dev-backend'",
 		"build": "tsc -b && vite build",
+		"build:release": "npm run build && node scripts/prepare-release-artifacts.mjs",
 		"lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
 		"preview": "vite preview"
 	},
