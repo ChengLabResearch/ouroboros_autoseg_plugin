@@ -1,6 +1,15 @@
 name: Build and Release Plugin
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/build-and-release.yml
+      - package.json
+      - scripts/**
+      - vite.config.ts
+      - src/**
+      - backend/**
+      - public/**
   push:
     tags:
       - v*.*.*
@@ -11,7 +20,7 @@ env:
 
 
 jobs:
-  release:
+  plugin-artifacts:
     runs-on: ubuntu-latest
 
     permissions:
@@ -19,28 +28,50 @@ jobs:
 
     steps:
       - name: Check out Git repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Install Dependencies
         run: npm install
 
-      - name: Build 
-        run: npm run build
+      - name: Build release layouts
+        run: npm run build:release
 
-      - name: Archive Release
-        uses: thedoctor0/zip-release@0.7.5
+      - name: Set artifact names
+        run: |
+          safe_ref="${GITHUB_REF_NAME//\//-}"
+          echo "CPU_ARTIFACT=auto-segmentation-${safe_ref}-cpu.zip" >> "$GITHUB_ENV"
+          echo "CUDA_ARTIFACT=auto-segmentation-${safe_ref}-cuda.zip" >> "$GITHUB_ENV"
+
+      - name: Archive CPU release
+        working-directory: dist-artifacts/auto-segmentation-cpu
+        run: zip -r "../${CPU_ARTIFACT}" .
+
+      - name: Archive CUDA release
+        working-directory: dist-artifacts/auto-segmentation-cuda
+        run: zip -r "../${CUDA_ARTIFACT}" .
+
+      - name: Upload CPU artifact for PR validation
+        uses: actions/upload-artifact@v4
         with:
-          type: 'zip'
-          filename: 'release.zip'
-          directory: 'dist'
+          name: ${{ env.CPU_ARTIFACT }}
+          path: dist-artifacts/${{ env.CPU_ARTIFACT }}
+
+      - name: Upload CUDA artifact for PR validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.CUDA_ARTIFACT }}
+          path: dist-artifacts/${{ env.CUDA_ARTIFACT }}
 
       - name: Upload Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: ncipollo/release-action@v1.12.0
         with:
-          artifacts: "dist/release.zip"
+          artifacts: |
+            dist-artifacts/${{ env.CPU_ARTIFACT }}
+            dist-artifacts/${{ env.CUDA_ARTIFACT }}
           token: ${{ secrets.GITHUB_TOKEN }}

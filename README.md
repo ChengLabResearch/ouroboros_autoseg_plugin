@@ -58,6 +58,24 @@ To get started with developing a plugin:
 
 Frontend-only edits do not trigger a backend image rebuild. Rust backend edits do rebuild the image because the release-style container compiles the Rust server into the runtime image.
 
+### Production Plugin Artifacts
+
+Tagged releases publish two preinstallable plugin artifacts:
+
+- `auto-segmentation-<tag>-cpu.zip`
+- `auto-segmentation-<tag>-cuda.zip`
+
+Both archives unpack to the normal Ouroboros plugin folder layout, including
+`package.json`, `index.html`, `icon.svg`, `compose.yml`, frontend assets, and
+`plugin-release.json`. The CPU artifact `compose.yml` points at
+`ghcr.io/chenglabresearch/ouroboros-autoseg-backend:<tag>`. The CUDA artifact
+points at `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:<tag>-cuda` and
+includes the NVIDIA GPU device reservation.
+
+For production package preinstalls, unpack the selected artifact under
+`extra-resources/preinstalled-plugins/auto-segmentation/` before building the
+Ouroboros package.
+
 ### GPU Backend Images
 
 The GPU compose files use a CUDA-specific Docker target:
