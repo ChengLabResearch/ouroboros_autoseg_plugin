@@ -5,7 +5,7 @@
 	"index": "./index.html",
 	"dockerCompose": "./compose.yml",
 	"private": true,
-	"version": "0.2.0",
+	"version": "0.4.0-beta",
 	"type": "module",
 	"main": "dist/main.js",
 	"files": [
@@ -16,6 +16,8 @@
 		"dev-backend": "node backend-dev.cjs",
 		"dev": "concurrently 'npm run dev-frontend' 'npm run dev-backend'",
 		"build": "tsc -b && vite build",
+		"build:release": "npm run build && node scripts/prepare-release-artifacts.mjs",
+		"validate:release": "node scripts/validate-release-artifacts.mjs",
 		"lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
 		"preview": "vite preview"
 	},

@@ -203,7 +203,13 @@ export default defineConfig({
 					dest: '.'
 				},
 				{
-					src: 'backend/*',
+					src: [
+						'backend/*',
+						'!backend/target',
+						'!backend/.venv',
+						'!backend/__pycache__',
+						'!backend/.pytest_cache'
+					],
 					dest: '.'
 				}
 			]
