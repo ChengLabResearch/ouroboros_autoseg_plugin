@@ -5,11 +5,15 @@ const root = process.cwd()
 const dist = join(root, 'dist')
 const outputRoot = join(root, 'dist-artifacts')
 const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
+const releaseTag =
+	process.env.OUROBOROS_AUTOSEG_PLUGIN_RELEASE_TAG ??
+	process.env.GITHUB_REF_NAME ??
+	`v${packageJson.version}`
 
 const imageRepository =
 	process.env.OUROBOROS_AUTOSEG_BACKEND_IMAGE_REPOSITORY ??
 	'ghcr.io/chenglabresearch/ouroboros-autoseg-backend'
-const imageTag = process.env.OUROBOROS_AUTOSEG_BACKEND_IMAGE_TAG ?? process.env.GITHUB_REF_NAME ?? packageJson.version
+const imageTag = process.env.OUROBOROS_AUTOSEG_BACKEND_IMAGE_TAG ?? releaseTag
 const cpuDigest = process.env.OUROBOROS_AUTOSEG_BACKEND_CPU_DIGEST ?? null
 const cudaDigest = process.env.OUROBOROS_AUTOSEG_BACKEND_CUDA_DIGEST ?? null
 
@@ -17,12 +21,14 @@ const variants = [
 	{
 		name: 'cpu',
 		directory: `${packageJson.name}-cpu`,
+		artifactName: artifactNameForVariant('cpu'),
 		image: imageReference('', cpuDigest),
 		cuda: false
 	},
 	{
 		name: 'cuda',
 		directory: `${packageJson.name}-cuda`,
+		artifactName: artifactNameForVariant('cuda'),
 		image: imageReference('-cuda', cudaDigest),
 		cuda: true
 	}
@@ -52,15 +58,28 @@ function manifestForVariant(variant) {
 		name: packageJson.name,
 		pluginName: packageJson.pluginName,
 		version: packageJson.version,
+		packageVersion: packageJson.version,
+		releaseTag,
+		artifactName: variant.artifactName,
 		variant: variant.name,
 		index: packageJson.index,
 		icon: packageJson.icon,
 		dockerCompose: packageJson.dockerCompose,
 		backendImage: variant.image,
+		backendImageRepository: imageRepository,
+		backendImageTag: imageTag,
 		cuda: variant.cuda,
 		commit: process.env.GITHUB_SHA ?? null,
 		ref: process.env.GITHUB_REF_NAME ?? null
 	}
+}
+
+function artifactNameForVariant(variantName) {
+	return `${packageJson.name}-${safeFilePart(releaseTag)}-${variantName}.zip`
+}
+
+function safeFilePart(value) {
+	return value.replaceAll('/', '-')
 }
 
 async function pruneBuildOnlyFiles(artifactRoot) {

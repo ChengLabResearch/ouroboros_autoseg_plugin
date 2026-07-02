@@ -38,14 +38,18 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Build release layouts
-        run: npm run build:release
-
       - name: Set artifact names
         run: |
           safe_ref="${GITHUB_REF_NAME//\//-}"
           echo "CPU_ARTIFACT=auto-segmentation-${safe_ref}-cpu.zip" >> "$GITHUB_ENV"
           echo "CUDA_ARTIFACT=auto-segmentation-${safe_ref}-cuda.zip" >> "$GITHUB_ENV"
+          echo "OUROBOROS_AUTOSEG_PLUGIN_RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+
+      - name: Build release layouts
+        run: npm run build:release
+
+      - name: Validate release layouts
+        run: npm run validate:release
 
       - name: Archive CPU release
         working-directory: dist-artifacts/auto-segmentation-cpu

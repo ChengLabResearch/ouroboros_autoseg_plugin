@@ -65,6 +65,14 @@ Tagged releases publish two preinstallable plugin artifacts:
 - `auto-segmentation-<tag>-cpu.zip`
 - `auto-segmentation-<tag>-cuda.zip`
 
+The current production beta pin for Ouroboros package builds is:
+
+- tag: `v0.4.0-beta`
+- CPU asset: `auto-segmentation-v0.4.0-beta-cpu.zip`
+- CUDA asset: `auto-segmentation-v0.4.0-beta-cuda.zip`
+- CPU backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta`
+- CUDA backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta-cuda`
+
 Both archives unpack to the normal Ouroboros plugin folder layout, including
 `package.json`, `index.html`, `icon.svg`, `compose.yml`, frontend assets, and
 `plugin-release.json`. The CPU artifact `compose.yml` points at
