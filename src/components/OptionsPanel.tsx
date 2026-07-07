@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import styles from '../assets/styles.module.css';
-import { BACKEND_URL } from '../config';
 
 type SubmitPayload = {
     filePath: string;
@@ -10,25 +9,19 @@ type SubmitPayload = {
     overlayAnnotationPoints: boolean;
 };
 
-type Props = { 
-    onSubmit: (d: SubmitPayload) => void; 
-    isRunning: boolean; 
-    connected: boolean;
+type Props = {
+    onSubmit: (d: SubmitPayload) => void;
+    isRunning: boolean;
 };
 
-export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) {
+export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const [fp, setFp] = useState('');
     const [outFp, setOutFp] = useState('');
     const [model, setModel] = useState('sam3');
     const [predictor, setPredictor] = useState('ImagePredictor');
     const [overlayAnnotationPoints, setOverlayAnnotationPoints] = useState(false);
-    const [token, setToken] = useState('');
     const inputFileRef = useRef<HTMLInputElement | null>(null);
     const outputFileRef = useRef<HTMLInputElement | null>(null);
-
-    type DownloadState = 'idle' | 'downloading' | 'downloaded' | 'error';
-    const [officialSam3State, setOfficialSam3State] = useState<DownloadState>('idle');
-    const [medicalSam3State, setMedicalSam3State] = useState<DownloadState>('idle');
 
     const normalizeFileUri = (uri: string): string => {
         let cleaned = uri.trim();
@@ -275,70 +268,6 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
         };
     }, []);
 
-    const refreshModelStatuses = async () => {
-        if (!connected) return;
-        try {
-            const res = await fetch(`${BACKEND_URL}/model-status`);
-            if (!res.ok) {
-                return;
-            }
-            const data = await res.json();
-            setOfficialSam3State(data?.models?.sam3 ? 'downloaded' : 'idle');
-            setMedicalSam3State(data?.models?.medical_sam3 ? 'downloaded' : 'idle');
-        } catch (e) {
-            console.error('Failed to fetch model status:', e);
-        }
-    };
-
-    useEffect(() => {
-        if (!connected) {
-            setOfficialSam3State('idle');
-            setMedicalSam3State('idle');
-            return;
-        }
-        refreshModelStatuses();
-        const interval = setInterval(refreshModelStatuses, 5000);
-        return () => clearInterval(interval);
-    }, [connected]);
-
-    const downloadModel = async (
-        modelType: string,
-        hfToken: string | undefined,
-        setState: (s: DownloadState) => void
-    ) => {
-        setState('downloading');
-        try {
-            const res = await fetch(`${BACKEND_URL}/download-model`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model_type: modelType, hf_token: hfToken ?? '' })
-            });
-            if (res.ok) {
-                setState('downloaded');
-                await refreshModelStatuses();
-            } else {
-                console.error(await res.text());
-                setState('error');
-            }
-        } catch (e) {
-            console.error(e);
-            setState('error');
-        }
-    };
-
-    const buttonLabel = (state: DownloadState): string => {
-        if (state === 'downloading') return 'Downloading...';
-        if (state === 'downloaded') return 'Downloaded';
-        if (state === 'error') return 'Retry';
-        return 'Download';
-    };
-
-    const buttonClass = (state: DownloadState): string => {
-        if (state === 'downloaded') return `${styles.downloadBtn} ${styles.downloadBtnSuccess}`;
-        if (state === 'error') return `${styles.downloadBtn} ${styles.downloadBtnError}`;
-        return styles.downloadBtn;
-    };
-
     const canRun = !isRunning && fp && outFp;
 
     return (
@@ -360,7 +289,9 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                         disabled={!canRun}
                         title="Run Segmentation"
                     >
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                        <svg viewBox="0 0 24 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M3 29V3L21 16L3 29Z" stroke="currentColor" strokeWidth="5" strokeLinejoin="round" />
+                        </svg>
                     </button>
                 </div>
 
@@ -430,54 +361,6 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                     </div>
                 </div>
 
-                {/* --- MODELS SECTION --- */}
-                <div className={styles.headerRow}>
-                    <span className={styles.headerTitle}>MODELS</span>
-                </div>
-
-                <div className={styles.section}>
-                    <div className={styles.sam3Container}>
-                        <div className={styles.row}>
-                            <span className={styles.label}>SAM3 (Official; Authenticated)</span>
-                        </div>
-                        <div className={styles.row}>
-                            <input
-                                className={styles.tokenInput}
-                                type="password"
-                                value={token}
-                                onChange={e => setToken(e.target.value)}
-                                placeholder="Paste HF Token"
-                            />
-                            <button
-                                className={buttonClass(officialSam3State)}
-                                onClick={() => downloadModel('sam3', token, setOfficialSam3State)}
-                                disabled={
-                                    officialSam3State === 'downloading' ||
-                                    officialSam3State === 'downloaded' ||
-                                    !token
-                                }
-                            >
-                                {buttonLabel(officialSam3State)}
-                            </button>
-                        </div>
-                    </div>
-
-                    <div className={styles.sam3Container}>
-                        <div className={styles.row}>
-                            <span className={styles.label}>SAM3 (Medical)</span>
-                            <button
-                                className={buttonClass(medicalSam3State)}
-                                onClick={() => downloadModel('medical_sam3', undefined, setMedicalSam3State)}
-                                disabled={
-                                    medicalSam3State === 'downloading' ||
-                                    medicalSam3State === 'downloaded'
-                                }
-                            >
-                                {buttonLabel(medicalSam3State)}
-                            </button>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
     );

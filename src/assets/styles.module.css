@@ -2,7 +2,7 @@
 .pageLayout {
     display: grid;
     grid-template-columns: 3fr 2fr;
-    grid-template-rows: 100vh;
+    grid-template-rows: 1fr;
     margin: 1rem;
     gap: 1rem;
     width: calc(100% - 2rem);
@@ -13,12 +13,6 @@
 }
 .centerArea {
     grid-column: 1 / 2;
-    padding: 0.75rem;
-    overflow: hidden;
-}
-.vizArea {
-    height: 60%;
-    padding-bottom: 0.75rem;
     overflow: hidden;
 }
 .rightSidebar {
@@ -27,13 +21,19 @@
     flex-direction: column;
     height: 100%;
     padding: 0;
+    gap: 1rem;
 }
 .progressArea {
-    height: 40%;
+    height: 100%;
     overflow: hidden;
 }
 .optionsArea {
     flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+.modelsArea {
+    flex: 0 0 auto;
     overflow: hidden;
 }
 
@@ -48,7 +48,7 @@
 }
 
 .headerRow {
-    padding: 0.5rem 1rem 0.25rem 1rem;
+    margin: 0.5rem 1rem 0.25rem 1rem;
     background-color: var(--panel-background);
     display: flex;
     justify-content: space-between;
@@ -58,9 +58,55 @@
 .headerTitle {
     color: var(--panel-header-text);
     font-size: 2.25rem;
-    line-height: 1;
     font-weight: 700;
     font-family: 'Poppins', sans-serif;
+}
+
+/* Sub-section header inside a panel — matches parent app's CompoundEntry
+   title used for e.g. "Slicing Parameters" / "Bounding Box Parameters". */
+.subSectionTitle {
+    margin: 0.75rem 1rem 0.25rem 1rem;
+    color: var(--primary-text);
+    font-family: 'Poppins', sans-serif;
+    font-weight: 700;
+    font-size: 1.25rem;
+}
+
+/* Connection dot + label combo, matching parent's ServerConnectedIndicator. */
+.connectionIndicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.connectionLabel {
+    color: var(--panel-header-text);
+    font-family: 'Poppins', sans-serif;
+    font-size: 0.75rem;
+}
+
+/* Parent ouroboros' base.css sets a thin transparent-until-hover scrollbar
+   globally. This plugin renders in its own iframe so it does not inherit
+   that, so replicate it here for visual consistency with the host app. */
+.container ::-webkit-scrollbar {
+    background-color: rgba(0, 0, 0, 0);
+    width: 8px;
+    height: 8px;
+}
+.container ::-webkit-scrollbar-track {
+    background-color: rgba(0, 0, 0, 0);
+}
+.container ::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0);
+    border-radius: 16px;
+}
+.container ::-webkit-scrollbar-button {
+    display: none;
+}
+.container:hover ::-webkit-scrollbar-thumb {
+    background-color: #a0a0a53d;
+}
+.container ::-webkit-scrollbar-thumb:hover {
+    background-color: #a0a0a53d;
 }
 
 .section {
@@ -82,7 +128,6 @@
     font-size: 1.25rem;
     font-family: 'Poppins', sans-serif;
     font-weight: 500;
-    flex: 1;
 }
 
 .inputContainer {
@@ -127,16 +172,25 @@
 .playBtn {
     background: none;
     border: none;
-    color: var(--option-highlight-color);
+    color: var(--panel-header-text);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 5px;
+    padding: 0;
+    height: 2.25rem;
+    width: fit-content;
+    transition: color 0.3s;
+}
+.playBtn:hover:not(:disabled) {
+    color: #e3e3e3;
 }
 .playBtn:disabled {
     color: var(--inactive-menu-text);
     cursor: default;
+}
+.playBtn svg {
+    height: 100%;
 }
 
 .downloadBtn {
@@ -219,6 +273,52 @@
     border: 1px solid rgba(79, 195, 247, 0.35);
     border-radius: 8px;
 }
+
+.errorStack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin: 0.25rem 1rem 0.5rem 1rem;
+}
+.errorBanner {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.85rem;
+    font-family: 'Poppins', sans-serif;
+    color: #ffd6d6;
+    background: rgba(183, 28, 28, 0.18);
+    border: 1px solid rgba(183, 28, 28, 0.55);
+    border-radius: 8px;
+}
+.errorText {
+    flex: 1;
+    line-height: 1.3;
+    word-break: break-word;
+}
+.errorDismiss {
+    background: transparent;
+    color: #ffd6d6;
+    border: none;
+    cursor: pointer;
+    font-family: 'Poppins', sans-serif;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 0.25rem;
+    opacity: 0.75;
+}
+.errorDismiss:hover {
+    opacity: 1;
+}
+.inlineError {
+    margin-top: 0.35rem;
+    font-family: 'Poppins', sans-serif;
+    font-size: 0.75rem;
+    color: #ff9999;
+    line-height: 1.3;
+    word-break: break-word;
+}
 .backendSteps {
     display: flex;
     flex-direction: column;
@@ -259,17 +359,6 @@
     color: #ffb74d;
     border-color: rgba(255, 183, 77, 0.45);
     background: rgba(255, 183, 77, 0.12);
-}
-
-/* VisualizePanel Specific */
-.vizPlaceholder {
-    background-color: var(--panel-background); 
-    width: 100%; 
-    height: 100%; 
-    display: flex; 
-    align-items: center; 
-    justify-content: center; 
-    color: #666; 
 }
 
 .scrollContent {

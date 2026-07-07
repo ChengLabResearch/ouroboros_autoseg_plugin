@@ -7,6 +7,8 @@ export type BackendStatus = {
     start_time: number | null;
     ready_time: number | null;
 };
+export type ErrorEntry = { id: string; message: string; };
+export type VolumeServerState = 'unchecked' | 'ok' | 'unreachable';
 
 function statusClass(status: string): string {
     if (status === 'completed') return styles.statusCompleted;
@@ -19,12 +21,18 @@ export default function ProgressPanel({
     items,
     connected,
     backendStatus,
-    reconnected
+    reconnected,
+    errors = [],
+    onDismissError,
+    volumeServer = 'unchecked'
 }: {
     items: ProgressItem[],
     connected: boolean,
     backendStatus: BackendStatus | null,
-    reconnected?: boolean
+    reconnected?: boolean,
+    errors?: ErrorEntry[],
+    onDismissError?: (id: string) => void,
+    volumeServer?: VolumeServerState
 }) {
     const hasBackendError = Boolean(
         backendStatus?.initialization_steps?.some(
@@ -48,10 +56,15 @@ export default function ProgressPanel({
         <div className={styles.container}>
             <div className={styles.headerRow}>
                 <span className={styles.headerTitle}>PROGRESS</span>
-                <div 
-                    className={`${styles.connectionDot} ${connected ? styles.connected : ''}`} 
-                    title={connected ? "Backend Connected" : "Backend Disconnected"} 
-                />
+                <div className={styles.connectionIndicator}>
+                    <div
+                        className={`${styles.connectionDot} ${connected ? styles.connected : ''}`}
+                        title={connected ? 'Backend Connected' : 'Backend Disconnected'}
+                    />
+                    <span className={styles.connectionLabel}>
+                        {connected ? 'Connected' : 'Waiting for Server'}
+                    </span>
+                </div>
             </div>
             <div className={styles.progressContent}>
                 <div className={styles.backendStatusBlock}>
@@ -76,9 +89,48 @@ export default function ProgressPanel({
                                     </span>
                                 </div>
                             ))}
+                            {connected && (
+                                <div className={styles.backendStepRow}>
+                                    <span>Volume Server</span>
+                                    <span
+                                        className={`${styles.backendStatusBadge} ${
+                                            volumeServer === 'ok'
+                                                ? styles.statusCompleted
+                                                : volumeServer === 'unreachable'
+                                                    ? styles.statusWarning
+                                                    : styles.statusPending
+                                        }`}
+                                    >
+                                        {volumeServer === 'ok'
+                                            ? 'reachable'
+                                            : volumeServer === 'unreachable'
+                                                ? 'unreachable'
+                                                : 'checking'}
+                                    </span>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
+                {errors.length > 0 && (
+                    <div className={styles.errorStack}>
+                        {errors.map((err) => (
+                            <div key={err.id} className={styles.errorBanner} role="alert">
+                                <span className={styles.errorText}>{err.message}</span>
+                                {onDismissError && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onDismissError(err.id)}
+                                        className={styles.errorDismiss}
+                                        aria-label="Dismiss error"
+                                    >
+                                        ×
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
                 {items.map((i, idx) => (
                     <div key={idx} className={styles.progressItem}>
                         <div className={styles.progressLabelRow}><span>{i.name}</span><span>{i.progress}%</span></div>
