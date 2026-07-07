@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import styles from '../assets/styles.module.css';
 import OptionsPanel from '../components/OptionsPanel';
-import ProgressPanel, { BackendStatus, ProgressItem } from '../components/ProgressPanel';
-import VisualizePanel from '../components/VisualizePanel';
+import ProgressPanel, { BackendStatus, ErrorEntry, ProgressItem, VolumeServerState } from '../components/ProgressPanel';
 import { BACKEND_URL } from '../config';
+
+const MAX_ERRORS = 5;
+const DEDUP_WINDOW_MS = 5000;
+const VOLUME_SERVER_URL = 'http://localhost:3001';
 
 type RunOptions = {
     filePath: string;
@@ -20,8 +23,50 @@ export default function SAM3Page() {
     const [connected, setConnected] = useState(false);
     const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
     const [reconnected, setReconnected] = useState(false);
+    const [errors, setErrors] = useState<ErrorEntry[]>([]);
+    const [volumeServer, setVolumeServer] = useState<VolumeServerState>('unchecked');
     const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const errorIdRef = useRef(0);
+    const lastErrorRef = useRef<{ message: string; at: number } | null>(null);
     const storageKey = 'ouroboros.autoseg.jobId';
+
+    const addError = (message: string): void => {
+        const now = Date.now();
+        const last = lastErrorRef.current;
+        if (last && last.message === message && now - last.at < DEDUP_WINDOW_MS) return;
+        lastErrorRef.current = { message, at: now };
+        const id = `err-${++errorIdRef.current}`;
+        setErrors((prev) => [...prev.slice(-(MAX_ERRORS - 1)), { id, message }]);
+    };
+
+    const dismissError = (id: string): void => {
+        setErrors((prev) => prev.filter((e) => e.id !== id));
+    };
+
+    // Once Docker is ready, probe the volume server directly from the plugin.
+    // The volume server has no /-status endpoint yet; a HEAD to the root that
+    // resolves (2xx / 3xx / 404) is enough to prove it's listening.
+    useEffect(() => {
+        if (!connected) {
+            setVolumeServer('unchecked');
+            return;
+        }
+        let cancelled = false;
+        const probe = async (): Promise<void> => {
+            try {
+                await fetch(VOLUME_SERVER_URL, { method: 'HEAD', mode: 'no-cors' });
+                if (!cancelled) setVolumeServer('ok');
+            } catch {
+                if (!cancelled) setVolumeServer('unreachable');
+            }
+        };
+        probe();
+        const interval = setInterval(probe, 10000);
+        return () => {
+            cancelled = true;
+            clearInterval(interval);
+        };
+    }, [connected]);
 
     const getStoredJobId = () => {
         try {
@@ -119,15 +164,22 @@ export default function SAM3Page() {
                     overlay_annotation_points: opts.overlayAnnotationPoints
                 })
             });
+            if (!res.ok) {
+                const detail = await res.text().catch(() => '');
+                addError(`Failed to start job (HTTP ${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+                setRun(false);
+                return;
+            }
             const data = await res.json();
             if (data.job_id) {
                 setJobId(data.job_id);
                 setStoredJobId(data.job_id);
             } else {
+                addError('Backend accepted the request but did not return a job id.');
                 setRun(false);
             }
         } catch (error) {
-            console.error(error);
+            addError(`Failed to start job: ${error instanceof Error ? error.message : String(error)}`);
             setRun(false);
         }
     };
@@ -201,12 +253,17 @@ export default function SAM3Page() {
                             clearStoredJobId();
                         }
                     } else if (res.status === 404) {
+                        addError('Job disappeared from the backend before it completed.');
                         setRun(false);
                         setJobId(null);
                         clearStoredJobId();
                     }
                 } catch (error) {
-                    console.error('Failed to poll job status', error);
+                    addError(
+                        `Lost contact with the backend while polling job status: ${
+                            error instanceof Error ? error.message : String(error)
+                        }`
+                    );
                 }
             }, 500);
         }
@@ -226,16 +283,25 @@ export default function SAM3Page() {
     return (
         <div className={styles.pageLayout}>
             <div className={styles.centerArea}>
-				<div className={styles.vizArea}>
-					<VisualizePanel><div>SAM3 Visualization</div></VisualizePanel>
-				</div>
                 <div className={styles.progressArea}>
-                    <ProgressPanel items={prog} connected={connected} backendStatus={backendStatus} reconnected={reconnected} />
+                    <ProgressPanel
+                        items={prog}
+                        connected={connected}
+                        backendStatus={backendStatus}
+                        reconnected={reconnected}
+                        errors={errors}
+                        onDismissError={dismissError}
+                        volumeServer={volumeServer}
+                    />
                 </div>
 			</div>
             <div className={styles.rightSidebar}>
                 <div className={styles.optionsArea}>
-                    <OptionsPanel onSubmit={handleRun} isRunning={run} connected={connected} />
+                    <OptionsPanel
+                        onSubmit={handleRun}
+                        isRunning={run}
+                        connected={connected}
+                    />
                 </div>
             </div>
         </div>

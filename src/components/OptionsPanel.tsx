@@ -10,9 +10,9 @@ type SubmitPayload = {
     overlayAnnotationPoints: boolean;
 };
 
-type Props = { 
-    onSubmit: (d: SubmitPayload) => void; 
-    isRunning: boolean; 
+type Props = {
+    onSubmit: (d: SubmitPayload) => void;
+    isRunning: boolean;
     connected: boolean;
 };
 
@@ -29,6 +29,8 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
     type DownloadState = 'idle' | 'downloading' | 'downloaded' | 'error';
     const [officialSam3State, setOfficialSam3State] = useState<DownloadState>('idle');
     const [medicalSam3State, setMedicalSam3State] = useState<DownloadState>('idle');
+    const [officialSam3Error, setOfficialSam3Error] = useState<string | null>(null);
+    const [medicalSam3Error, setMedicalSam3Error] = useState<string | null>(null);
 
     const normalizeFileUri = (uri: string): string => {
         let cleaned = uri.trim();
@@ -304,9 +306,11 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
     const downloadModel = async (
         modelType: string,
         hfToken: string | undefined,
-        setState: (s: DownloadState) => void
+        setState: (s: DownloadState) => void,
+        setError: (msg: string | null) => void
     ) => {
         setState('downloading');
+        setError(null);
         try {
             const res = await fetch(`${BACKEND_URL}/download-model`, {
                 method: 'POST',
@@ -317,11 +321,16 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                 setState('downloaded');
                 await refreshModelStatuses();
             } else {
-                console.error(await res.text());
+                const detail = await res.text().catch(() => '');
+                const message = detail
+                    ? `${res.status}: ${detail.slice(0, 200)}`
+                    : `Backend rejected the download request (HTTP ${res.status}).`;
+                setError(message);
                 setState('error');
             }
         } catch (e) {
-            console.error(e);
+            const message = e instanceof Error ? e.message : String(e);
+            setError(message);
             setState('error');
         }
     };
@@ -450,7 +459,7 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                             />
                             <button
                                 className={buttonClass(officialSam3State)}
-                                onClick={() => downloadModel('sam3', token, setOfficialSam3State)}
+                                onClick={() => downloadModel('sam3', token, setOfficialSam3State, setOfficialSam3Error)}
                                 disabled={
                                     officialSam3State === 'downloading' ||
                                     officialSam3State === 'downloaded' ||
@@ -460,6 +469,9 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                                 {buttonLabel(officialSam3State)}
                             </button>
                         </div>
+                        {officialSam3Error && (
+                            <div className={styles.inlineError} role="alert">{officialSam3Error}</div>
+                        )}
                     </div>
 
                     <div className={styles.sam3Container}>
@@ -467,7 +479,7 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                             <span className={styles.label}>SAM3 (Medical)</span>
                             <button
                                 className={buttonClass(medicalSam3State)}
-                                onClick={() => downloadModel('medical_sam3', undefined, setMedicalSam3State)}
+                                onClick={() => downloadModel('medical_sam3', undefined, setMedicalSam3State, setMedicalSam3Error)}
                                 disabled={
                                     medicalSam3State === 'downloading' ||
                                     medicalSam3State === 'downloaded'
@@ -476,6 +488,9 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                                 {buttonLabel(medicalSam3State)}
                             </button>
                         </div>
+                        {medicalSam3Error && (
+                            <div className={styles.inlineError} role="alert">{medicalSam3Error}</div>
+                        )}
                     </div>
                 </div>
             </div>
