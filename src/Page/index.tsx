@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import styles from '../assets/styles.module.css';
 import OptionsPanel from '../components/OptionsPanel';
 import ProgressPanel, { BackendStatus, ErrorEntry, ProgressItem, VolumeServerState } from '../components/ProgressPanel';
+import ModelsPanel from '../components/ModelsPanel';
 import { BACKEND_URL } from '../config';
 
 const MAX_ERRORS = 5;
@@ -300,8 +301,10 @@ export default function SAM3Page() {
                     <OptionsPanel
                         onSubmit={handleRun}
                         isRunning={run}
-                        connected={connected}
                     />
+                </div>
+                <div className={styles.modelsArea}>
+                    <ModelsPanel connected={connected} />
                 </div>
             </div>
         </div>

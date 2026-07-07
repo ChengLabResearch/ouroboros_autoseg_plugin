@@ -21,6 +21,7 @@
     flex-direction: column;
     height: 100%;
     padding: 0;
+    gap: 1rem;
 }
 .progressArea {
     height: 100%;
@@ -28,6 +29,11 @@
 }
 .optionsArea {
     flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+.modelsArea {
+    flex: 0 0 auto;
     overflow: hidden;
 }
 
