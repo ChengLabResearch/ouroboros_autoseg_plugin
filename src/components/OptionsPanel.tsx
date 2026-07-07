@@ -289,7 +289,7 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                         disabled={!canRun}
                         title="Run Segmentation"
                     >
-                        <svg width="24" height="32" viewBox="0 0 24 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <svg viewBox="0 0 24 32" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <path d="M3 29V3L21 16L3 29Z" stroke="currentColor" strokeWidth="5" strokeLinejoin="round" />
                         </svg>
                     </button>

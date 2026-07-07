@@ -128,7 +128,6 @@
     font-size: 1.25rem;
     font-family: 'Poppins', sans-serif;
     font-weight: 500;
-    flex: 1;
 }
 
 .inputContainer {
@@ -173,16 +172,25 @@
 .playBtn {
     background: none;
     border: none;
-    color: var(--option-highlight-color);
+    color: var(--panel-header-text);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 5px;
+    padding: 0;
+    height: 2.25rem;
+    width: fit-content;
+    transition: color 0.3s;
+}
+.playBtn:hover:not(:disabled) {
+    color: #e3e3e3;
 }
 .playBtn:disabled {
     color: var(--inactive-menu-text);
     cursor: default;
+}
+.playBtn svg {
+    height: 100%;
 }
 
 .downloadBtn {
