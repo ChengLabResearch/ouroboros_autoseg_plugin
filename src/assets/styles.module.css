@@ -2,7 +2,7 @@
 .pageLayout {
     display: grid;
     grid-template-columns: 3fr 2fr;
-    grid-template-rows: 100vh;
+    grid-template-rows: 1fr;
     margin: 1rem;
     gap: 1rem;
     width: calc(100% - 2rem);
@@ -13,7 +13,6 @@
 }
 .centerArea {
     grid-column: 1 / 2;
-    padding: 0.75rem;
     overflow: hidden;
 }
 .rightSidebar {
