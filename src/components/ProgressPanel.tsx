@@ -56,10 +56,15 @@ export default function ProgressPanel({
         <div className={styles.container}>
             <div className={styles.headerRow}>
                 <span className={styles.headerTitle}>PROGRESS</span>
-                <div 
-                    className={`${styles.connectionDot} ${connected ? styles.connected : ''}`} 
-                    title={connected ? "Backend Connected" : "Backend Disconnected"} 
-                />
+                <div className={styles.connectionIndicator}>
+                    <div
+                        className={`${styles.connectionDot} ${connected ? styles.connected : ''}`}
+                        title={connected ? 'Backend Connected' : 'Backend Disconnected'}
+                    />
+                    <span className={styles.connectionLabel}>
+                        {connected ? 'Connected' : 'Waiting for Server'}
+                    </span>
+                </div>
             </div>
             <div className={styles.progressContent}>
                 <div className={styles.backendStatusBlock}>

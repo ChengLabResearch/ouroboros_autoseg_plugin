@@ -58,6 +58,28 @@
     font-family: 'Poppins', sans-serif;
 }
 
+/* Sub-section header inside a panel — matches parent app's CompoundEntry
+   title used for e.g. "Slicing Parameters" / "Bounding Box Parameters". */
+.subSectionTitle {
+    margin: 0.75rem 1rem 0.25rem 1rem;
+    color: var(--primary-text);
+    font-family: 'Poppins', sans-serif;
+    font-weight: 700;
+    font-size: 1.25rem;
+}
+
+/* Connection dot + label combo, matching parent's ServerConnectedIndicator. */
+.connectionIndicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.connectionLabel {
+    color: var(--panel-header-text);
+    font-family: 'Poppins', sans-serif;
+    font-size: 0.75rem;
+}
+
 /* Parent ouroboros' base.css sets a thin transparent-until-hover scrollbar
    globally. This plugin renders in its own iframe so it does not inherit
    that, so replicate it here for visual consistency with the host app. */

@@ -440,9 +440,7 @@ export default function OptionsPanel({ onSubmit, isRunning, connected }: Props) 
                 </div>
 
                 {/* --- MODELS SECTION --- */}
-                <div className={styles.headerRow}>
-                    <span className={styles.headerTitle}>MODELS</span>
-                </div>
+                <div className={styles.subSectionTitle}>Models</div>
 
                 <div className={styles.section}>
                     <div className={styles.sam3Container}>
