@@ -25,6 +25,8 @@ Common options:
   VOLUME_NAME=ouroboros-volume   Docker volume used as the plugin shared volume.
   OUTPUT_NAME=mask_stack.tif     Output filename written under Segmentation/.
   OUTPUT_DIR=/path/out           Also copy the output mask stack to this host dir.
+  ARTIFACT_DIR=/path/artifacts   Store revisions, telemetry, and bounded backend logs here.
+  TELEMETRY_INTERVAL_SECONDS=1  Sampling interval for GPU, RSS, and elapsed-time CSV rows.
   KEEP_CONTAINER=1               Leave the backend container running after the script exits.
 
 The script builds/runs the CUDA Docker target with --gpus all, stages the input
@@ -82,8 +84,36 @@ print(summary or "no step progress")
 PY
 }
 
+capture_backend_log() {
+  [[ -n "${ARTIFACT_DIR:-}" ]] || return 0
+  docker logs --tail "${LOG_TAIL_LINES}" "${CONTAINER_NAME}" \
+    >"${ARTIFACT_DIR}/backend.log" 2>&1 || true
+}
+
+telemetry_loop() {
+  local start_epoch="$1"
+  while docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -qx true; do
+    local now elapsed gpu rss
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    elapsed=$(( $(date +%s) - start_epoch ))
+    gpu="$(nvidia-smi \
+      --id="${CUDA_DEVICE_ORDINAL}" \
+      --query-gpu=index,utilization.gpu,memory.used,memory.total \
+      --format=csv,noheader,nounits 2>/dev/null | head -n 1 || true)"
+    rss="$(docker stats --no-stream --format '{{.MemUsage}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
+    printf '%s,%s,%s,"%s"\n' "${now}" "${elapsed}" "${gpu}" "${rss}" \
+      >>"${TELEMETRY_CSV}"
+    sleep "${TELEMETRY_INTERVAL_SECONDS}"
+  done
+}
+
 cleanup() {
   local status=$?
+  if [[ -n "${TELEMETRY_PID:-}" ]]; then
+    kill "${TELEMETRY_PID}" >/dev/null 2>&1 || true
+    wait "${TELEMETRY_PID}" 2>/dev/null || true
+  fi
+  capture_backend_log
   if [[ -n "${VALIDATION_DIR:-}" && -d "${VALIDATION_DIR}" ]]; then
     rm -rf "${VALIDATION_DIR}"
   fi
@@ -115,6 +145,8 @@ BACKEND_IMAGE="${BACKEND_IMAGE:-${DEFAULT_IMAGE}}"
 BUILD_IMAGE="${BUILD_IMAGE:-1}"
 CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP:-75}"
 CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT:-770d20ca8db4f834ba4c89c845bca196fbfc97ea}"
+PLUGIN_GIT_SHA="${PLUGIN_GIT_SHA:-$(git -C "${BACKEND_DIR}/.." rev-parse HEAD)}"
+PLUGIN_DIRTY="$(git -C "${BACKEND_DIR}/.." status --porcelain | awk 'NF { found=1 } END { print found ? "true" : "false" }')"
 CHECKPOINT_URL="${CHECKPOINT_URL:-${DEFAULT_CHECKPOINT_URL}}"
 CHECKPOINT_CACHE="${CHECKPOINT_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/ouroboros-autoseg/medical_sam3_checkpoint_3D.pt}"
 HOST_PORT="${HOST_PORT:-18788}"
@@ -122,12 +154,20 @@ VOLUME_NAME="${VOLUME_NAME:-ouroboros-volume}"
 CONTAINER_NAME="${CONTAINER_NAME:-ouroboros-autoseg-video-smoke}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-10}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-7200}"
+TELEMETRY_INTERVAL_SECONDS="${TELEMETRY_INTERVAL_SECONDS:-1}"
+CUDA_DEVICE_ORDINAL="${CUDA_DEVICE_ORDINAL:-0}"
+LOG_TAIL_LINES="${LOG_TAIL_LINES:-500}"
 OVERLAY_ANNOTATION_POINTS="${OVERLAY_ANNOTATION_POINTS:-false}"
 
 INPUT_DIR="$(dirname -- "${INPUT_STACK}")"
 INPUT_NAME="$(basename -- "${INPUT_STACK}")"
 INPUT_STEM="${INPUT_NAME%.*}"
 OUTPUT_NAME="${OUTPUT_NAME:-${INPUT_STEM}_video_smoke_mask.tif}"
+ARTIFACT_DIR="${ARTIFACT_DIR:-${OUTPUT_DIR:-/tmp/autoseg-smoke-${INPUT_STEM}}}"
+mkdir -p "${ARTIFACT_DIR}"
+TELEMETRY_CSV="${ARTIFACT_DIR}/telemetry.csv"
+printf '%s\n' 'timestamp_utc,elapsed_seconds,gpu_index,gpu_utilization_percent,gpu_memory_used_mib,gpu_memory_total_mib,container_memory_usage' \
+  >"${TELEMETRY_CSV}"
 
 if [[ -n "${CHECKPOINT_PATH:-}" ]]; then
   CHECKPOINT_PATH="$(resolve_path "${CHECKPOINT_PATH}")"
@@ -158,12 +198,27 @@ if [[ "${BUILD_IMAGE}" != "0" ]]; then
     --build-arg CANDLE_FEATURES=cuda \
     --build-arg CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
     --build-arg CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT}" \
+    --build-arg PLUGIN_GIT_SHA="${PLUGIN_GIT_SHA}" \
     -t "${BACKEND_IMAGE}" \
     "${BACKEND_DIR}"
 else
   docker image inspect "${BACKEND_IMAGE}" >/dev/null 2>&1 \
     || die "Docker image not found or Docker is not accessible: ${BACKEND_IMAGE}"
 fi
+
+cat >"${ARTIFACT_DIR}/revisions.env" <<EOF
+plugin_sha=${PLUGIN_GIT_SHA}
+plugin_dirty=${PLUGIN_DIRTY}
+candle_sha=${CANDLE_SAM3_COMMIT}
+input_sha256=$(sha256sum "${INPUT_STACK}" | awk '{print $1}')
+checkpoint_sha256=$(sha256sum "${CHECKPOINT_PATH}" | awk '{print $1}')
+image_id=$(docker image inspect --format '{{.Id}}' "${BACKEND_IMAGE}")
+cuda_compute_cap=${CUDA_COMPUTE_CAP}
+cuda_device_ordinal=${CUDA_DEVICE_ORDINAL}
+gpu=$(nvidia-smi --id="${CUDA_DEVICE_ORDINAL}" --query-gpu=name --format=csv,noheader 2>/dev/null || printf unavailable)
+driver_version=$(nvidia-smi --id="${CUDA_DEVICE_ORDINAL}" --query-gpu=driver_version --format=csv,noheader 2>/dev/null || printf unavailable)
+cuda_runtime=$(docker run --rm --entrypoint /bin/sh "${BACKEND_IMAGE}" -c 'printf %s "${CUDA_VERSION:-unknown}"')
+EOF
 
 if [[ "${SKIP_GPU_CHECK:-0}" != "1" ]]; then
   log "Checking Docker GPU access with ${BACKEND_IMAGE}"
@@ -200,8 +255,13 @@ docker run -d \
   -v "${VOLUME_NAME}:/ouroboros-volume" \
   -e VOLUME_MOUNT_PATH=/ouroboros-volume \
   -e VOLUME_SERVER_URL=http://host.docker.internal:3001 \
+  -e CUDA_DEVICE_ORDINAL="${CUDA_DEVICE_ORDINAL}" \
   --add-host host.docker.internal:host-gateway \
   "${BACKEND_IMAGE}" >/dev/null
+
+RUN_START_EPOCH="$(date +%s)"
+telemetry_loop "${RUN_START_EPOCH}" &
+TELEMETRY_PID=$!
 
 log "Waiting for backend on http://127.0.0.1:${HOST_PORT}"
 for _ in $(seq 1 60); do
@@ -252,16 +312,28 @@ while (( SECONDS < deadline )); do
       break
       ;;
     error)
-      docker logs --tail 200 "${CONTAINER_NAME}" >&2 || true
+      capture_backend_log
+      tail -n "${LOG_TAIL_LINES}" "${ARTIFACT_DIR}/backend.log" >&2 || true
       die "Smoke job failed"
       ;;
   esac
 done
 
 [[ "${JOB_STATUS:-}" == "completed" ]] || {
-  docker logs --tail 200 "${CONTAINER_NAME}" >&2 || true
+  capture_backend_log
+  tail -n "${LOG_TAIL_LINES}" "${ARTIFACT_DIR}/backend.log" >&2 || true
   die "Smoke job timed out after ${TIMEOUT_SECONDS}s"
 }
+
+capture_backend_log
+grep -F 'device=cuda' "${ARTIFACT_DIR}/backend.log" >/dev/null \
+  || die "Backend log does not prove CUDA model loading"
+grep -F "cuda_ordinal=${CUDA_DEVICE_ORDINAL}" "${ARTIFACT_DIR}/backend.log" >/dev/null \
+  || die "Backend log does not prove the requested CUDA ordinal"
+grep -F "plugin_sha=${PLUGIN_GIT_SHA}" "${ARTIFACT_DIR}/backend.log" >/dev/null \
+  || die "Backend log does not contain the expected plugin SHA"
+grep -F "candle_sha=${CANDLE_SAM3_COMMIT}" "${ARTIFACT_DIR}/backend.log" >/dev/null \
+  || die "Backend log does not contain the expected Candle SHA"
 
 log "Verifying output in Docker volume"
 docker run --rm \
@@ -301,6 +373,14 @@ source = geometry(sys.argv[1])
 output = geometry(sys.argv[2])
 if source != output:
     raise SystemExit(f"output geometry {output} does not match input {source}")
+with tifffile.TiffFile(sys.argv[2]) as tif:
+    for index, page in enumerate(tif.pages):
+        values = page.asarray()
+        if values.dtype != "uint8":
+            raise SystemExit(f"output page {index} has dtype {values.dtype}, expected uint8")
+        unique = set(int(value) for value in __import__("numpy").unique(values))
+        if not unique.issubset({0, 255}):
+            raise SystemExit(f"output page {index} is not binary: {sorted(unique)!r}")
 print(f"[smoke] output geometry verified: frames={output[0]}, height={output[1]}, width={output[2]}")
 PY
 else
@@ -313,4 +393,4 @@ if [[ -n "${OUTPUT_DIR:-}" ]]; then
   log "Copied output to ${OUTPUT_DIR}/${OUTPUT_NAME}"
 fi
 
-log "GPU biological-stack smoke completed successfully"
+log "GPU biological-stack smoke completed successfully; artifacts=${ARTIFACT_DIR}"

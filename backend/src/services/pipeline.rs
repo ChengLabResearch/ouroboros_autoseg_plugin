@@ -189,10 +189,7 @@ async fn model_handle_for_request(
 fn inference_device() -> Result<candle_core::Device, AppError> {
     #[cfg(feature = "cuda")]
     {
-        let ordinal = std::env::var("CUDA_DEVICE_ORDINAL")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0);
+        let ordinal = crate::inference::candle_sam3::configured_cuda_ordinal();
         candle_core::Device::new_cuda(ordinal).map_err(|error| {
             AppError::internal(format!(
                 "CUDA backend was requested but device {ordinal} is unavailable: {error}"

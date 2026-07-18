@@ -44,5 +44,12 @@ SAM3 checkpoint. A valid smoke run should:
   straightened input
 - keep normal output clean when `overlay_annotation_points` is false
 
+Each run writes a `revisions.env`, bounded `backend.log`, and synchronized
+`telemetry.csv` under `ARTIFACT_DIR` (or `OUTPUT_DIR` when set). The telemetry
+rows record elapsed time, GPU utilization, GPU memory, and container memory.
+The harness also verifies that the model-load log contains the requested CUDA
+ordinal plus the exact plugin and Candle revisions, and that every output TIFF
+page is `uint8` with binary values only.
+
 Use a separate run with `overlay_annotation_points` enabled when generating
 prompt-marker figure artifacts.

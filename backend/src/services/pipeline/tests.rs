@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::{annotation_overlay_path, plan, prepare, run, validate_video_masks};
+use super::{annotation_overlay_path, inference_device, plan, prepare, run, validate_video_masks};
 use crate::{
     app_state::AppState,
     config::AppConfig,
@@ -176,6 +176,12 @@ async fn validate_video_masks_accepts_expected_frame_count_and_geometry() {
     ];
 
     validate_video_masks(&masks, &prepared).expect("valid video masks");
+}
+
+#[cfg(not(feature = "cuda"))]
+#[test]
+fn cpu_build_selects_cpu_without_cuda_initialization() {
+    assert!(inference_device().expect("CPU device").is_cpu());
 }
 
 #[tokio::test]
