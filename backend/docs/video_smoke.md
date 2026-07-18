@@ -17,6 +17,19 @@ later z-annotation reuses that ID, including multiple positive points grouped on
 one frame. A future multi-object annotation schema must provide explicit track
 IDs; independent rows must not implicitly allocate independent objects.
 
+Video propagation is consumed through Candle's streaming callback. Each yielded
+CUDA frame is thresholded and copied into its final CPU `FrameMask` slot before
+the callback returns; the plugin never retains a full `VideoOutput`. Frame
+indices are validated for direction, range, duplicates, and omissions, and the
+session is explicitly closed on both success and failure. Low-memory runs log
+`cached_output_frames` after propagation and require it to be zero.
+
+The final CPU result is intentionally still resident until TIFF writing
+completes. For 4,901 binary 200 x 200 pages, the mask pixel buffers account for
+about 187 MiB, plus vector metadata. The TIFF writer currently makes a
+comparable transient page-data copy, so full-stack host RSS acceptance must
+include both allocations.
+
 ## GPU Biological-Stack Smoke
 
 Use the smoke script for the checkpoint/dataset-dependent portion of AUTO-4. It
