@@ -27,6 +27,7 @@ Common options:
   OUTPUT_DIR=/path/out           Also copy the output mask stack to this host dir.
   ARTIFACT_DIR=/path/artifacts   Store revisions, telemetry, and bounded backend logs here.
   TELEMETRY_INTERVAL_SECONDS=1  Sampling interval for GPU, RSS, and elapsed-time CSV rows.
+  TIFF_VALIDATOR_PYTHON=python3  Python interpreter with tifffile and numpy installed.
   KEEP_CONTAINER=1               Leave the backend container running after the script exits.
 
 The script builds/runs the CUDA Docker target with --gpus all, stages the input
@@ -158,6 +159,12 @@ TELEMETRY_INTERVAL_SECONDS="${TELEMETRY_INTERVAL_SECONDS:-1}"
 CUDA_DEVICE_ORDINAL="${CUDA_DEVICE_ORDINAL:-0}"
 LOG_TAIL_LINES="${LOG_TAIL_LINES:-500}"
 OVERLAY_ANNOTATION_POINTS="${OVERLAY_ANNOTATION_POINTS:-false}"
+if [[ -x "${BACKEND_DIR}/.venv/bin/python" ]]; then
+  DEFAULT_TIFF_VALIDATOR_PYTHON="${BACKEND_DIR}/.venv/bin/python"
+else
+  DEFAULT_TIFF_VALIDATOR_PYTHON="python3"
+fi
+TIFF_VALIDATOR_PYTHON="${TIFF_VALIDATOR_PYTHON:-${DEFAULT_TIFF_VALIDATOR_PYTHON}}"
 
 INPUT_DIR="$(dirname -- "${INPUT_STACK}")"
 INPUT_NAME="$(basename -- "${INPUT_STACK}")"
@@ -352,9 +359,11 @@ docker run --rm \
   "${BACKEND_IMAGE}" \
   -ceu 'cp "/volume/sam3-segmentation/Segmentation/${OUTPUT_NAME}" "/out/${OUTPUT_NAME}"'
 
-if python3 -c 'import tifffile' >/dev/null 2>&1; then
-  python3 - "${INPUT_STACK}" "${VALIDATION_DIR}/${OUTPUT_NAME}" <<'PY'
+"${TIFF_VALIDATOR_PYTHON}" -c 'import numpy, tifffile' >/dev/null 2>&1 \
+  || die "TIFF validation requires numpy and tifffile in ${TIFF_VALIDATOR_PYTHON}"
+"${TIFF_VALIDATOR_PYTHON}" - "${INPUT_STACK}" "${VALIDATION_DIR}/${OUTPUT_NAME}" <<'PY'
 import sys
+import numpy
 import tifffile
 
 
@@ -378,14 +387,11 @@ with tifffile.TiffFile(sys.argv[2]) as tif:
         values = page.asarray()
         if values.dtype != "uint8":
             raise SystemExit(f"output page {index} has dtype {values.dtype}, expected uint8")
-        unique = set(int(value) for value in __import__("numpy").unique(values))
+        unique = set(int(value) for value in numpy.unique(values))
         if not unique.issubset({0, 255}):
             raise SystemExit(f"output page {index} is not binary: {sorted(unique)!r}")
 print(f"[smoke] output geometry verified: frames={output[0]}, height={output[1]}, width={output[2]}")
 PY
-else
-  log "Python tifffile is not installed; skipped output geometry validation"
-fi
 
 if [[ -n "${OUTPUT_DIR:-}" ]]; then
   mkdir -p "${OUTPUT_DIR}"
