@@ -72,3 +72,13 @@ page is `uint8` with binary values only.
 
 Use a separate run with `overlay_annotation_points` enabled when generating
 prompt-marker figure artifacts.
+
+## CANDLE-2 Streamed Control
+
+The 2026-07-18 cc7.5 control at plugin `03d94e6b17e8889b4db4a54a7e3c87744d2679d8`
+and Candle `770d20ca8db4f834ba4c89c845bca196fbfc97ea` ran the 16-page,
+200 x 200 Medical-SAM3 fixture in 92 seconds (0.174 fps), with 11,536 MiB peak
+VRAM and 327.0 MiB peak container RSS. The log recorded
+`cached_output_frames=0`. The streamed output SHA-256 was
+`bf6d366d33adc09053ba6da7065c88916d6780a133bb2779204f458af751c67e`,
+byte-identical to both collected old-pin controls.
