@@ -3,6 +3,7 @@ use std::{path::Path, sync::Arc};
 use async_trait::async_trait;
 use candle_core::DType;
 use candle_transformers::models::sam3;
+use tracing::info;
 
 use crate::{
     app_state::Sam3ModelHandle,
@@ -34,6 +35,23 @@ pub fn load_sam3_handle(
     checkpoint_path: &std::path::Path,
     device: candle_core::Device,
 ) -> Result<Sam3ModelHandle, AppError> {
+    let device_kind = if device.is_cuda() { "cuda" } else { "cpu" };
+    let cuda_ordinal = device
+        .is_cuda()
+        .then(|| configured_cuda_ordinal().to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    let plugin_sha = option_env!("PLUGIN_GIT_SHA").unwrap_or("unknown");
+    let candle_sha = option_env!("CANDLE_SAM3_GIT_SHA").unwrap_or("unknown");
+    info!(
+        model = %model_name,
+        checkpoint = %checkpoint_path.display(),
+        device = %device_kind,
+        cuda_ordinal = %cuda_ordinal,
+        dtype = "f32",
+        plugin_sha = %plugin_sha,
+        candle_sha = %candle_sha,
+        "loading SAM3 model and tracker"
+    );
     let config = sam3::Config::default();
     let source = sam3::Sam3CheckpointSource::upstream_pth(checkpoint_path);
     let image_model =
@@ -48,6 +66,13 @@ pub fn load_sam3_handle(
         tracker: Arc::new(tracker),
         device,
     })
+}
+
+pub fn configured_cuda_ordinal() -> usize {
+    std::env::var("CUDA_DEVICE_ORDINAL")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
 }
 
 #[async_trait]
@@ -136,15 +161,7 @@ fn run_video_inference(
 
     let source =
         sam3::VideoSource::from_path(frames_dir).map_err(|e| AppError::internal(e.to_string()))?;
-    let session_options = sam3::VideoSessionOptions {
-        tokenizer_path: None,
-        memory_profile: sam3::VideoMemoryProfile::LowMemory,
-        offload_frames_to_cpu: false,
-        offload_state_to_cpu: false,
-        prefetch_ahead: 0,
-        prefetch_behind: 0,
-        max_feature_cache_entries: 2,
-    };
+    let session_options = low_memory_video_session_options();
 
     let model_ref = &*handle.image_model;
     let tracker_ref = &*handle.tracker;
@@ -210,4 +227,37 @@ fn run_video_inference(
         .iter()
         .map(|frame| video_frame_to_mask(&frame.objects, frame_width, frame_height))
         .collect()
+}
+
+fn low_memory_video_session_options() -> sam3::VideoSessionOptions {
+    sam3::VideoSessionOptions {
+        tokenizer_path: None,
+        memory_profile: sam3::VideoMemoryProfile::LowMemory,
+        offload_frames_to_cpu: false,
+        offload_state_to_cpu: false,
+        prefetch_ahead: 0,
+        prefetch_behind: 0,
+        max_feature_cache_entries: 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_session_options_use_low_memory_no_prefetch_profile() {
+        let options = low_memory_video_session_options();
+
+        assert!(matches!(
+            options.memory_profile,
+            sam3::VideoMemoryProfile::LowMemory
+        ));
+        assert!(!options.offload_frames_to_cpu);
+        assert!(!options.offload_state_to_cpu);
+        assert_eq!(options.prefetch_ahead, 0);
+        assert_eq!(options.prefetch_behind, 0);
+        assert_eq!(options.max_feature_cache_entries, 2);
+        assert!(options.tokenizer_path.is_none());
+    }
 }

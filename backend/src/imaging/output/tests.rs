@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
-use super::write_mask_stack;
+use super::{write_annotation_overlay_stack, write_mask_stack};
 use crate::{
+    imaging::annotations::AnnotationPoint,
     imaging::tiff_io::{inspect_volume, read_volume_frames},
     inference::image::FrameMask,
 };
@@ -71,4 +72,39 @@ async fn write_mask_stack_rejects_inconsistent_geometry() {
         error.to_string(),
         "Mask stack frames must all share the same geometry"
     );
+}
+
+#[tokio::test]
+async fn write_annotation_overlay_stack_preserves_source_masks_and_marks_points() {
+    let root = unique_temp_dir();
+    let output_path = root.join("mask-overlay.tif");
+    let masks = vec![
+        FrameMask {
+            width: 5,
+            height: 5,
+            pixels: vec![0; 25],
+        },
+        FrameMask {
+            width: 5,
+            height: 5,
+            pixels: vec![0; 25],
+        },
+    ];
+    let annotations = vec![AnnotationPoint {
+        x: 2.0,
+        y: 2.0,
+        z: 0.0,
+    }];
+
+    write_annotation_overlay_stack(&output_path, &masks, &annotations, 127)
+        .await
+        .expect("write overlay stack");
+
+    assert!(masks[0].pixels.iter().all(|pixel| *pixel == 0));
+    let frames = read_volume_frames(&output_path)
+        .await
+        .expect("read overlay stack");
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].pixels[2 + 2 * 5], 127);
+    assert_eq!(frames[1].pixels[2 + 2 * 5], 127);
 }

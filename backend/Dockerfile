@@ -21,6 +21,9 @@ WORKDIR /build
 
 # Clone candle_sam3 at the pinned commit used during development.
 ARG CANDLE_SAM3_COMMIT=770d20ca8db4f834ba4c89c845bca196fbfc97ea
+ARG PLUGIN_GIT_SHA=unknown
+ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
+ENV PLUGIN_GIT_SHA=${PLUGIN_GIT_SHA}
 RUN git clone https://github.com/den-sq/candle_sam3.git candle_sam3_main \
     && git -C candle_sam3_main checkout "${CANDLE_SAM3_COMMIT}"
 
@@ -51,6 +54,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 WORKDIR /build
 
 ARG CANDLE_SAM3_COMMIT=770d20ca8db4f834ba4c89c845bca196fbfc97ea
+ARG PLUGIN_GIT_SHA=unknown
+ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
+ENV PLUGIN_GIT_SHA=${PLUGIN_GIT_SHA}
 RUN git clone https://github.com/den-sq/candle_sam3.git candle_sam3_main \
     && git -C candle_sam3_main checkout "${CANDLE_SAM3_COMMIT}"
 
