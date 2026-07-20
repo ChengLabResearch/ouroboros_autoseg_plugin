@@ -8,6 +8,14 @@ Variant B keeps tracker state on the GPU and is available as a benchmark control
 It must not become the default until the 512-frame workload demonstrates both a
 14 GiB peak-VRAM ceiling and a post-warmup memory plateau.
 
+Bounded tracker history from https://github.com/den-sq/sam_parity/issues/37 is
+also opt-in while its mask certification is pending. Set
+`SAM3_MAX_NON_COND_TRACKER_STATES=32` for the bounded benchmark control; leave it
+empty for compatibility/unbounded mode. Candle rejects a bound smaller than its
+effective mask-memory, object-pointer, and refinement windows (16 for Medical
+SAM3), always retains prompt/conditioning states, and reports retained state,
+output-index, low-resolution-mask, and hotstart-queue metrics separately.
+
 | Setting | Variant B | Variant C (default) |
 | --- | --- | --- |
 | `SAM3_VIDEO_STATE_PROFILE` | `gpu-resident` | `cpu-offload` |
