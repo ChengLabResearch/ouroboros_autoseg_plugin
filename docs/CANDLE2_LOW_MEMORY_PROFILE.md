@@ -26,6 +26,8 @@ reduces the non-conditioning mask-memory window; it does **not** bound the full
 tracker history lands in https://github.com/den-sq/sam_parity/issues/37, CPU
 offload is therefore a temporary capacity measure rather than a claim that
 retained history is bounded.
+Set `SAM3_TRACKER_TRIM_PAST_NON_COND_MEM=false` only for the required untrimmed
+reference run; the default is `true`, and the selected masks must remain equal.
 
 The Medical tracker control has `hotstart_delay=0`, so there is no enabled
 hotstart queue in these measurements. Any future non-zero hotstart delay must be

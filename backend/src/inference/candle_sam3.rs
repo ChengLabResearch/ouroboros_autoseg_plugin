@@ -58,7 +58,7 @@ pub fn load_sam3_handle(
         sam3::Sam3ImageModel::from_checkpoint_source(&config, &source, DType::F32, &device)
             .map_err(|e| AppError::internal(e.to_string()))?;
     let mut tracker_config = sam3::Sam3TrackerConfig::from_sam3_config(&config);
-    tracker_config.predictor.trim_past_non_cond_mem_for_eval = true;
+    tracker_config.predictor.trim_past_non_cond_mem_for_eval = configured_trim_past_non_cond_mem()?;
     info!(
         trim_past_non_cond_mem_for_eval = tracker_config.predictor.trim_past_non_cond_mem_for_eval,
         hotstart_delay = tracker_config.predictor.hotstart_delay,
@@ -267,11 +267,17 @@ fn run_video_inference(
                 tracked_objects = cache_stats.tracked_objects,
                 cpu_total_bytes = cache_stats.cpu_bytes.total(),
                 cpu_frame_bytes = cache_stats.cpu_bytes.frames,
+                cpu_visual_feature_bytes = cache_stats.cpu_bytes.visual_features,
                 cpu_tracker_state_bytes = cache_stats.cpu_bytes.tracker_states,
+                cpu_packed_prompt_history_bytes = cache_stats.cpu_bytes.packed_prompt_history,
+                cpu_text_cache_bytes = cache_stats.cpu_bytes.text_cache,
                 cpu_cached_output_bytes = cache_stats.cpu_bytes.cached_outputs,
                 device_total_bytes = cache_stats.device_bytes.total(),
                 device_frame_bytes = cache_stats.device_bytes.frames,
+                device_visual_feature_bytes = cache_stats.device_bytes.visual_features,
                 device_tracker_state_bytes = cache_stats.device_bytes.tracker_states,
+                device_packed_prompt_history_bytes = cache_stats.device_bytes.packed_prompt_history,
+                device_text_cache_bytes = cache_stats.device_bytes.text_cache,
                 device_cached_output_bytes = cache_stats.device_bytes.cached_outputs,
                 "completed streamed SAM3 video propagation"
             );
@@ -418,6 +424,25 @@ fn register_single_trajectory_prompts(
 
 const VIDEO_STATE_PROFILE_ENV: &str = "SAM3_VIDEO_STATE_PROFILE";
 const VIDEO_FEATURE_CACHE_ENTRIES_ENV: &str = "SAM3_VIDEO_FEATURE_CACHE_ENTRIES";
+const TRACKER_TRIM_PAST_NON_COND_MEM_ENV: &str = "SAM3_TRACKER_TRIM_PAST_NON_COND_MEM";
+
+fn configured_trim_past_non_cond_mem() -> Result<bool, AppError> {
+    parse_trim_past_non_cond_mem(
+        std::env::var(TRACKER_TRIM_PAST_NON_COND_MEM_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_trim_past_non_cond_mem(value: Option<&str>) -> Result<bool, AppError> {
+    match value.unwrap_or("true") {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        value => Err(AppError::bad_request(format!(
+            "Invalid {TRACKER_TRIM_PAST_NON_COND_MEM_ENV}={value:?}; expected true or false"
+        ))),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VideoStateProfile {
@@ -538,6 +563,14 @@ mod tests {
         assert!(low_memory_video_session_config(None, Some("0")).is_err());
         assert!(low_memory_video_session_config(None, Some("3")).is_err());
         assert!(low_memory_video_session_config(None, Some("many")).is_err());
+    }
+
+    #[test]
+    fn tracker_trim_control_defaults_on_and_supports_an_untrimmed_reference() {
+        assert!(parse_trim_past_non_cond_mem(None).expect("default trim"));
+        assert!(parse_trim_past_non_cond_mem(Some("true")).expect("trimmed control"));
+        assert!(!parse_trim_past_non_cond_mem(Some("false")).expect("untrimmed control"));
+        assert!(parse_trim_past_non_cond_mem(Some("yes")).is_err());
     }
 
     #[test]
