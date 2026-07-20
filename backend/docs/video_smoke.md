@@ -11,6 +11,12 @@ The unit tests lock those options and validate that video propagation output has
 one mask per staged frame, with the same width and height as the straightened
 input volume.
 
+Straightened-stack `annotation_points` metadata currently describes one
+biological trajectory. The first prompt allocates its SAM3 object ID and every
+later z-annotation reuses that ID, including multiple positive points grouped on
+one frame. A future multi-object annotation schema must provide explicit track
+IDs; independent rows must not implicitly allocate independent objects.
+
 ## GPU Biological-Stack Smoke
 
 Use the smoke script for the checkpoint/dataset-dependent portion of AUTO-4. It
