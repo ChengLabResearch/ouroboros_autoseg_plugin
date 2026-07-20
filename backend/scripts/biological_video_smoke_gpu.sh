@@ -21,12 +21,15 @@ Common options:
   CUDA_COMPUTE_CAP=75            CUDA compute capability used for the local image build.
   CHECKPOINT_PATH=/path/model.pt Use an existing Medical SAM3 3D checkpoint.
   CHECKPOINT_URL=https://...     Override the default checkpoint_3D.pt URL.
+  REUSE_STAGED_CHECKPOINT=1     Reuse medical_sam3.pt already in VOLUME_NAME.
   HOST_PORT=18788               Host port mapped to backend port 8686.
   VOLUME_NAME=ouroboros-volume   Docker volume used as the plugin shared volume.
   OUTPUT_NAME=mask_stack.tif     Output filename written under Segmentation/.
   OUTPUT_DIR=/path/out           Also copy the output mask stack to this host dir.
   ARTIFACT_DIR=/path/artifacts   Store revisions, telemetry, and bounded backend logs here.
   TELEMETRY_INTERVAL_SECONDS=1  Sampling interval for GPU, RSS, and elapsed-time CSV rows.
+  SAM3_VIDEO_STATE_PROFILE=cpu-offload  State profile: gpu-resident (B) or cpu-offload (C).
+  SAM3_VIDEO_FEATURE_CACHE_ENTRIES=1    Feature-cache capacity benchmark control: 1 or 2.
   TIFF_VALIDATOR_PYTHON=python3  Python interpreter with tifffile and numpy installed.
   KEEP_CONTAINER=1               Leave the backend container running after the script exits.
 
@@ -145,7 +148,7 @@ INPUT_STACK="$(resolve_path "${INPUT_STACK}")"
 BACKEND_IMAGE="${BACKEND_IMAGE:-${DEFAULT_IMAGE}}"
 BUILD_IMAGE="${BUILD_IMAGE:-1}"
 CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP:-75}"
-CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT:-770d20ca8db4f834ba4c89c845bca196fbfc97ea}"
+CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT:-5b923247529646f3e1f59fefa60b3d6cca137b7b}"
 PLUGIN_GIT_SHA="${PLUGIN_GIT_SHA:-$(git -C "${BACKEND_DIR}/.." rev-parse HEAD)}"
 PLUGIN_DIRTY="$(git -C "${BACKEND_DIR}/.." status --porcelain | awk 'NF { found=1 } END { print found ? "true" : "false" }')"
 CHECKPOINT_URL="${CHECKPOINT_URL:-${DEFAULT_CHECKPOINT_URL}}"
@@ -159,6 +162,9 @@ TELEMETRY_INTERVAL_SECONDS="${TELEMETRY_INTERVAL_SECONDS:-1}"
 CUDA_DEVICE_ORDINAL="${CUDA_DEVICE_ORDINAL:-0}"
 LOG_TAIL_LINES="${LOG_TAIL_LINES:-500}"
 OVERLAY_ANNOTATION_POINTS="${OVERLAY_ANNOTATION_POINTS:-false}"
+REUSE_STAGED_CHECKPOINT="${REUSE_STAGED_CHECKPOINT:-0}"
+SAM3_VIDEO_STATE_PROFILE="${SAM3_VIDEO_STATE_PROFILE:-cpu-offload}"
+SAM3_VIDEO_FEATURE_CACHE_ENTRIES="${SAM3_VIDEO_FEATURE_CACHE_ENTRIES:-1}"
 if [[ -x "${BACKEND_DIR}/.venv/bin/python" ]]; then
   DEFAULT_TIFF_VALIDATOR_PYTHON="${BACKEND_DIR}/.venv/bin/python"
 else
@@ -176,7 +182,10 @@ TELEMETRY_CSV="${ARTIFACT_DIR}/telemetry.csv"
 printf '%s\n' 'timestamp_utc,elapsed_seconds,gpu_index,gpu_utilization_percent,gpu_memory_used_mib,gpu_memory_total_mib,container_memory_usage' \
   >"${TELEMETRY_CSV}"
 
-if [[ -n "${CHECKPOINT_PATH:-}" ]]; then
+if [[ "${REUSE_STAGED_CHECKPOINT}" == "1" ]]; then
+  CHECKPOINT_PATH=""
+  CHECKPOINT_NAME="medical_sam3.pt"
+elif [[ -n "${CHECKPOINT_PATH:-}" ]]; then
   CHECKPOINT_PATH="$(resolve_path "${CHECKPOINT_PATH}")"
   [[ -f "${CHECKPOINT_PATH}" ]] || die "Checkpoint does not exist: ${CHECKPOINT_PATH}"
 else
@@ -194,8 +203,10 @@ else
   CHECKPOINT_PATH="${CHECKPOINT_CACHE}"
 fi
 
-CHECKPOINT_DIR="$(dirname -- "${CHECKPOINT_PATH}")"
-CHECKPOINT_NAME="$(basename -- "${CHECKPOINT_PATH}")"
+if [[ "${REUSE_STAGED_CHECKPOINT}" != "1" ]]; then
+  CHECKPOINT_DIR="$(dirname -- "${CHECKPOINT_PATH}")"
+  CHECKPOINT_NAME="$(basename -- "${CHECKPOINT_PATH}")"
+fi
 
 if [[ "${BUILD_IMAGE}" != "0" ]]; then
   log "Building CUDA backend image: ${BACKEND_IMAGE}"
@@ -213,15 +224,31 @@ else
     || die "Docker image not found or Docker is not accessible: ${BACKEND_IMAGE}"
 fi
 
+docker volume create "${VOLUME_NAME}" >/dev/null
+if [[ "${REUSE_STAGED_CHECKPOINT}" == "1" ]]; then
+  CHECKPOINT_SHA256="$(
+    docker run --rm \
+      --entrypoint /bin/sh \
+      -v "${VOLUME_NAME}:/volume" \
+      "${BACKEND_IMAGE}" \
+      -ceu 'sha256sum /volume/sam3-segmentation/chkpts/medical_sam3.pt' \
+      | awk '{print $1}'
+  )"
+else
+  CHECKPOINT_SHA256="$(sha256sum "${CHECKPOINT_PATH}" | awk '{print $1}')"
+fi
+
 cat >"${ARTIFACT_DIR}/revisions.env" <<EOF
 plugin_sha=${PLUGIN_GIT_SHA}
 plugin_dirty=${PLUGIN_DIRTY}
 candle_sha=${CANDLE_SAM3_COMMIT}
 input_sha256=$(sha256sum "${INPUT_STACK}" | awk '{print $1}')
-checkpoint_sha256=$(sha256sum "${CHECKPOINT_PATH}" | awk '{print $1}')
+checkpoint_sha256=${CHECKPOINT_SHA256}
 image_id=$(docker image inspect --format '{{.Id}}' "${BACKEND_IMAGE}")
 cuda_compute_cap=${CUDA_COMPUTE_CAP}
 cuda_device_ordinal=${CUDA_DEVICE_ORDINAL}
+sam3_video_state_profile=${SAM3_VIDEO_STATE_PROFILE}
+sam3_video_feature_cache_entries=${SAM3_VIDEO_FEATURE_CACHE_ENTRIES}
 gpu=$(nvidia-smi --id="${CUDA_DEVICE_ORDINAL}" --query-gpu=name --format=csv,noheader 2>/dev/null || printf unavailable)
 driver_version=$(nvidia-smi --id="${CUDA_DEVICE_ORDINAL}" --query-gpu=driver_version --format=csv,noheader 2>/dev/null || printf unavailable)
 cuda_runtime=$(docker run --rm --entrypoint /bin/sh "${BACKEND_IMAGE}" -c 'printf %s "${CUDA_VERSION:-unknown}"')
@@ -233,23 +260,39 @@ if [[ "${SKIP_GPU_CHECK:-0}" != "1" ]]; then
 fi
 
 log "Staging input and checkpoint in Docker volume: ${VOLUME_NAME}"
-docker volume create "${VOLUME_NAME}" >/dev/null
-docker run --rm \
-  --entrypoint /bin/sh \
-  -v "${VOLUME_NAME}:/volume" \
-  -v "${INPUT_DIR}:/input:ro" \
-  -v "${CHECKPOINT_DIR}:/checkpoint:ro" \
-  -e INPUT_NAME="${INPUT_NAME}" \
-  -e CHECKPOINT_NAME="${CHECKPOINT_NAME}" \
-  -e OUTPUT_NAME="${OUTPUT_NAME}" \
-  "${BACKEND_IMAGE}" \
-  -ceu '
-    plugin_root=/volume/sam3-segmentation
-    mkdir -p "${plugin_root}/chkpts" "${plugin_root}/Segmentation"
-    rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}"
-    cp "/input/${INPUT_NAME}" "${plugin_root}/${INPUT_NAME}"
-    cp "/checkpoint/${CHECKPOINT_NAME}" "${plugin_root}/chkpts/medical_sam3.pt"
-  '
+if [[ "${REUSE_STAGED_CHECKPOINT}" == "1" ]]; then
+  docker run --rm \
+    --entrypoint /bin/sh \
+    -v "${VOLUME_NAME}:/volume" \
+    -v "${INPUT_DIR}:/input:ro" \
+    -e INPUT_NAME="${INPUT_NAME}" \
+    -e OUTPUT_NAME="${OUTPUT_NAME}" \
+    "${BACKEND_IMAGE}" \
+    -ceu '
+      plugin_root=/volume/sam3-segmentation
+      test -s "${plugin_root}/chkpts/medical_sam3.pt"
+      mkdir -p "${plugin_root}/Segmentation"
+      rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}"
+      cp "/input/${INPUT_NAME}" "${plugin_root}/${INPUT_NAME}"
+    '
+else
+  docker run --rm \
+    --entrypoint /bin/sh \
+    -v "${VOLUME_NAME}:/volume" \
+    -v "${INPUT_DIR}:/input:ro" \
+    -v "${CHECKPOINT_DIR}:/checkpoint:ro" \
+    -e INPUT_NAME="${INPUT_NAME}" \
+    -e CHECKPOINT_NAME="${CHECKPOINT_NAME}" \
+    -e OUTPUT_NAME="${OUTPUT_NAME}" \
+    "${BACKEND_IMAGE}" \
+    -ceu '
+      plugin_root=/volume/sam3-segmentation
+      mkdir -p "${plugin_root}/chkpts" "${plugin_root}/Segmentation"
+      rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}"
+      cp "/input/${INPUT_NAME}" "${plugin_root}/${INPUT_NAME}"
+      cp "/checkpoint/${CHECKPOINT_NAME}" "${plugin_root}/chkpts/medical_sam3.pt"
+    '
+fi
 
 trap cleanup EXIT
 
@@ -263,6 +306,8 @@ docker run -d \
   -e VOLUME_MOUNT_PATH=/ouroboros-volume \
   -e VOLUME_SERVER_URL=http://host.docker.internal:3001 \
   -e CUDA_DEVICE_ORDINAL="${CUDA_DEVICE_ORDINAL}" \
+  -e SAM3_VIDEO_STATE_PROFILE="${SAM3_VIDEO_STATE_PROFILE}" \
+  -e SAM3_VIDEO_FEATURE_CACHE_ENTRIES="${SAM3_VIDEO_FEATURE_CACHE_ENTRIES}" \
   --add-host host.docker.internal:host-gateway \
   "${BACKEND_IMAGE}" >/dev/null
 

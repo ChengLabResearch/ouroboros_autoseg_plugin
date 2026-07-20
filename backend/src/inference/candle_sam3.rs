@@ -57,9 +57,20 @@ pub fn load_sam3_handle(
     let image_model =
         sam3::Sam3ImageModel::from_checkpoint_source(&config, &source, DType::F32, &device)
             .map_err(|e| AppError::internal(e.to_string()))?;
-    let tracker =
-        sam3::Sam3TrackerModel::from_checkpoint_source(&config, &source, DType::F32, &device)
-            .map_err(|e| AppError::internal(e.to_string()))?;
+    let mut tracker_config = sam3::Sam3TrackerConfig::from_sam3_config(&config);
+    tracker_config.predictor.trim_past_non_cond_mem_for_eval = true;
+    info!(
+        trim_past_non_cond_mem_for_eval = tracker_config.predictor.trim_past_non_cond_mem_for_eval,
+        hotstart_delay = tracker_config.predictor.hotstart_delay,
+        "configured SAM3 tracker retention controls"
+    );
+    let tracker = sam3::Sam3TrackerModel::new(
+        &tracker_config,
+        source
+            .load_tracker_var_builder(DType::F32, &device)
+            .map_err(|e| AppError::internal(e.to_string()))?,
+    )
+    .map_err(|e| AppError::internal(e.to_string()))?;
     Ok(Sam3ModelHandle {
         model_name,
         image_model: Arc::new(image_model),
@@ -161,7 +172,17 @@ fn run_video_inference(
 
     let source =
         sam3::VideoSource::from_path(frames_dir).map_err(|e| AppError::internal(e.to_string()))?;
-    let session_options = low_memory_video_session_options();
+    let session_config = configured_low_memory_video_session()?;
+    let session_options = session_config.options.clone();
+    info!(
+        state_profile = session_config.state_profile.as_str(),
+        offload_state_to_cpu = session_options.offload_state_to_cpu,
+        offload_frames_to_cpu = session_options.offload_frames_to_cpu,
+        prefetch_ahead = session_options.prefetch_ahead,
+        prefetch_behind = session_options.prefetch_behind,
+        max_feature_cache_entries = session_options.max_feature_cache_entries,
+        "configured low-memory SAM3 video session"
+    );
 
     let model_ref = &*handle.image_model;
     let tracker_ref = &*handle.tracker;
@@ -239,7 +260,19 @@ fn run_video_inference(
                 .session_cache_stats(&session_id)
                 .map_err(|e| AppError::internal(e.to_string()))?;
             info!(
+                state_profile = session_config.state_profile.as_str(),
+                loaded_frame_count = cache_stats.loaded_frame_count,
+                cached_feature_entries = cache_stats.cached_feature_entries,
                 cached_output_frames = cache_stats.cached_output_frames,
+                tracked_objects = cache_stats.tracked_objects,
+                cpu_total_bytes = cache_stats.cpu_bytes.total(),
+                cpu_frame_bytes = cache_stats.cpu_bytes.frames,
+                cpu_tracker_state_bytes = cache_stats.cpu_bytes.tracker_states,
+                cpu_cached_output_bytes = cache_stats.cpu_bytes.cached_outputs,
+                device_total_bytes = cache_stats.device_bytes.total(),
+                device_frame_bytes = cache_stats.device_bytes.frames,
+                device_tracker_state_bytes = cache_stats.device_bytes.tracker_states,
+                device_cached_output_bytes = cache_stats.device_bytes.cached_outputs,
                 "completed streamed SAM3 video propagation"
             );
             if cache_stats.cached_output_frames != 0 {
@@ -383,16 +416,78 @@ fn register_single_trajectory_prompts(
     })
 }
 
-fn low_memory_video_session_options() -> sam3::VideoSessionOptions {
-    sam3::VideoSessionOptions {
-        tokenizer_path: None,
-        memory_profile: sam3::VideoMemoryProfile::LowMemory,
-        offload_frames_to_cpu: false,
-        offload_state_to_cpu: false,
-        prefetch_ahead: 0,
-        prefetch_behind: 0,
-        max_feature_cache_entries: 2,
+const VIDEO_STATE_PROFILE_ENV: &str = "SAM3_VIDEO_STATE_PROFILE";
+const VIDEO_FEATURE_CACHE_ENTRIES_ENV: &str = "SAM3_VIDEO_FEATURE_CACHE_ENTRIES";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VideoStateProfile {
+    GpuResident,
+    CpuOffload,
+}
+
+impl VideoStateProfile {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::GpuResident => "gpu-resident",
+            Self::CpuOffload => "cpu-offload",
+        }
     }
+}
+
+#[derive(Debug, Clone)]
+struct LowMemoryVideoSessionConfig {
+    state_profile: VideoStateProfile,
+    options: sam3::VideoSessionOptions,
+}
+
+fn configured_low_memory_video_session() -> Result<LowMemoryVideoSessionConfig, AppError> {
+    low_memory_video_session_config(
+        std::env::var(VIDEO_STATE_PROFILE_ENV).ok().as_deref(),
+        std::env::var(VIDEO_FEATURE_CACHE_ENTRIES_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn low_memory_video_session_config(
+    state_profile: Option<&str>,
+    feature_cache_entries: Option<&str>,
+) -> Result<LowMemoryVideoSessionConfig, AppError> {
+    let state_profile = match state_profile.unwrap_or("cpu-offload") {
+        "gpu-resident" => VideoStateProfile::GpuResident,
+        "cpu-offload" => VideoStateProfile::CpuOffload,
+        value => {
+            return Err(AppError::bad_request(format!(
+                "Invalid {VIDEO_STATE_PROFILE_ENV}={value:?}; expected gpu-resident or cpu-offload"
+            )))
+        }
+    };
+    let max_feature_cache_entries = feature_cache_entries
+        .unwrap_or("1")
+        .parse::<usize>()
+        .map_err(|_| {
+            AppError::bad_request(format!(
+                "Invalid {VIDEO_FEATURE_CACHE_ENTRIES_ENV}; expected 1 or 2"
+            ))
+        })?;
+    if !matches!(max_feature_cache_entries, 1 | 2) {
+        return Err(AppError::bad_request(format!(
+            "Invalid {VIDEO_FEATURE_CACHE_ENTRIES_ENV}={max_feature_cache_entries}; expected 1 or 2"
+        )));
+    }
+
+    Ok(LowMemoryVideoSessionConfig {
+        state_profile,
+        options: sam3::VideoSessionOptions {
+            tokenizer_path: None,
+            memory_profile: sam3::VideoMemoryProfile::LowMemory,
+            offload_frames_to_cpu: false,
+            offload_state_to_cpu: matches!(state_profile, VideoStateProfile::CpuOffload),
+            prefetch_ahead: 0,
+            prefetch_behind: 0,
+            max_feature_cache_entries,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -409,19 +504,40 @@ mod tests {
     }
 
     #[test]
-    fn video_session_options_use_low_memory_no_prefetch_profile() {
-        let options = low_memory_video_session_options();
+    fn video_session_options_default_to_cpu_offload_and_one_feature() {
+        let config = low_memory_video_session_config(None, None).expect("default profile");
+        let options = config.options;
 
+        assert_eq!(config.state_profile, VideoStateProfile::CpuOffload);
         assert!(matches!(
             options.memory_profile,
             sam3::VideoMemoryProfile::LowMemory
         ));
         assert!(!options.offload_frames_to_cpu);
-        assert!(!options.offload_state_to_cpu);
+        assert!(options.offload_state_to_cpu);
         assert_eq!(options.prefetch_ahead, 0);
         assert_eq!(options.prefetch_behind, 0);
-        assert_eq!(options.max_feature_cache_entries, 2);
+        assert_eq!(options.max_feature_cache_entries, 1);
         assert!(options.tokenizer_path.is_none());
+    }
+
+    #[test]
+    fn video_session_options_expose_benchmark_variants_and_reject_ambiguity() {
+        let gpu =
+            low_memory_video_session_config(Some("gpu-resident"), Some("2")).expect("variant B");
+        assert_eq!(gpu.state_profile, VideoStateProfile::GpuResident);
+        assert!(!gpu.options.offload_state_to_cpu);
+        assert_eq!(gpu.options.max_feature_cache_entries, 2);
+
+        let cpu =
+            low_memory_video_session_config(Some("cpu-offload"), Some("1")).expect("variant C");
+        assert_eq!(cpu.state_profile, VideoStateProfile::CpuOffload);
+        assert!(cpu.options.offload_state_to_cpu);
+
+        assert!(low_memory_video_session_config(Some("auto"), None).is_err());
+        assert!(low_memory_video_session_config(None, Some("0")).is_err());
+        assert!(low_memory_video_session_config(None, Some("3")).is_err());
+        assert!(low_memory_video_session_config(None, Some("many")).is_err());
     }
 
     #[test]
