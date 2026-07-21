@@ -59,6 +59,7 @@ pub fn load_sam3_handle(
             .map_err(|e| AppError::internal(e.to_string()))?;
     let mut tracker_config = sam3::Sam3TrackerConfig::from_sam3_config(&config);
     tracker_config.predictor.trim_past_non_cond_mem_for_eval = configured_trim_past_non_cond_mem()?;
+    tracker_config.predictor.hotstart_delay = configured_hotstart_delay()?;
     info!(
         trim_past_non_cond_mem_for_eval = tracker_config.predictor.trim_past_non_cond_mem_for_eval,
         hotstart_delay = tracker_config.predictor.hotstart_delay,
@@ -181,6 +182,7 @@ fn run_video_inference(
         prefetch_ahead = session_options.prefetch_ahead,
         prefetch_behind = session_options.prefetch_behind,
         max_feature_cache_entries = session_options.max_feature_cache_entries,
+        max_non_cond_tracker_states = ?session_options.max_non_cond_tracker_states,
         "configured low-memory SAM3 video session"
     );
 
@@ -265,6 +267,18 @@ fn run_video_inference(
                 cached_feature_entries = cache_stats.cached_feature_entries,
                 cached_output_frames = cache_stats.cached_output_frames,
                 tracked_objects = cache_stats.tracked_objects,
+                retained_tracker_states = cache_stats.retained_tracker_states,
+                retained_non_cond_tracker_states = cache_stats.retained_non_cond_tracker_states,
+                retained_output_frame_indices = cache_stats.retained_output_frame_indices,
+                cpu_low_res_mask_bytes = cache_stats.cpu_low_res_mask_bytes,
+                device_low_res_mask_bytes = cache_stats.device_low_res_mask_bytes,
+                hotstart_buffered_frames = cache_stats.hotstart_buffered_frames,
+                hotstart_buffered_cpu_bytes = cache_stats.hotstart_buffered_cpu_bytes,
+                hotstart_buffered_device_bytes = cache_stats.hotstart_buffered_device_bytes,
+                peak_hotstart_buffered_frames = cache_stats.peak_hotstart_buffered_frames,
+                peak_hotstart_buffered_cpu_bytes = cache_stats.peak_hotstart_buffered_cpu_bytes,
+                peak_hotstart_buffered_device_bytes =
+                    cache_stats.peak_hotstart_buffered_device_bytes,
                 cpu_total_bytes = cache_stats.cpu_bytes.total(),
                 cpu_frame_bytes = cache_stats.cpu_bytes.frames,
                 cpu_visual_feature_bytes = cache_stats.cpu_bytes.visual_features,
@@ -425,6 +439,21 @@ fn register_single_trajectory_prompts(
 const VIDEO_STATE_PROFILE_ENV: &str = "SAM3_VIDEO_STATE_PROFILE";
 const VIDEO_FEATURE_CACHE_ENTRIES_ENV: &str = "SAM3_VIDEO_FEATURE_CACHE_ENTRIES";
 const TRACKER_TRIM_PAST_NON_COND_MEM_ENV: &str = "SAM3_TRACKER_TRIM_PAST_NON_COND_MEM";
+const MAX_NON_COND_TRACKER_STATES_ENV: &str = "SAM3_MAX_NON_COND_TRACKER_STATES";
+const VIDEO_HOTSTART_DELAY_ENV: &str = "SAM3_VIDEO_HOTSTART_DELAY";
+
+fn configured_hotstart_delay() -> Result<usize, AppError> {
+    parse_hotstart_delay(std::env::var(VIDEO_HOTSTART_DELAY_ENV).ok().as_deref())
+}
+
+fn parse_hotstart_delay(value: Option<&str>) -> Result<usize, AppError> {
+    value.unwrap_or("0").parse::<usize>().map_err(|_| {
+        AppError::bad_request(format!(
+            "Invalid {VIDEO_HOTSTART_DELAY_ENV}={:?}; expected a non-negative integer",
+            value.unwrap_or("0")
+        ))
+    })
+}
 
 fn configured_trim_past_non_cond_mem() -> Result<bool, AppError> {
     parse_trim_past_non_cond_mem(
@@ -471,12 +500,16 @@ fn configured_low_memory_video_session() -> Result<LowMemoryVideoSessionConfig, 
         std::env::var(VIDEO_FEATURE_CACHE_ENTRIES_ENV)
             .ok()
             .as_deref(),
+        std::env::var(MAX_NON_COND_TRACKER_STATES_ENV)
+            .ok()
+            .as_deref(),
     )
 }
 
 fn low_memory_video_session_config(
     state_profile: Option<&str>,
     feature_cache_entries: Option<&str>,
+    max_non_cond_tracker_states: Option<&str>,
 ) -> Result<LowMemoryVideoSessionConfig, AppError> {
     let state_profile = match state_profile.unwrap_or("cpu-offload") {
         "gpu-resident" => VideoStateProfile::GpuResident,
@@ -500,6 +533,22 @@ fn low_memory_video_session_config(
             "Invalid {VIDEO_FEATURE_CACHE_ENTRIES_ENV}={max_feature_cache_entries}; expected 1 or 2"
         )));
     }
+    let max_non_cond_tracker_states = match max_non_cond_tracker_states {
+        None | Some("") => None,
+        Some(value) => {
+            let parsed = value.parse::<usize>().map_err(|_| {
+                AppError::bad_request(format!(
+                    "Invalid {MAX_NON_COND_TRACKER_STATES_ENV}={value:?}; expected a positive integer or empty"
+                ))
+            })?;
+            if parsed == 0 {
+                return Err(AppError::bad_request(format!(
+                    "Invalid {MAX_NON_COND_TRACKER_STATES_ENV}=0; expected a positive integer or empty"
+                )));
+            }
+            Some(parsed)
+        }
+    };
 
     Ok(LowMemoryVideoSessionConfig {
         state_profile,
@@ -511,6 +560,7 @@ fn low_memory_video_session_config(
             prefetch_ahead: 0,
             prefetch_behind: 0,
             max_feature_cache_entries,
+            max_non_cond_tracker_states,
         },
     })
 }
@@ -530,7 +580,7 @@ mod tests {
 
     #[test]
     fn video_session_options_default_to_cpu_offload_and_one_feature() {
-        let config = low_memory_video_session_config(None, None).expect("default profile");
+        let config = low_memory_video_session_config(None, None, None).expect("default profile");
         let options = config.options;
 
         assert_eq!(config.state_profile, VideoStateProfile::CpuOffload);
@@ -543,26 +593,30 @@ mod tests {
         assert_eq!(options.prefetch_ahead, 0);
         assert_eq!(options.prefetch_behind, 0);
         assert_eq!(options.max_feature_cache_entries, 1);
+        assert_eq!(options.max_non_cond_tracker_states, None);
         assert!(options.tokenizer_path.is_none());
     }
 
     #[test]
     fn video_session_options_expose_benchmark_variants_and_reject_ambiguity() {
-        let gpu =
-            low_memory_video_session_config(Some("gpu-resident"), Some("2")).expect("variant B");
+        let gpu = low_memory_video_session_config(Some("gpu-resident"), Some("2"), Some("32"))
+            .expect("variant B");
         assert_eq!(gpu.state_profile, VideoStateProfile::GpuResident);
         assert!(!gpu.options.offload_state_to_cpu);
         assert_eq!(gpu.options.max_feature_cache_entries, 2);
+        assert_eq!(gpu.options.max_non_cond_tracker_states, Some(32));
 
-        let cpu =
-            low_memory_video_session_config(Some("cpu-offload"), Some("1")).expect("variant C");
+        let cpu = low_memory_video_session_config(Some("cpu-offload"), Some("1"), None)
+            .expect("variant C");
         assert_eq!(cpu.state_profile, VideoStateProfile::CpuOffload);
         assert!(cpu.options.offload_state_to_cpu);
 
-        assert!(low_memory_video_session_config(Some("auto"), None).is_err());
-        assert!(low_memory_video_session_config(None, Some("0")).is_err());
-        assert!(low_memory_video_session_config(None, Some("3")).is_err());
-        assert!(low_memory_video_session_config(None, Some("many")).is_err());
+        assert!(low_memory_video_session_config(Some("auto"), None, None).is_err());
+        assert!(low_memory_video_session_config(None, Some("0"), None).is_err());
+        assert!(low_memory_video_session_config(None, Some("3"), None).is_err());
+        assert!(low_memory_video_session_config(None, Some("many"), None).is_err());
+        assert!(low_memory_video_session_config(None, None, Some("many")).is_err());
+        assert!(low_memory_video_session_config(None, None, Some("0")).is_err());
     }
 
     #[test]
@@ -571,6 +625,14 @@ mod tests {
         assert!(parse_trim_past_non_cond_mem(Some("true")).expect("trimmed control"));
         assert!(!parse_trim_past_non_cond_mem(Some("false")).expect("untrimmed control"));
         assert!(parse_trim_past_non_cond_mem(Some("yes")).is_err());
+    }
+
+    #[test]
+    fn hotstart_delay_defaults_off_and_supports_a_bounded_certification_control() {
+        assert_eq!(parse_hotstart_delay(None).expect("default delay"), 0);
+        assert_eq!(parse_hotstart_delay(Some("4")).expect("bounded delay"), 4);
+        assert!(parse_hotstart_delay(Some("many")).is_err());
+        assert!(parse_hotstart_delay(Some("-1")).is_err());
     }
 
     #[test]

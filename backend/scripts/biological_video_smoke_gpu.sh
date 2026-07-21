@@ -31,6 +31,8 @@ Common options:
   SAM3_VIDEO_STATE_PROFILE=cpu-offload  State profile: gpu-resident (B) or cpu-offload (C).
   SAM3_VIDEO_FEATURE_CACHE_ENTRIES=1    Feature-cache capacity benchmark control: 1 or 2.
   SAM3_TRACKER_TRIM_PAST_NON_COND_MEM=true  Enable the mask-memory trim control.
+  SAM3_MAX_NON_COND_TRACKER_STATES=32       Opt in to bounded non-conditioning history.
+  SAM3_VIDEO_HOTSTART_DELAY=4               Opt in to a bounded hotstart certification control.
   TIFF_VALIDATOR_PYTHON=python3  Python interpreter with tifffile and numpy installed.
   KEEP_CONTAINER=1               Leave the backend container running after the script exits.
 
@@ -149,7 +151,7 @@ INPUT_STACK="$(resolve_path "${INPUT_STACK}")"
 BACKEND_IMAGE="${BACKEND_IMAGE:-${DEFAULT_IMAGE}}"
 BUILD_IMAGE="${BUILD_IMAGE:-1}"
 CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP:-75}"
-CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT:-5b923247529646f3e1f59fefa60b3d6cca137b7b}"
+CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT:-dd319738a8dee4a8ff225e18067591891066ac0b}"
 PLUGIN_GIT_SHA="${PLUGIN_GIT_SHA:-$(git -C "${BACKEND_DIR}/.." rev-parse HEAD)}"
 PLUGIN_DIRTY="$(git -C "${BACKEND_DIR}/.." status --porcelain | awk 'NF { found=1 } END { print found ? "true" : "false" }')"
 CHECKPOINT_URL="${CHECKPOINT_URL:-${DEFAULT_CHECKPOINT_URL}}"
@@ -167,6 +169,8 @@ REUSE_STAGED_CHECKPOINT="${REUSE_STAGED_CHECKPOINT:-0}"
 SAM3_VIDEO_STATE_PROFILE="${SAM3_VIDEO_STATE_PROFILE:-cpu-offload}"
 SAM3_VIDEO_FEATURE_CACHE_ENTRIES="${SAM3_VIDEO_FEATURE_CACHE_ENTRIES:-1}"
 SAM3_TRACKER_TRIM_PAST_NON_COND_MEM="${SAM3_TRACKER_TRIM_PAST_NON_COND_MEM:-true}"
+SAM3_MAX_NON_COND_TRACKER_STATES="${SAM3_MAX_NON_COND_TRACKER_STATES:-}"
+SAM3_VIDEO_HOTSTART_DELAY="${SAM3_VIDEO_HOTSTART_DELAY:-0}"
 if [[ -x "${BACKEND_DIR}/.venv/bin/python" ]]; then
   DEFAULT_TIFF_VALIDATOR_PYTHON="${BACKEND_DIR}/.venv/bin/python"
 else
@@ -252,6 +256,8 @@ cuda_device_ordinal=${CUDA_DEVICE_ORDINAL}
 sam3_video_state_profile=${SAM3_VIDEO_STATE_PROFILE}
 sam3_video_feature_cache_entries=${SAM3_VIDEO_FEATURE_CACHE_ENTRIES}
 sam3_tracker_trim_past_non_cond_mem=${SAM3_TRACKER_TRIM_PAST_NON_COND_MEM}
+sam3_max_non_cond_tracker_states=${SAM3_MAX_NON_COND_TRACKER_STATES:-unbounded}
+sam3_video_hotstart_delay=${SAM3_VIDEO_HOTSTART_DELAY}
 gpu=$(nvidia-smi --id="${CUDA_DEVICE_ORDINAL}" --query-gpu=name --format=csv,noheader 2>/dev/null || printf unavailable)
 driver_version=$(nvidia-smi --id="${CUDA_DEVICE_ORDINAL}" --query-gpu=driver_version --format=csv,noheader 2>/dev/null || printf unavailable)
 cuda_runtime=$(docker run --rm --entrypoint /bin/sh "${BACKEND_IMAGE}" -c 'printf %s "${CUDA_VERSION:-unknown}"')
@@ -312,6 +318,8 @@ docker run -d \
   -e SAM3_VIDEO_STATE_PROFILE="${SAM3_VIDEO_STATE_PROFILE}" \
   -e SAM3_VIDEO_FEATURE_CACHE_ENTRIES="${SAM3_VIDEO_FEATURE_CACHE_ENTRIES}" \
   -e SAM3_TRACKER_TRIM_PAST_NON_COND_MEM="${SAM3_TRACKER_TRIM_PAST_NON_COND_MEM}" \
+  -e SAM3_MAX_NON_COND_TRACKER_STATES="${SAM3_MAX_NON_COND_TRACKER_STATES}" \
+  -e SAM3_VIDEO_HOTSTART_DELAY="${SAM3_VIDEO_HOTSTART_DELAY}" \
   --add-host host.docker.internal:host-gateway \
   "${BACKEND_IMAGE}" >/dev/null
 
