@@ -21,9 +21,9 @@ cudnn = [
 
 [dependencies]
 async-trait = "=0.1.77"
-candle-core = { path = "../../candle_sam3_main/candle-core", package = "candle-core", version = "0.9.2" }
-candle-nn = { path = "../../candle_sam3_main/candle-nn", version = "0.9.2" }
-candle-transformers = { path = "../../candle_sam3_main/candle-transformers", version = "0.9.2" }
+candle-core = { path = "../../candle_sam3_main/candle-core", package = "candle-core", version = "0.11.0" }
+candle-nn = { path = "../../candle_sam3_main/candle-nn", version = "0.11.0" }
+candle-transformers = { path = "../../candle_sam3_main/candle-transformers", version = "0.11.0" }
 axum = { version = "=0.6.20", features = ["json", "macros"] }
 futures-util = "=0.3.31"
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "tiff"] }
