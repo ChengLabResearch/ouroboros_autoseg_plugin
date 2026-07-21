@@ -1,5 +1,6 @@
 pub mod candle_sam2;
 pub mod candle_sam3;
+pub mod candle_sam3_frame_source;
 pub mod candle_sam3_helpers;
 pub mod image;
 pub mod registry;
