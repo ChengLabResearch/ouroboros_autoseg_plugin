@@ -32,6 +32,7 @@ Common options:
   SAM3_VIDEO_FEATURE_CACHE_ENTRIES=1    Feature-cache capacity benchmark control: 1 or 2.
   SAM3_TRACKER_TRIM_PAST_NON_COND_MEM=true  Enable the mask-memory trim control.
   SAM3_MAX_NON_COND_TRACKER_STATES=32       Opt in to bounded non-conditioning history.
+  SAM3_VIDEO_HOTSTART_DELAY=4               Opt in to a bounded hotstart certification control.
   TIFF_VALIDATOR_PYTHON=python3  Python interpreter with tifffile and numpy installed.
   KEEP_CONTAINER=1               Leave the backend container running after the script exits.
 
@@ -169,6 +170,7 @@ SAM3_VIDEO_STATE_PROFILE="${SAM3_VIDEO_STATE_PROFILE:-cpu-offload}"
 SAM3_VIDEO_FEATURE_CACHE_ENTRIES="${SAM3_VIDEO_FEATURE_CACHE_ENTRIES:-1}"
 SAM3_TRACKER_TRIM_PAST_NON_COND_MEM="${SAM3_TRACKER_TRIM_PAST_NON_COND_MEM:-true}"
 SAM3_MAX_NON_COND_TRACKER_STATES="${SAM3_MAX_NON_COND_TRACKER_STATES:-}"
+SAM3_VIDEO_HOTSTART_DELAY="${SAM3_VIDEO_HOTSTART_DELAY:-0}"
 if [[ -x "${BACKEND_DIR}/.venv/bin/python" ]]; then
   DEFAULT_TIFF_VALIDATOR_PYTHON="${BACKEND_DIR}/.venv/bin/python"
 else
@@ -255,6 +257,7 @@ sam3_video_state_profile=${SAM3_VIDEO_STATE_PROFILE}
 sam3_video_feature_cache_entries=${SAM3_VIDEO_FEATURE_CACHE_ENTRIES}
 sam3_tracker_trim_past_non_cond_mem=${SAM3_TRACKER_TRIM_PAST_NON_COND_MEM}
 sam3_max_non_cond_tracker_states=${SAM3_MAX_NON_COND_TRACKER_STATES:-unbounded}
+sam3_video_hotstart_delay=${SAM3_VIDEO_HOTSTART_DELAY}
 gpu=$(nvidia-smi --id="${CUDA_DEVICE_ORDINAL}" --query-gpu=name --format=csv,noheader 2>/dev/null || printf unavailable)
 driver_version=$(nvidia-smi --id="${CUDA_DEVICE_ORDINAL}" --query-gpu=driver_version --format=csv,noheader 2>/dev/null || printf unavailable)
 cuda_runtime=$(docker run --rm --entrypoint /bin/sh "${BACKEND_IMAGE}" -c 'printf %s "${CUDA_VERSION:-unknown}"')
@@ -316,6 +319,7 @@ docker run -d \
   -e SAM3_VIDEO_FEATURE_CACHE_ENTRIES="${SAM3_VIDEO_FEATURE_CACHE_ENTRIES}" \
   -e SAM3_TRACKER_TRIM_PAST_NON_COND_MEM="${SAM3_TRACKER_TRIM_PAST_NON_COND_MEM}" \
   -e SAM3_MAX_NON_COND_TRACKER_STATES="${SAM3_MAX_NON_COND_TRACKER_STATES}" \
+  -e SAM3_VIDEO_HOTSTART_DELAY="${SAM3_VIDEO_HOTSTART_DELAY}" \
   --add-host host.docker.internal:host-gateway \
   "${BACKEND_IMAGE}" >/dev/null
 

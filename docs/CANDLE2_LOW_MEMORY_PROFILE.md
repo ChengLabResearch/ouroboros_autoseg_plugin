@@ -37,9 +37,11 @@ retained history is bounded.
 Set `SAM3_TRACKER_TRIM_PAST_NON_COND_MEM=false` only for the required untrimmed
 reference run; the default is `true`, and the selected masks must remain equal.
 
-The Medical tracker control has `hotstart_delay=0`, so there is no enabled
-hotstart queue in these measurements. Any future non-zero hotstart delay must be
-reported as separate bounded transient retention, not tracker-history growth.
+The Medical production default has `hotstart_delay=0`. Certification can opt in
+to a bounded callback-queue control with `SAM3_VIDEO_HOTSTART_DELAY=4`; the
+reported current/peak queue frames and bytes remain separate from tracker-history
+growth. Production remains at delay zero unless the environment explicitly
+selects a different value.
 
 ## Benchmark matrix
 

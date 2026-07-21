@@ -25,6 +25,7 @@ Controls:
   REUSE_STAGED_CHECKPOINT=1             Avoid another private checkpoint copy.
   AVAILABLE_DISK_GIB_MIN=30             Refuse to start below this host-space floor.
   MAX_NON_COND_TRACKER_STATES=32        Opt-in bounded-history control; empty is unbounded.
+  VIDEO_HOTSTART_DELAY=4                Opt-in bounded hotstart control; default 0.
 
 The source TIFF pages are repeated deterministically. Its JSON image description,
 including annotation_points, is preserved while the declared stack shape is
@@ -58,6 +59,7 @@ BUILD_IMAGE="${BUILD_IMAGE:-1}"
 AVAILABLE_DISK_GIB_MIN="${AVAILABLE_DISK_GIB_MIN:-30}"
 TIFF_PYTHON="${TIFF_PYTHON:-python3}"
 MAX_NON_COND_TRACKER_STATES="${MAX_NON_COND_TRACKER_STATES:-}"
+VIDEO_HOTSTART_DELAY="${VIDEO_HOTSTART_DELAY:-0}"
 mkdir -p "${RESULTS_DIR}/inputs" "${RESULTS_DIR}/runs"
 
 available_kib=$(df --output=avail "${RESULTS_DIR}" | tail -1 | tr -d ' ')
@@ -116,6 +118,7 @@ PY
         SAM3_VIDEO_STATE_PROFILE="${state_profile}" \
         SAM3_VIDEO_FEATURE_CACHE_ENTRIES="${feature_cache_entries}" \
         SAM3_MAX_NON_COND_TRACKER_STATES="${MAX_NON_COND_TRACKER_STATES}" \
+        SAM3_VIDEO_HOTSTART_DELAY="${VIDEO_HOTSTART_DELAY}" \
         "${SMOKE_SCRIPT}"; then
         status=failed
       fi

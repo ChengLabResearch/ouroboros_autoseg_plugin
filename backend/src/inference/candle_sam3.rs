@@ -59,6 +59,7 @@ pub fn load_sam3_handle(
             .map_err(|e| AppError::internal(e.to_string()))?;
     let mut tracker_config = sam3::Sam3TrackerConfig::from_sam3_config(&config);
     tracker_config.predictor.trim_past_non_cond_mem_for_eval = configured_trim_past_non_cond_mem()?;
+    tracker_config.predictor.hotstart_delay = configured_hotstart_delay()?;
     info!(
         trim_past_non_cond_mem_for_eval = tracker_config.predictor.trim_past_non_cond_mem_for_eval,
         hotstart_delay = tracker_config.predictor.hotstart_delay,
@@ -439,6 +440,20 @@ const VIDEO_STATE_PROFILE_ENV: &str = "SAM3_VIDEO_STATE_PROFILE";
 const VIDEO_FEATURE_CACHE_ENTRIES_ENV: &str = "SAM3_VIDEO_FEATURE_CACHE_ENTRIES";
 const TRACKER_TRIM_PAST_NON_COND_MEM_ENV: &str = "SAM3_TRACKER_TRIM_PAST_NON_COND_MEM";
 const MAX_NON_COND_TRACKER_STATES_ENV: &str = "SAM3_MAX_NON_COND_TRACKER_STATES";
+const VIDEO_HOTSTART_DELAY_ENV: &str = "SAM3_VIDEO_HOTSTART_DELAY";
+
+fn configured_hotstart_delay() -> Result<usize, AppError> {
+    parse_hotstart_delay(std::env::var(VIDEO_HOTSTART_DELAY_ENV).ok().as_deref())
+}
+
+fn parse_hotstart_delay(value: Option<&str>) -> Result<usize, AppError> {
+    value.unwrap_or("0").parse::<usize>().map_err(|_| {
+        AppError::bad_request(format!(
+            "Invalid {VIDEO_HOTSTART_DELAY_ENV}={:?}; expected a non-negative integer",
+            value.unwrap_or("0")
+        ))
+    })
+}
 
 fn configured_trim_past_non_cond_mem() -> Result<bool, AppError> {
     parse_trim_past_non_cond_mem(
@@ -610,6 +625,14 @@ mod tests {
         assert!(parse_trim_past_non_cond_mem(Some("true")).expect("trimmed control"));
         assert!(!parse_trim_past_non_cond_mem(Some("false")).expect("untrimmed control"));
         assert!(parse_trim_past_non_cond_mem(Some("yes")).is_err());
+    }
+
+    #[test]
+    fn hotstart_delay_defaults_off_and_supports_a_bounded_certification_control() {
+        assert_eq!(parse_hotstart_delay(None).expect("default delay"), 0);
+        assert_eq!(parse_hotstart_delay(Some("4")).expect("bounded delay"), 4);
+        assert!(parse_hotstart_delay(Some("many")).is_err());
+        assert!(parse_hotstart_delay(Some("-1")).is_err());
     }
 
     #[test]
