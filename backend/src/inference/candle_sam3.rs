@@ -10,8 +10,9 @@ use crate::{
     error::AppError,
     imaging::tiff_io::ImageFrame,
     inference::{
+        candle_sam3_frame_source::StagedJpegFrameSource,
         candle_sam3_helpers::{
-            build_geometry_prompt, first_frame_dimensions, frame_to_chw_tensor, normalize_for_sam3,
+            build_geometry_prompt, frame_to_chw_tensor, normalize_for_sam3,
             threshold_mask_logits_to_frame, video_frame_to_mask,
         },
         image::{FrameMask, ImageSegmenter, PositivePointPrompt},
@@ -169,10 +170,6 @@ fn run_video_inference(
     frames_dir: &Path,
     prompts: &[VideoFramePrompt],
 ) -> Result<Vec<FrameMask>, AppError> {
-    let (frame_width, frame_height) = first_frame_dimensions(frames_dir)?;
-
-    let source =
-        sam3::VideoSource::from_path(frames_dir).map_err(|e| AppError::internal(e.to_string()))?;
     let session_config = configured_low_memory_video_session()?;
     let session_options = session_config.options.clone();
     info!(
@@ -189,10 +186,20 @@ fn run_video_inference(
     let model_ref = &*handle.image_model;
     let tracker_ref = &*handle.tracker;
     let device = &handle.device;
+    let config = model_ref.config();
+    let source = StagedJpegFrameSource::new(
+        frames_dir,
+        config.image.image_size,
+        config.image.image_mean,
+        config.image.image_std,
+    )
+    .map_err(|e| AppError::internal(e.to_string()))?;
+    let source_size = source.source_size();
+    let (frame_width, frame_height) = (source_size.width, source_size.height);
 
     let mut predictor = sam3::Sam3VideoPredictor::new(model_ref, tracker_ref, device);
     let session_id = predictor
-        .start_session(source, session_options)
+        .start_session_with_frame_source(Box::new(source), session_options)
         .map_err(|e| AppError::internal(e.to_string()))?;
     with_deterministic_session_close(
         &mut predictor,
