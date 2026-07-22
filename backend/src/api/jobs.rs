@@ -109,6 +109,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_client_reads_committed_progress_during_initial_hotstart_delay() {
+        const HOTSTART_DELAY: usize = 4;
+        assert!(HOTSTART_DELAY > 0);
+
+        let state = state();
+        state.create_job("delayed".into()).await;
+        // Inference has started, but a positive hotstart delay means that no
+        // frame callback has been emitted yet. Transferring=100 and
+        // Inference=0 are therefore the latest committed values.
+        state
+            .update_job_phase("delayed", JobPhase::Inference, 0)
+            .await;
+
+        let latest = latest_job(State(state.clone())).await.unwrap().0;
+        assert_eq!(latest.job_id.as_deref(), Some("delayed"));
+        assert_eq!(latest.status, "running");
+
+        let record = status(State(state), Path("delayed".into()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(record.active_phase, Some(JobPhase::Inference));
+        assert_eq!(record.steps[0].progress, 100);
+        assert_eq!(record.steps[1].progress, 0);
+        assert_eq!(record.steps[2].progress, 0);
+    }
+
+    #[tokio::test]
     async fn latest_job_does_not_reconnect_terminal_jobs() {
         let state = state();
         state.create_job("done".into()).await;

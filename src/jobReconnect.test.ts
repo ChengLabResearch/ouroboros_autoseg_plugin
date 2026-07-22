@@ -10,6 +10,15 @@ const running = {
     ],
 };
 
+const waitingForHotstartCallbacks = {
+    ...running,
+    steps: [
+        { name: 'Transferring', progress: 100 },
+        { name: 'Inference', progress: 0 },
+        { name: 'Saving', progress: 0 },
+    ],
+};
+
 function response(body: unknown, ok = true) {
     return { ok, json: async () => body };
 }
@@ -27,6 +36,23 @@ describe('findRunningJob', () => {
             discoveredFromLatest: true,
         });
         expect(fetcher).toHaveBeenCalledWith('/api/status/remote-job');
+    });
+
+    it('restores the latest committed progress during the initial hotstart delay', async () => {
+        const hotstartDelay = 4;
+        expect(hotstartDelay).toBeGreaterThan(0);
+        const fetcher = vi.fn(async (url: string) => (
+            url.endsWith('/latest-job')
+                ? response({ job_id: 'delayed-job' })
+                : response(waitingForHotstartCallbacks)
+        ));
+
+        await expect(findRunningJob(fetcher, '/api', null)).resolves.toEqual({
+            jobId: 'delayed-job',
+            record: waitingForHotstartCallbacks,
+            discoveredFromLatest: true,
+        });
+        expect(fetcher).toHaveBeenCalledWith('/api/status/delayed-job');
     });
 
     it('falls back to latest-job when a persisted job is stale', async () => {
