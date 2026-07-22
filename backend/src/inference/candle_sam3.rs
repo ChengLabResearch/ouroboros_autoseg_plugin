@@ -560,7 +560,7 @@ fn low_memory_video_session_config(
     Ok(LowMemoryVideoSessionConfig {
         state_profile,
         options: sam3::VideoSessionOptions {
-            tokenizer_path: None,
+            visual_prompt_tokens: None,
             memory_profile: sam3::VideoMemoryProfile::LowMemory,
             offload_frames_to_cpu: false,
             offload_state_to_cpu: matches!(state_profile, VideoStateProfile::CpuOffload),
@@ -610,7 +610,7 @@ mod tests {
         assert_eq!(options.prefetch_behind, 0);
         assert_eq!(options.max_feature_cache_entries, 1);
         assert_eq!(options.max_non_cond_tracker_states, None);
-        assert!(options.tokenizer_path.is_none());
+        assert!(options.visual_prompt_tokens.is_none());
     }
 
     #[test]
