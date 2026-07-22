@@ -16,7 +16,7 @@ use crate::{
             threshold_mask_logits_to_frame, video_frame_to_mask,
         },
         image::{FrameMask, ImageSegmenter, PositivePointPrompt},
-        video::{VideoFramePrompt, VideoSegmenter},
+        video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
     },
 };
 
@@ -155,13 +155,16 @@ impl VideoSegmenter for CandleSam3VideoSegmenter {
         &self,
         frames_dir: &Path,
         prompts: &[VideoFramePrompt],
+        progress: Option<FrameProgressCallback>,
     ) -> Result<Vec<FrameMask>, AppError> {
         let handle = self.handle.clone();
         let frames_dir = frames_dir.to_path_buf();
         let prompts = prompts.to_vec();
-        tokio::task::spawn_blocking(move || run_video_inference(&handle, &frames_dir, &prompts))
-            .await
-            .map_err(|e| AppError::internal(e.to_string()))?
+        tokio::task::spawn_blocking(move || {
+            run_video_inference(&handle, &frames_dir, &prompts, progress.as_ref())
+        })
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
     }
 }
 
@@ -169,6 +172,7 @@ fn run_video_inference(
     handle: &Sam3ModelHandle,
     frames_dir: &Path,
     prompts: &[VideoFramePrompt],
+    progress: Option<&FrameProgressCallback>,
 ) -> Result<Vec<FrameMask>, AppError> {
     let session_config = configured_low_memory_video_session()?;
     let session_options = session_config.options.clone();
@@ -261,7 +265,11 @@ fn run_video_inference(
                             .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
                         masks
                             .push_forward(frame.frame_idx, mask)
-                            .map_err(|e| candle_core::Error::Msg(e.to_string()))
+                            .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+                        if let Some(callback) = progress {
+                            callback(frame.frame_idx, frame_count);
+                        }
+                        Ok(())
                     },
                 )
                 .map_err(|e| AppError::internal(e.to_string()))?;
@@ -686,9 +694,13 @@ mod tests {
     }
 
     #[test]
-    fn video_stream_accepts_delayed_prompt_frames_and_burst_callbacks() {
+    fn video_stream_accepts_hotstart_delay_and_burst_callbacks() {
+        let hotstart_delay = parse_hotstart_delay(Some("2")).expect("positive hotstart delay");
+        assert!(hotstart_delay > 0);
+
         let mut forward = VideoMaskCollector::new(5).expect("collector");
-        let forward_batches = [vec![], vec![], vec![0], vec![1], vec![2, 3, 4]];
+        let mut forward_batches = vec![Vec::new(); hotstart_delay];
+        forward_batches.extend([vec![0], vec![1], vec![2, 3, 4]]);
         for batch in forward_batches {
             for frame_idx in batch {
                 forward
@@ -706,7 +718,8 @@ mod tests {
         );
 
         let mut backward = VideoMaskCollector::new(5).expect("collector");
-        let backward_batches = [vec![], vec![], vec![4], vec![3], vec![2, 1, 0]];
+        let mut backward_batches = vec![Vec::new(); hotstart_delay];
+        backward_batches.extend([vec![4], vec![3], vec![2, 1, 0]]);
         for batch in backward_batches {
             for frame_idx in batch {
                 backward

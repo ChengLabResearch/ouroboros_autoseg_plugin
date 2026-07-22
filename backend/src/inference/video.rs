@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -13,6 +13,8 @@ pub struct VideoFramePrompt {
     pub points: Vec<PositivePointPrompt>,
 }
 
+pub type FrameProgressCallback = Arc<dyn Fn(usize, usize) + Send + Sync>;
+
 /// Segmenter that propagates prompts through a stack of staged frame images.
 ///
 /// `frames_dir` must be a directory of JPEG files as written by
@@ -25,5 +27,6 @@ pub trait VideoSegmenter: Send + Sync {
         &self,
         frames_dir: &Path,
         prompts: &[VideoFramePrompt],
+        progress: Option<FrameProgressCallback>,
     ) -> Result<Vec<FrameMask>, AppError>;
 }

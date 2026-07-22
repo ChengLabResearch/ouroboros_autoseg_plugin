@@ -7,7 +7,7 @@ use crate::{
     imaging::tiff_io::ImageFrame,
     inference::{
         image::{FrameMask, ImageSegmenter, PositivePointPrompt},
-        video::{VideoFramePrompt, VideoSegmenter},
+        video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
     },
 };
 
@@ -41,6 +41,7 @@ impl VideoSegmenter for CandleSam2VideoSegmenter {
         &self,
         _frames_dir: &Path,
         _prompts: &[VideoFramePrompt],
+        _progress: Option<FrameProgressCallback>,
     ) -> Result<Vec<FrameMask>, AppError> {
         Err(AppError::not_implemented(format!(
             "Candle SAM2 video inference is not implemented yet for {}",

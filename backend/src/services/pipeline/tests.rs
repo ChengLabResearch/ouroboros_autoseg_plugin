@@ -262,7 +262,8 @@ async fn run_requires_downloaded_sam3_checkpoint_before_staging() {
     std::fs::create_dir_all(&plugin_root).expect("create plugin root");
     write_input_volume(&plugin_root.join("input-stack.tif"), None);
 
-    let error = run(&state, "job-1", &sample_request("ImagePredictor"))
+    let (progress, _receiver) = crate::services::progress::channel();
+    let error = run(&state, &sample_request("ImagePredictor"), &progress)
         .await
         .expect_err("run without downloaded model should fail");
 

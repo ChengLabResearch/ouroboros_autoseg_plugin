@@ -19,6 +19,7 @@
 		"build:release": "npm run build && node scripts/prepare-release-artifacts.mjs",
 		"validate:release": "node scripts/validate-release-artifacts.mjs",
 		"lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+		"test": "vitest run",
 		"preview": "vite preview"
 	},
 	"dependencies": {
@@ -37,6 +38,7 @@
 		"eslint-plugin-react": "^7.37.5",
 		"eslint-plugin-react-refresh": "^0.5.0",
 		"typescript": "^5.9.3",
+		"vitest": "^3.2.4",
 		"vite": "^7.3.1",
 		"vite-plugin-static-copy": "^3.2.0",
 		"vite-plugin-webfont-dl": "^3.12.0"
