@@ -16,7 +16,7 @@ use crate::{
             threshold_mask_logits_to_frame, video_frame_to_mask,
         },
         image::{FrameMask, ImageSegmenter, PositivePointPrompt},
-        video::{VideoFramePrompt, VideoSegmenter},
+        video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
     },
 };
 
@@ -155,13 +155,16 @@ impl VideoSegmenter for CandleSam3VideoSegmenter {
         &self,
         frames_dir: &Path,
         prompts: &[VideoFramePrompt],
+        progress: Option<FrameProgressCallback>,
     ) -> Result<Vec<FrameMask>, AppError> {
         let handle = self.handle.clone();
         let frames_dir = frames_dir.to_path_buf();
         let prompts = prompts.to_vec();
-        tokio::task::spawn_blocking(move || run_video_inference(&handle, &frames_dir, &prompts))
-            .await
-            .map_err(|e| AppError::internal(e.to_string()))?
+        tokio::task::spawn_blocking(move || {
+            run_video_inference(&handle, &frames_dir, &prompts, progress.as_ref())
+        })
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
     }
 }
 
@@ -169,6 +172,7 @@ fn run_video_inference(
     handle: &Sam3ModelHandle,
     frames_dir: &Path,
     prompts: &[VideoFramePrompt],
+    progress: Option<&FrameProgressCallback>,
 ) -> Result<Vec<FrameMask>, AppError> {
     let session_config = configured_low_memory_video_session()?;
     let session_options = session_config.options.clone();
@@ -261,7 +265,11 @@ fn run_video_inference(
                             .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
                         masks
                             .push_forward(frame.frame_idx, mask)
-                            .map_err(|e| candle_core::Error::Msg(e.to_string()))
+                            .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+                        if let Some(callback) = progress {
+                            callback(frame.frame_idx, frame_count);
+                        }
+                        Ok(())
                     },
                 )
                 .map_err(|e| AppError::internal(e.to_string()))?;

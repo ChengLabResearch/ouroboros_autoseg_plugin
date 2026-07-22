@@ -5,23 +5,26 @@ use std::{
 
 use crate::{
     app_state::{AppState, Sam3ModelHandle},
-    domain::{paths::parse_mixed_path, requests::ProcessRequest},
+    domain::{jobs::JobPhase, paths::parse_mixed_path, requests::ProcessRequest},
     error::AppError,
     imaging::{
         annotations::{
             annotation_samples_for_video, default_annotations, interpolated_point_for_frame,
             AnnotationPoint, VolumeShape,
         },
-        output::{write_annotation_overlay_stack, write_mask_stack},
-        preprocess::{stage_input_frames, PreparedFrame, PreparedFrameEncoding},
+        output::{write_annotation_overlay_stack, write_mask_stack_with_progress},
+        preprocess::{stage_input_frames_with_progress, PreparedFrame, PreparedFrameEncoding},
         tiff_io::{inspect_volume, read_volume_frames, VolumeInput},
     },
     inference::{
         candle_sam3::{load_sam3_handle, CandleSam3ImageSegmenter, CandleSam3VideoSegmenter},
         image::{FrameMask, ImageSegmenter},
-        video::VideoSegmenter,
+        video::{FrameProgressCallback, VideoSegmenter},
     },
-    services::volume::VolumeFileMapping,
+    services::{
+        progress::{report_frame, report_phase, ProgressSender},
+        volume::VolumeFileMapping,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -109,32 +112,55 @@ pub async fn prepare(
     })
 }
 
-pub async fn run(state: &AppState, job_id: &str, request: &ProcessRequest) -> Result<(), AppError> {
+pub async fn run(
+    state: &AppState,
+    request: &ProcessRequest,
+    progress: &ProgressSender,
+) -> Result<(), AppError> {
     request.validate()?;
 
     let handle = model_handle_for_request(state, &request.model_type).await?;
-
-    state.update_job_step(job_id, 0, 5).await;
 
     let prepared = prepare(state, request).await?;
     if prepared.plan.temp_volume_dir.exists() {
         tokio::fs::remove_dir_all(&prepared.plan.temp_volume_dir).await?;
     }
     tokio::fs::create_dir_all(&prepared.plan.temp_volume_dir).await?;
-    stage_input_frames(&prepared.staged_frames).await?;
-    state.update_job_step(job_id, 1, 30).await;
+    let result = run_prepared(&handle, &prepared, request, progress).await;
+    let cleanup = tokio::fs::remove_dir_all(&prepared.plan.temp_volume_dir).await;
+    match (result, cleanup) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error.into()),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+async fn run_prepared(
+    handle: &Arc<Sam3ModelHandle>,
+    prepared: &PreparedPipelineInput,
+    request: &ProcessRequest,
+    progress: &ProgressSender,
+) -> Result<(), AppError> {
+    stage_input_frames_with_progress(&prepared.staged_frames, |frame, total| {
+        report_frame(progress, JobPhase::Transferring, frame, total)
+    })
+    .await?;
+    report_phase(progress, JobPhase::Inference);
 
     let masks = match request.predictor_type.as_str() {
-        "ImagePredictor" => run_image_predictor(&handle, &prepared).await?,
-        "VideoPredictor" => run_video_predictor(&handle, &prepared).await?,
+        "ImagePredictor" => run_image_predictor(handle, prepared, progress).await?,
+        "VideoPredictor" => run_video_predictor(handle, prepared, progress).await?,
         _ => unreachable!("validated by ProcessRequest::validate"),
     };
-    state.update_job_step(job_id, 2, 70).await;
 
     if let Some(parent) = prepared.plan.volume_output.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    write_mask_stack(&prepared.plan.volume_output, &masks).await?;
+    report_phase(progress, JobPhase::Saving);
+    write_mask_stack_with_progress(&prepared.plan.volume_output, &masks, |frame, total| {
+        report_frame(progress, JobPhase::Saving, frame, total)
+    })
+    .await?;
     if request.overlay_annotation_points {
         write_annotation_overlay_stack(
             &annotation_overlay_path(&prepared.plan.volume_output),
@@ -144,9 +170,6 @@ pub async fn run(state: &AppState, job_id: &str, request: &ProcessRequest) -> Re
         )
         .await?;
     }
-    tokio::fs::remove_dir_all(&prepared.plan.temp_volume_dir).await?;
-    state.update_job_step(job_id, 3, 100).await;
-
     Ok(())
 }
 
@@ -206,6 +229,7 @@ fn inference_device() -> Result<candle_core::Device, AppError> {
 async fn run_image_predictor(
     handle: &Arc<Sam3ModelHandle>,
     prepared: &PreparedPipelineInput,
+    progress: &ProgressSender,
 ) -> Result<Vec<FrameMask>, AppError> {
     let segmenter = CandleSam3ImageSegmenter {
         handle: handle.clone(),
@@ -217,6 +241,12 @@ async fn run_image_predictor(
             .unwrap_or_default();
         let mask = segmenter.segment(&staged.frame, &prompts).await?;
         masks.push(mask);
+        report_frame(
+            progress,
+            JobPhase::Inference,
+            i,
+            prepared.staged_frames.len(),
+        );
     }
     Ok(masks)
 }
@@ -224,14 +254,23 @@ async fn run_image_predictor(
 async fn run_video_predictor(
     handle: &Arc<Sam3ModelHandle>,
     prepared: &PreparedPipelineInput,
+    progress: &ProgressSender,
 ) -> Result<Vec<FrameMask>, AppError> {
     let segmenter = CandleSam3VideoSegmenter {
         handle: handle.clone(),
     };
     let video_prompts =
         annotation_samples_for_video(&prepared.annotation_points, prepared.staged_frames.len());
+    let sender = progress.clone();
+    let callback: FrameProgressCallback = Arc::new(move |frame, total| {
+        report_frame(&sender, JobPhase::Inference, frame, total);
+    });
     let masks = segmenter
-        .segment_video(&prepared.plan.temp_volume_dir, &video_prompts)
+        .segment_video(
+            &prepared.plan.temp_volume_dir,
+            &video_prompts,
+            Some(callback),
+        )
         .await?;
     validate_video_masks(&masks, prepared)?;
     Ok(masks)

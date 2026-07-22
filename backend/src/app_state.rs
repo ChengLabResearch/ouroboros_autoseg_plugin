@@ -6,7 +6,10 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
     config::AppConfig,
-    domain::{jobs::JobRecord, responses::StartupStatus},
+    domain::{
+        jobs::{JobPhase, JobRecord},
+        responses::StartupStatus,
+    },
     error::AppError,
     inference::registry::ModelRegistry,
 };
@@ -106,15 +109,21 @@ impl AppState {
             .map(|(job_id, record)| (job_id.clone(), record.clone()))
     }
 
-    pub async fn update_job_step(&self, job_id: &str, step_index: usize, progress: u8) {
+    pub async fn update_job_phase(&self, job_id: &str, phase: JobPhase, progress: u8) {
         if let Some(record) = self.jobs.write().await.get_mut(job_id) {
-            record.update_step(step_index, progress);
+            record.update_phase(phase, progress);
         }
     }
 
-    pub async fn set_job_status(&self, job_id: &str, status: &str) {
+    pub async fn complete_job(&self, job_id: &str) {
         if let Some(record) = self.jobs.write().await.get_mut(job_id) {
-            record.set_status(status);
+            record.complete();
+        }
+    }
+
+    pub async fn fail_job(&self, job_id: &str, message: impl Into<String>) {
+        if let Some(record) = self.jobs.write().await.get_mut(job_id) {
+            record.fail(message);
         }
     }
 

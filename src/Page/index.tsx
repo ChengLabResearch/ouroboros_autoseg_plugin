@@ -4,6 +4,7 @@ import OptionsPanel from '../components/OptionsPanel';
 import ProgressPanel, { BackendStatus, ErrorEntry, ProgressItem, VolumeServerState } from '../components/ProgressPanel';
 import ModelsPanel from '../components/ModelsPanel';
 import { BACKEND_URL } from '../config';
+import { findRunningJob } from '../jobReconnect';
 
 const MAX_ERRORS = 5;
 const DEDUP_WINDOW_MS = 5000;
@@ -192,47 +193,17 @@ export default function SAM3Page() {
 
         const tryReconnect = async () => {
             const storedJobId = getStoredJobId();
-            let candidateJobId = storedJobId;
-
-            if (!candidateJobId) {
-                try {
-                    const latestRes = await fetch(`${BACKEND_URL}/latest-job`);
-                    if (latestRes.ok) {
-                        const latestData = await latestRes.json();
-                        const latestJobId = latestData?.job_id;
-                        if (typeof latestJobId === 'string' && latestJobId.length > 0) {
-                            candidateJobId = latestJobId;
-                            setStoredJobId(latestJobId);
-                        }
-                    }
-                } catch {
-                    // Ignore; we'll retry later when the backend is stable.
-                }
+            const restored = await findRunningJob(fetch, BACKEND_URL, storedJobId);
+            if (cancelled) return;
+            if (!restored) {
+                if (storedJobId) clearStoredJobId();
+                return;
             }
-
-            if (!candidateJobId) return;
-
-            try {
-                const res = await fetch(`${BACKEND_URL}/status/${candidateJobId}`);
-                if (!res.ok) {
-                    clearStoredJobId();
-                    return;
-                }
-                const data = await res.json();
-                if (cancelled) return;
-                if (Array.isArray(data.steps)) {
-                    setProg(data.steps);
-                }
-                if (data.status === 'completed' || data.status === 'error') {
-                    clearStoredJobId();
-                    return;
-                }
-                setJobId(candidateJobId);
-                setRun(true);
-                scheduleReconnectBannerClear();
-            } catch {
-                // Keep stored job id for a later reconnect attempt.
-            }
+            setProg(restored.record.steps);
+            setJobId(restored.jobId);
+            setStoredJobId(restored.jobId);
+            setRun(true);
+            scheduleReconnectBannerClear();
         };
 
         tryReconnect();
@@ -249,6 +220,9 @@ export default function SAM3Page() {
                         const data = await res.json();
                         setProg(data.steps);
                         if(data.status === 'completed' || data.status === 'error') {
+                            if (data.status === 'error') {
+                                addError(data.error ?? `${data.active_phase ?? 'Unknown'} phase failed`);
+                            }
                             setRun(false);
                             setJobId(null);
                             clearStoredJobId();

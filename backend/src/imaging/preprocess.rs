@@ -21,7 +21,17 @@ pub struct PreparedFrame {
 }
 
 pub async fn stage_input_frames(frames: &[PreparedFrame]) -> Result<(), AppError> {
-    for prepared in frames {
+    stage_input_frames_with_progress(frames, |_, _| {}).await
+}
+
+pub async fn stage_input_frames_with_progress<F>(
+    frames: &[PreparedFrame],
+    mut on_frame: F,
+) -> Result<(), AppError>
+where
+    F: FnMut(usize, usize),
+{
+    for (frame_index, prepared) in frames.iter().enumerate() {
         if let Some(parent) = prepared.target.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -30,6 +40,7 @@ pub async fn stage_input_frames(frames: &[PreparedFrame]) -> Result<(), AppError
             PreparedFrameEncoding::Tiff => stage_tiff_frame(prepared)?,
             PreparedFrameEncoding::Jpeg => stage_jpeg_frame(prepared)?,
         }
+        on_frame(frame_index, frames.len());
     }
 
     Ok(())
