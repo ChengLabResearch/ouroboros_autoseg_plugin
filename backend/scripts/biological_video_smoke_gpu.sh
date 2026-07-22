@@ -28,13 +28,13 @@ Common options:
   OUTPUT_DIR=/path/out           Also copy the output mask stack to this host dir.
   ARTIFACT_DIR=/path/artifacts   Store revisions, telemetry, and bounded backend logs here.
   TELEMETRY_INTERVAL_SECONDS=1  Sampling interval for GPU, RSS, and elapsed-time CSV rows.
-  SAM3_VIDEO_STATE_PROFILE=cpu-offload  State profile: gpu-resident (B) or cpu-offload (C).
+  SAM3_VIDEO_STATE_PROFILE=gpu-resident State profile: gpu-resident (B) or cpu-offload (C).
   SAM3_VIDEO_FEATURE_CACHE_ENTRIES=1    Feature-cache capacity benchmark control: 1 or 2.
   SAM3_TRACKER_TRIM_PAST_NON_COND_MEM=true  Enable the mask-memory trim control.
-  SAM3_MAX_NON_COND_TRACKER_STATES=32       Opt in to bounded non-conditioning history.
+  SAM3_MAX_NON_COND_TRACKER_STATES=32       Bounded history; set empty for compatibility mode.
   SAM3_VIDEO_HOTSTART_DELAY=4               Opt in to a bounded hotstart certification control.
   SAM3_COMPUTE_DTYPE=f32                     Certified model compute dtype: f32.
-  SAM3_RETAINED_STATE_DTYPE=bf16             Retained mask-memory dtype: f32 or bf16.
+  SAM3_RETAINED_STATE_DTYPE=f32              Retained mask-memory dtype: f32 or bf16.
   TIFF_VALIDATOR_PYTHON=python3  Python interpreter with tifffile and numpy installed.
   KEEP_CONTAINER=1               Leave the backend container running after the script exits.
 
@@ -168,13 +168,13 @@ CUDA_DEVICE_ORDINAL="${CUDA_DEVICE_ORDINAL:-0}"
 LOG_TAIL_LINES="${LOG_TAIL_LINES:-500}"
 OVERLAY_ANNOTATION_POINTS="${OVERLAY_ANNOTATION_POINTS:-false}"
 REUSE_STAGED_CHECKPOINT="${REUSE_STAGED_CHECKPOINT:-0}"
-SAM3_VIDEO_STATE_PROFILE="${SAM3_VIDEO_STATE_PROFILE:-cpu-offload}"
+SAM3_VIDEO_STATE_PROFILE="${SAM3_VIDEO_STATE_PROFILE:-gpu-resident}"
 SAM3_VIDEO_FEATURE_CACHE_ENTRIES="${SAM3_VIDEO_FEATURE_CACHE_ENTRIES:-1}"
 SAM3_TRACKER_TRIM_PAST_NON_COND_MEM="${SAM3_TRACKER_TRIM_PAST_NON_COND_MEM:-true}"
-SAM3_MAX_NON_COND_TRACKER_STATES="${SAM3_MAX_NON_COND_TRACKER_STATES:-}"
+SAM3_MAX_NON_COND_TRACKER_STATES="${SAM3_MAX_NON_COND_TRACKER_STATES-32}"
 SAM3_VIDEO_HOTSTART_DELAY="${SAM3_VIDEO_HOTSTART_DELAY:-0}"
 SAM3_COMPUTE_DTYPE="${SAM3_COMPUTE_DTYPE:-f32}"
-SAM3_RETAINED_STATE_DTYPE="${SAM3_RETAINED_STATE_DTYPE:-bf16}"
+SAM3_RETAINED_STATE_DTYPE="${SAM3_RETAINED_STATE_DTYPE:-f32}"
 if [[ -x "${BACKEND_DIR}/.venv/bin/python" ]]; then
   DEFAULT_TIFF_VALIDATOR_PYTHON="${BACKEND_DIR}/.venv/bin/python"
 else

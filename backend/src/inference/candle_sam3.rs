@@ -490,7 +490,7 @@ fn compute_dtype_name(dtype: DType) -> &'static str {
 }
 
 fn parse_retained_state_dtype(value: Option<&str>) -> Result<sam3::RetainedStateDType, AppError> {
-    match value.unwrap_or("bf16") {
+    match value.unwrap_or("f32") {
         "f32" => Ok(sam3::RetainedStateDType::F32),
         "bf16" => Ok(sam3::RetainedStateDType::BF16),
         value => Err(AppError::bad_request(format!(
@@ -570,7 +570,7 @@ fn low_memory_video_session_config(
     max_non_cond_tracker_states: Option<&str>,
     retained_state_dtype: Option<&str>,
 ) -> Result<LowMemoryVideoSessionConfig, AppError> {
-    let state_profile = match state_profile.unwrap_or("cpu-offload") {
+    let state_profile = match state_profile.unwrap_or("gpu-resident") {
         "gpu-resident" => VideoStateProfile::GpuResident,
         "cpu-offload" => VideoStateProfile::CpuOffload,
         value => {
@@ -593,7 +593,8 @@ fn low_memory_video_session_config(
         )));
     }
     let max_non_cond_tracker_states = match max_non_cond_tracker_states {
-        None | Some("") => None,
+        None => Some(32),
+        Some("") => None,
         Some(value) => {
             let parsed = value.parse::<usize>().map_err(|_| {
                 AppError::bad_request(format!(
@@ -648,23 +649,23 @@ mod tests {
     }
 
     #[test]
-    fn video_session_options_default_to_cpu_offload_and_one_feature() {
+    fn video_session_options_default_to_bounded_gpu_resident_f32() {
         let config =
             low_memory_video_session_config(None, None, None, None).expect("default profile");
         let options = config.options;
 
-        assert_eq!(config.state_profile, VideoStateProfile::CpuOffload);
+        assert_eq!(config.state_profile, VideoStateProfile::GpuResident);
         assert!(matches!(
             options.memory_profile,
             sam3::VideoMemoryProfile::LowMemory
         ));
         assert!(!options.offload_frames_to_cpu);
-        assert!(options.offload_state_to_cpu);
+        assert!(!options.offload_state_to_cpu);
         assert_eq!(options.prefetch_ahead, 0);
         assert_eq!(options.prefetch_behind, 0);
         assert_eq!(options.max_feature_cache_entries, 1);
-        assert_eq!(options.max_non_cond_tracker_states, None);
-        assert_eq!(options.retained_state_dtype, sam3::RetainedStateDType::BF16);
+        assert_eq!(options.max_non_cond_tracker_states, Some(32));
+        assert_eq!(options.retained_state_dtype, sam3::RetainedStateDType::F32);
         assert!(options.tokenizer_path.is_none());
     }
 
@@ -687,10 +688,11 @@ mod tests {
         );
 
         let cpu =
-            low_memory_video_session_config(Some("cpu-offload"), Some("1"), None, Some("bf16"))
+            low_memory_video_session_config(Some("cpu-offload"), Some("1"), Some(""), Some("bf16"))
                 .expect("variant C");
         assert_eq!(cpu.state_profile, VideoStateProfile::CpuOffload);
         assert!(cpu.options.offload_state_to_cpu);
+        assert_eq!(cpu.options.max_non_cond_tracker_states, None);
 
         assert!(low_memory_video_session_config(Some("auto"), None, None, None).is_err());
         assert!(low_memory_video_session_config(None, Some("0"), None, None).is_err());
@@ -712,11 +714,15 @@ mod tests {
 
         assert_eq!(
             parse_retained_state_dtype(None).expect("default retained"),
-            sam3::RetainedStateDType::BF16
+            sam3::RetainedStateDType::F32
         );
         assert_eq!(
             parse_retained_state_dtype(Some("f32")).expect("f32 retained"),
             sam3::RetainedStateDType::F32
+        );
+        assert_eq!(
+            parse_retained_state_dtype(Some("bf16")).expect("bf16 retained"),
+            sam3::RetainedStateDType::BF16
         );
         assert!(parse_retained_state_dtype(Some("f16")).is_err());
     }
