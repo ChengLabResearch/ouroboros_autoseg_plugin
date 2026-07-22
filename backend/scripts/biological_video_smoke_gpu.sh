@@ -33,7 +33,7 @@ Common options:
   SAM3_TRACKER_TRIM_PAST_NON_COND_MEM=true  Enable the mask-memory trim control.
   SAM3_MAX_NON_COND_TRACKER_STATES=32       Opt in to bounded non-conditioning history.
   SAM3_VIDEO_HOTSTART_DELAY=4               Opt in to a bounded hotstart certification control.
-  SAM3_COMPUTE_DTYPE=f32                     Model compute dtype: f32 or f16.
+  SAM3_COMPUTE_DTYPE=f32                     Certified model compute dtype: f32.
   SAM3_RETAINED_STATE_DTYPE=bf16             Retained mask-memory dtype: f32 or bf16.
   TIFF_VALIDATOR_PYTHON=python3  Python interpreter with tifffile and numpy installed.
   KEEP_CONTAINER=1               Leave the backend container running after the script exits.

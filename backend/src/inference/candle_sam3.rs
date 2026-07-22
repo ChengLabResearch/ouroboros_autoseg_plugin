@@ -472,9 +472,11 @@ fn configured_compute_dtype() -> Result<DType, AppError> {
 fn parse_compute_dtype(value: Option<&str>) -> Result<DType, AppError> {
     match value.unwrap_or("f32") {
         "f32" => Ok(DType::F32),
-        "f16" => Ok(DType::F16),
+        "f16" => Err(AppError::bad_request(format!(
+            "Invalid {COMPUTE_DTYPE_ENV}=\"f16\"; F16 compute is not certified for video propagation; expected f32"
+        ))),
         value => Err(AppError::bad_request(format!(
-            "Invalid {COMPUTE_DTYPE_ENV}={value:?}; expected f32 or f16"
+            "Invalid {COMPUTE_DTYPE_ENV}={value:?}; expected f32"
         ))),
     }
 }
@@ -705,10 +707,7 @@ mod tests {
             parse_compute_dtype(None).expect("default compute"),
             DType::F32
         );
-        assert_eq!(
-            parse_compute_dtype(Some("f16")).expect("f16 compute"),
-            DType::F16
-        );
+        assert!(parse_compute_dtype(Some("f16")).is_err());
         assert!(parse_compute_dtype(Some("bf16")).is_err());
 
         assert_eq!(
