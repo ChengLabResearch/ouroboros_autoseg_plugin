@@ -36,6 +36,7 @@ pub fn load_sam3_handle(
     checkpoint_path: &std::path::Path,
     device: candle_core::Device,
 ) -> Result<Sam3ModelHandle, AppError> {
+    let compute_dtype = configured_compute_dtype()?;
     let device_kind = if device.is_cuda() { "cuda" } else { "cpu" };
     let cuda_ordinal = device
         .is_cuda()
@@ -48,7 +49,7 @@ pub fn load_sam3_handle(
         checkpoint = %checkpoint_path.display(),
         device = %device_kind,
         cuda_ordinal = %cuda_ordinal,
-        dtype = "f32",
+        compute_dtype = compute_dtype_name(compute_dtype),
         plugin_sha = %plugin_sha,
         candle_sha = %candle_sha,
         "loading SAM3 model and tracker"
@@ -56,7 +57,7 @@ pub fn load_sam3_handle(
     let config = sam3::Config::default();
     let source = sam3::Sam3CheckpointSource::upstream_pth(checkpoint_path);
     let image_model =
-        sam3::Sam3ImageModel::from_checkpoint_source(&config, &source, DType::F32, &device)
+        sam3::Sam3ImageModel::from_checkpoint_source(&config, &source, compute_dtype, &device)
             .map_err(|e| AppError::internal(e.to_string()))?;
     let mut tracker_config = sam3::Sam3TrackerConfig::from_sam3_config(&config);
     tracker_config.predictor.trim_past_non_cond_mem_for_eval = configured_trim_past_non_cond_mem()?;
@@ -69,7 +70,7 @@ pub fn load_sam3_handle(
     let tracker = sam3::Sam3TrackerModel::new(
         &tracker_config,
         source
-            .load_tracker_var_builder(DType::F32, &device)
+            .load_tracker_var_builder(compute_dtype, &device)
             .map_err(|e| AppError::internal(e.to_string()))?,
     )
     .map_err(|e| AppError::internal(e.to_string()))?;
@@ -184,6 +185,7 @@ fn run_video_inference(
         prefetch_behind = session_options.prefetch_behind,
         max_feature_cache_entries = session_options.max_feature_cache_entries,
         max_non_cond_tracker_states = ?session_options.max_non_cond_tracker_states,
+        retained_state_dtype = ?session_options.retained_state_dtype,
         "configured low-memory SAM3 video session"
     );
 
@@ -285,6 +287,10 @@ fn run_video_inference(
                 retained_tracker_states = cache_stats.retained_tracker_states,
                 retained_non_cond_tracker_states = cache_stats.retained_non_cond_tracker_states,
                 retained_output_frame_indices = cache_stats.retained_output_frame_indices,
+                retained_state_dtype = ?cache_stats.retained_state_dtype,
+                postprocess_foreground_scalar_reads =
+                    cache_stats.postprocess_foreground_scalar_reads,
+                postprocess_score_scalar_reads = cache_stats.postprocess_score_scalar_reads,
                 cpu_low_res_mask_bytes = cache_stats.cpu_low_res_mask_bytes,
                 device_low_res_mask_bytes = cache_stats.device_low_res_mask_bytes,
                 hotstart_buffered_frames = cache_stats.hotstart_buffered_frames,
@@ -456,6 +462,40 @@ const VIDEO_FEATURE_CACHE_ENTRIES_ENV: &str = "SAM3_VIDEO_FEATURE_CACHE_ENTRIES"
 const TRACKER_TRIM_PAST_NON_COND_MEM_ENV: &str = "SAM3_TRACKER_TRIM_PAST_NON_COND_MEM";
 const MAX_NON_COND_TRACKER_STATES_ENV: &str = "SAM3_MAX_NON_COND_TRACKER_STATES";
 const VIDEO_HOTSTART_DELAY_ENV: &str = "SAM3_VIDEO_HOTSTART_DELAY";
+const COMPUTE_DTYPE_ENV: &str = "SAM3_COMPUTE_DTYPE";
+const RETAINED_STATE_DTYPE_ENV: &str = "SAM3_RETAINED_STATE_DTYPE";
+
+fn configured_compute_dtype() -> Result<DType, AppError> {
+    parse_compute_dtype(std::env::var(COMPUTE_DTYPE_ENV).ok().as_deref())
+}
+
+fn parse_compute_dtype(value: Option<&str>) -> Result<DType, AppError> {
+    match value.unwrap_or("f32") {
+        "f32" => Ok(DType::F32),
+        "f16" => Ok(DType::F16),
+        value => Err(AppError::bad_request(format!(
+            "Invalid {COMPUTE_DTYPE_ENV}={value:?}; expected f32 or f16"
+        ))),
+    }
+}
+
+fn compute_dtype_name(dtype: DType) -> &'static str {
+    match dtype {
+        DType::F32 => "f32",
+        DType::F16 => "f16",
+        _ => "unsupported",
+    }
+}
+
+fn parse_retained_state_dtype(value: Option<&str>) -> Result<sam3::RetainedStateDType, AppError> {
+    match value.unwrap_or("bf16") {
+        "f32" => Ok(sam3::RetainedStateDType::F32),
+        "bf16" => Ok(sam3::RetainedStateDType::BF16),
+        value => Err(AppError::bad_request(format!(
+            "Invalid {RETAINED_STATE_DTYPE_ENV}={value:?}; expected f32 or bf16"
+        ))),
+    }
+}
 
 fn configured_hotstart_delay() -> Result<usize, AppError> {
     parse_hotstart_delay(std::env::var(VIDEO_HOTSTART_DELAY_ENV).ok().as_deref())
@@ -518,6 +558,7 @@ fn configured_low_memory_video_session() -> Result<LowMemoryVideoSessionConfig, 
         std::env::var(MAX_NON_COND_TRACKER_STATES_ENV)
             .ok()
             .as_deref(),
+        std::env::var(RETAINED_STATE_DTYPE_ENV).ok().as_deref(),
     )
 }
 
@@ -525,6 +566,7 @@ fn low_memory_video_session_config(
     state_profile: Option<&str>,
     feature_cache_entries: Option<&str>,
     max_non_cond_tracker_states: Option<&str>,
+    retained_state_dtype: Option<&str>,
 ) -> Result<LowMemoryVideoSessionConfig, AppError> {
     let state_profile = match state_profile.unwrap_or("cpu-offload") {
         "gpu-resident" => VideoStateProfile::GpuResident,
@@ -572,6 +614,7 @@ fn low_memory_video_session_config(
             memory_profile: sam3::VideoMemoryProfile::LowMemory,
             offload_frames_to_cpu: false,
             offload_state_to_cpu: matches!(state_profile, VideoStateProfile::CpuOffload),
+            retained_state_dtype: parse_retained_state_dtype(retained_state_dtype)?,
             prefetch_ahead: 0,
             prefetch_behind: 0,
             max_feature_cache_entries,
@@ -604,7 +647,8 @@ mod tests {
 
     #[test]
     fn video_session_options_default_to_cpu_offload_and_one_feature() {
-        let config = low_memory_video_session_config(None, None, None).expect("default profile");
+        let config =
+            low_memory_video_session_config(None, None, None, None).expect("default profile");
         let options = config.options;
 
         assert_eq!(config.state_profile, VideoStateProfile::CpuOffload);
@@ -618,29 +662,64 @@ mod tests {
         assert_eq!(options.prefetch_behind, 0);
         assert_eq!(options.max_feature_cache_entries, 1);
         assert_eq!(options.max_non_cond_tracker_states, None);
+        assert_eq!(options.retained_state_dtype, sam3::RetainedStateDType::BF16);
         assert!(options.tokenizer_path.is_none());
     }
 
     #[test]
     fn video_session_options_expose_benchmark_variants_and_reject_ambiguity() {
-        let gpu = low_memory_video_session_config(Some("gpu-resident"), Some("2"), Some("32"))
-            .expect("variant B");
+        let gpu = low_memory_video_session_config(
+            Some("gpu-resident"),
+            Some("2"),
+            Some("32"),
+            Some("f32"),
+        )
+        .expect("variant B");
         assert_eq!(gpu.state_profile, VideoStateProfile::GpuResident);
         assert!(!gpu.options.offload_state_to_cpu);
         assert_eq!(gpu.options.max_feature_cache_entries, 2);
         assert_eq!(gpu.options.max_non_cond_tracker_states, Some(32));
+        assert_eq!(
+            gpu.options.retained_state_dtype,
+            sam3::RetainedStateDType::F32
+        );
 
-        let cpu = low_memory_video_session_config(Some("cpu-offload"), Some("1"), None)
-            .expect("variant C");
+        let cpu =
+            low_memory_video_session_config(Some("cpu-offload"), Some("1"), None, Some("bf16"))
+                .expect("variant C");
         assert_eq!(cpu.state_profile, VideoStateProfile::CpuOffload);
         assert!(cpu.options.offload_state_to_cpu);
 
-        assert!(low_memory_video_session_config(Some("auto"), None, None).is_err());
-        assert!(low_memory_video_session_config(None, Some("0"), None).is_err());
-        assert!(low_memory_video_session_config(None, Some("3"), None).is_err());
-        assert!(low_memory_video_session_config(None, Some("many"), None).is_err());
-        assert!(low_memory_video_session_config(None, None, Some("many")).is_err());
-        assert!(low_memory_video_session_config(None, None, Some("0")).is_err());
+        assert!(low_memory_video_session_config(Some("auto"), None, None, None).is_err());
+        assert!(low_memory_video_session_config(None, Some("0"), None, None).is_err());
+        assert!(low_memory_video_session_config(None, Some("3"), None, None).is_err());
+        assert!(low_memory_video_session_config(None, Some("many"), None, None).is_err());
+        assert!(low_memory_video_session_config(None, None, Some("many"), None).is_err());
+        assert!(low_memory_video_session_config(None, None, Some("0"), None).is_err());
+        assert!(low_memory_video_session_config(None, None, None, Some("f16")).is_err());
+    }
+
+    #[test]
+    fn compute_and_retained_storage_dtypes_are_independent_and_validated() {
+        assert_eq!(
+            parse_compute_dtype(None).expect("default compute"),
+            DType::F32
+        );
+        assert_eq!(
+            parse_compute_dtype(Some("f16")).expect("f16 compute"),
+            DType::F16
+        );
+        assert!(parse_compute_dtype(Some("bf16")).is_err());
+
+        assert_eq!(
+            parse_retained_state_dtype(None).expect("default retained"),
+            sam3::RetainedStateDType::BF16
+        );
+        assert_eq!(
+            parse_retained_state_dtype(Some("f32")).expect("f32 retained"),
+            sam3::RetainedStateDType::F32
+        );
+        assert!(parse_retained_state_dtype(Some("f16")).is_err());
     }
 
     #[test]
