@@ -51,7 +51,7 @@ Create the local sibling checkout at the pinned commit:
 export OUROBOROS_REPOS=/path/to/ouroboros/repos
 cd "$OUROBOROS_REPOS"
 git clone https://github.com/den-sq/candle_sam3.git candle_sam3_main
-git -C candle_sam3_main checkout 902857ca74d4d7c8b51a99025842eea203d0ac12
+git -C candle_sam3_main checkout 2f2661d3954361411b9e5990444a9d40b1ad61e0
 ```
 
 Then verify the backend path dependencies resolve:
