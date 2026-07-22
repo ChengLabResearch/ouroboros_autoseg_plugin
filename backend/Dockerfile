@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /build
 
 # Clone candle_sam3 at the pinned commit used during development.
-ARG CANDLE_SAM3_COMMIT=2f2661d3954361411b9e5990444a9d40b1ad61e0
+ARG CANDLE_SAM3_COMMIT=fe9c4a4ea085c7efc4983afbc7d6bc05ff6dd0f3
 ARG PLUGIN_GIT_SHA=unknown
 ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
 ENV PLUGIN_GIT_SHA=${PLUGIN_GIT_SHA}
@@ -53,7 +53,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 
 WORKDIR /build
 
-ARG CANDLE_SAM3_COMMIT=2f2661d3954361411b9e5990444a9d40b1ad61e0
+ARG CANDLE_SAM3_COMMIT=fe9c4a4ea085c7efc4983afbc7d6bc05ff6dd0f3
 ARG PLUGIN_GIT_SHA=unknown
 ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
 ENV PLUGIN_GIT_SHA=${PLUGIN_GIT_SHA}
