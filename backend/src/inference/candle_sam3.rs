@@ -576,6 +576,9 @@ fn low_memory_video_session_config(
 mod tests {
     use super::*;
     use crate::inference::image::PositivePointPrompt;
+    use candle_core::Device;
+    use candle_transformers::models::sam3::FrameSource;
+    use image::{ImageBuffer, Rgb};
 
     fn test_mask(value: u8) -> FrameMask {
         FrameMask {
@@ -583,6 +586,12 @@ mod tests {
             height: 1,
             pixels: vec![value],
         }
+    }
+
+    fn write_test_jpeg(path: &Path, color: [u8; 3], width: u32, height: u32) {
+        ImageBuffer::from_pixel(width, height, Rgb(color))
+            .save(path)
+            .expect("write staged JPEG");
     }
 
     #[test]
@@ -677,6 +686,45 @@ mod tests {
     }
 
     #[test]
+    fn video_stream_accepts_delayed_prompt_frames_and_burst_callbacks() {
+        let mut forward = VideoMaskCollector::new(5).expect("collector");
+        let forward_batches = [vec![], vec![], vec![0], vec![1], vec![2, 3, 4]];
+        for batch in forward_batches {
+            for frame_idx in batch {
+                forward
+                    .push_forward(frame_idx, test_mask(frame_idx as u8))
+                    .expect("delayed forward callback");
+            }
+        }
+        let forward = forward.finish().expect("complete delayed forward stream");
+        assert_eq!(
+            forward
+                .iter()
+                .map(|mask| mask.pixels[0])
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+
+        let mut backward = VideoMaskCollector::new(5).expect("collector");
+        let backward_batches = [vec![], vec![], vec![4], vec![3], vec![2, 1, 0]];
+        for batch in backward_batches {
+            for frame_idx in batch {
+                backward
+                    .push_backward(frame_idx, test_mask(frame_idx as u8))
+                    .expect("delayed backward callback");
+            }
+        }
+        let backward = backward.finish().expect("complete delayed backward stream");
+        assert_eq!(
+            backward
+                .iter()
+                .map(|mask| mask.pixels[0])
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+    }
+
+    #[test]
     fn video_output_validation_rejects_missing_duplicate_out_of_range_and_invalid_order() {
         let mut missing = VideoMaskCollector::new(3).expect("collector");
         missing.push_forward(0, test_mask(0)).expect("frame 0");
@@ -756,6 +804,101 @@ mod tests {
             .contains("injected callback conversion failure"));
         assert!(failure.operated);
         assert!(failure.closed);
+
+        let mut double_failure = FakePredictor::default();
+        let error = with_deterministic_session_close(
+            &mut double_failure,
+            |predictor| {
+                predictor.operated = true;
+                Err::<(), _>(AppError::internal("original inference failure"))
+            },
+            |predictor| {
+                predictor.closed = true;
+                Err(AppError::internal("secondary close failure"))
+            },
+        )
+        .expect_err("the original operation failure must be retained");
+        assert!(error.to_string().contains("original inference failure"));
+        assert!(!error.to_string().contains("secondary close failure"));
+        assert!(double_failure.closed);
+    }
+
+    #[test]
+    fn caller_owned_staged_source_closes_after_success_and_source_failure() {
+        struct FakeSessionOwner {
+            source: Box<dyn FrameSource>,
+            closed: bool,
+            loaded_after_close: Option<usize>,
+            inject_close_error: bool,
+        }
+
+        impl FakeSessionOwner {
+            fn load(&mut self, frame_idx: usize) -> Result<(), AppError> {
+                self.source
+                    .get_frame(frame_idx, &Device::Cpu)
+                    .map(|_| ())
+                    .map_err(|error| AppError::internal(error.to_string()))
+            }
+
+            fn close(&mut self) -> Result<(), AppError> {
+                self.source.close();
+                self.loaded_after_close = Some(self.source.loaded_frame_count());
+                self.closed = true;
+                if self.inject_close_error {
+                    Err(AppError::internal("injected close failure"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+
+        let success_dir = tempfile::tempdir().expect("success fixture");
+        write_test_jpeg(&success_dir.path().join("0.jpg"), [10, 20, 30], 3, 2);
+        let success_source = StagedJpegFrameSource::new(success_dir.path(), 4, [0.0; 3], [1.0; 3])
+            .expect("success source");
+        let mut success = FakeSessionOwner {
+            source: Box::new(success_source),
+            closed: false,
+            loaded_after_close: None,
+            inject_close_error: false,
+        };
+        with_deterministic_session_close(
+            &mut success,
+            |owner| {
+                owner.load(0)?;
+                assert_eq!(owner.source.loaded_frame_count(), 1);
+                Ok(())
+            },
+            FakeSessionOwner::close,
+        )
+        .expect("successful source session");
+        assert!(success.closed);
+        assert_eq!(success.loaded_after_close, Some(0));
+
+        let failure_dir = tempfile::tempdir().expect("failure fixture");
+        write_test_jpeg(&failure_dir.path().join("0.jpg"), [1, 2, 3], 3, 2);
+        write_test_jpeg(&failure_dir.path().join("1.jpg"), [4, 5, 6], 4, 2);
+        let failure_source = StagedJpegFrameSource::new(failure_dir.path(), 4, [0.0; 3], [1.0; 3])
+            .expect("failure source");
+        let mut failure = FakeSessionOwner {
+            source: Box::new(failure_source),
+            closed: false,
+            loaded_after_close: None,
+            inject_close_error: true,
+        };
+        let error = with_deterministic_session_close(
+            &mut failure,
+            |owner| {
+                owner.load(0)?;
+                owner.load(1)
+            },
+            FakeSessionOwner::close,
+        )
+        .expect_err("source geometry failure must propagate");
+        assert!(error.to_string().contains("session expects 2x3"));
+        assert!(!error.to_string().contains("injected close failure"));
+        assert!(failure.closed);
+        assert_eq!(failure.loaded_after_close, Some(0));
     }
 
     #[test]
