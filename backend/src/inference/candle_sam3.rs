@@ -687,6 +687,19 @@ mod tests {
             sam3::RetainedStateDType::F32
         );
 
+        let gpu_bf16 = low_memory_video_session_config(
+            Some("gpu-resident"),
+            Some("1"),
+            Some("32"),
+            Some("bf16"),
+        )
+        .expect("GPU-resident BF16 storage control");
+        assert!(!gpu_bf16.options.offload_state_to_cpu);
+        assert_eq!(
+            gpu_bf16.options.retained_state_dtype,
+            sam3::RetainedStateDType::BF16
+        );
+
         let cpu =
             low_memory_video_session_config(Some("cpu-offload"), Some("1"), Some(""), Some("bf16"))
                 .expect("variant C");
