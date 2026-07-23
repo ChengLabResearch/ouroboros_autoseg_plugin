@@ -614,6 +614,8 @@ fn low_memory_video_session_config(
         state_profile,
         options: sam3::VideoSessionOptions {
             tokenizer_path: None,
+            // LowMemory disables Candle's packed prompt-history path. Keep this explicit:
+            // changing profiles requires re-certifying the exposed BF16 retained-state control.
             memory_profile: sam3::VideoMemoryProfile::LowMemory,
             offload_frames_to_cpu: false,
             offload_state_to_cpu: matches!(state_profile, VideoStateProfile::CpuOffload),
