@@ -1,26 +1,28 @@
 # CANDLE-2 low-memory video profile
 
-Tracking issue: https://github.com/den-sq/sam_parity/issues/33
+Tracking issue: https://github.com/den-sq/sam_parity/issues/35
 
-The temporary production default is variant C: compact low-memory outputs with
-tracker state offloaded to CPU, zero frame prefetch, and one cached feature entry.
-Variant B keeps tracker state on the GPU and is available as a benchmark control.
-It must not become the default until the 512-frame workload demonstrates both a
-14 GiB peak-VRAM ceiling and a post-warmup memory plateau.
+The temporary CANDLE-2.9 candidate default is bounded variant B: F32 compute and
+retained state, tracker state resident on the GPU, zero frame prefetch, one
+cached feature entry, and at most 32 non-conditioning tracker states. Variant C
+remains available as an explicit CPU-offload fallback for systems without the
+required GPU headroom.
 
 Bounded tracker history from https://github.com/den-sq/sam_parity/issues/37 is
-also opt-in while its mask certification is pending. Set
-`SAM3_MAX_NON_COND_TRACKER_STATES=32` for the bounded benchmark control; leave it
-empty for compatibility/unbounded mode. Candle rejects a bound smaller than its
-effective mask-memory, object-pointer, and refinement windows (16 for Medical
-SAM3), always retains prompt/conditioning states, and reports retained state,
-output-index, low-resolution-mask, and hotstart-queue metrics separately.
+enabled by default with `SAM3_MAX_NON_COND_TRACKER_STATES=32`. Set the variable
+explicitly empty only for compatibility/unbounded reference runs. Candle rejects
+a bound smaller than its effective mask-memory, object-pointer, and refinement
+windows (16 for Medical SAM3), always retains prompt/conditioning states, and
+reports retained state, output-index, low-resolution-mask, and hotstart-queue
+metrics separately.
 
-| Setting | Variant B | Variant C (default) |
+| Setting | Variant B (default) | Variant C (fallback) |
 | --- | --- | --- |
 | `SAM3_VIDEO_STATE_PROFILE` | `gpu-resident` | `cpu-offload` |
 | `offload_state_to_cpu` | false | true |
 | `SAM3_VIDEO_FEATURE_CACHE_ENTRIES` | 1 or 2 | 1 or 2 |
+| `SAM3_MAX_NON_COND_TRACKER_STATES` | 32 | 32 |
+| `SAM3_RETAINED_STATE_DTYPE` | `f32` | `f32` |
 | frame prefetch | 0 | 0 |
 
 The backend logs the selected profile, loaded-frame count, feature-cache count,
@@ -28,12 +30,10 @@ and separate CPU/device byte totals for frames, tracker state, and cached output
 The GPU smoke harness also records host/container RSS, CUDA memory, utilization,
 elapsed time, exact revisions, and output hashes.
 
-`trim_past_non_cond_mem_for_eval` is enabled as the mask-memory control. This
-reduces the non-conditioning mask-memory window; it does **not** bound the full
-`tracker_states` map or its F32 `288 x 288` low-resolution masks. Until bounded
-tracker history lands in https://github.com/den-sq/sam_parity/issues/37, CPU
-offload is therefore a temporary capacity measure rather than a claim that
-retained history is bounded.
+`trim_past_non_cond_mem_for_eval` is enabled as the mask-memory control. The
+separate 32-state limit bounds the full non-conditioning `tracker_states` map
+and its F32 `288 x 288` low-resolution masks; prompt/conditioning states remain
+retained.
 Set `SAM3_TRACKER_TRIM_PAST_NON_COND_MEM=false` only for the required untrimmed
 reference run; the default is `true`, and the selected masks must remain equal.
 
@@ -61,3 +61,18 @@ Output D2H streaming is common to both variants. The difference between B and C
 therefore measures repeated tracker-state offload/reload overhead; the external
 CUDA telemetry remains the total transfer/control observation until Candle
 exposes direction-specific PCIe counters.
+
+## Provisional default evidence
+
+The exact CANDLE-2.9 candidate produced byte-identical 64-frame F32 output in
+two GPU-resident controls and one CPU-offload control. Under matched heat-soaked
+conditions, GPU-resident propagation took 326.59 seconds versus 384.43 seconds
+for CPU offload (15.0% less time). It retained 33 total tracker states, including
+32 non-conditioning states. Peak reported GPU memory was 10,647 MiB, below the
+14 GiB gate.
+
+The follow-on 512-frame run retained a flat approximately 10.5 GiB VRAM plateau
+through 25% progress, but its speed result was invalidated when the host driver
+dropped the GPU to P3/300 MHz and requested a 50 W cap instead of its 90 W
+default. This provisional profile selection does not claim that the sustained
+throughput acceptance criterion is complete.

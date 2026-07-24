@@ -24,7 +24,7 @@ Controls:
   VOLUME_NAME=candle2-low-memory-profile Shared checkpoint/output Docker volume.
   REUSE_STAGED_CHECKPOINT=1             Avoid another private checkpoint copy.
   AVAILABLE_DISK_GIB_MIN=30             Refuse to start below this host-space floor.
-  MAX_NON_COND_TRACKER_STATES=32        Opt-in bounded-history control; empty is unbounded.
+  MAX_NON_COND_TRACKER_STATES=32        Bounded-history default; set empty for compatibility mode.
   VIDEO_HOTSTART_DELAY=4                Opt-in bounded hotstart control; default 0.
 
 The source TIFF pages are repeated deterministically. Its JSON image description,
@@ -58,7 +58,7 @@ VOLUME_NAME="${VOLUME_NAME:-candle2-low-memory-profile}"
 BUILD_IMAGE="${BUILD_IMAGE:-1}"
 AVAILABLE_DISK_GIB_MIN="${AVAILABLE_DISK_GIB_MIN:-30}"
 TIFF_PYTHON="${TIFF_PYTHON:-python3}"
-MAX_NON_COND_TRACKER_STATES="${MAX_NON_COND_TRACKER_STATES:-}"
+MAX_NON_COND_TRACKER_STATES="${MAX_NON_COND_TRACKER_STATES-32}"
 VIDEO_HOTSTART_DELAY="${VIDEO_HOTSTART_DELAY:-0}"
 mkdir -p "${RESULTS_DIR}/inputs" "${RESULTS_DIR}/runs"
 
