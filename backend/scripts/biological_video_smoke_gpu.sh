@@ -226,7 +226,6 @@ if [[ "${BUILD_IMAGE}" != "0" ]]; then
     --build-arg CANDLE_FEATURES=cuda \
     --build-arg CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
     --build-arg CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT}" \
-    --build-arg PLUGIN_GIT_SHA="${PLUGIN_GIT_SHA}" \
     -t "${BACKEND_IMAGE}" \
     "${BACKEND_DIR}"
 else
@@ -320,6 +319,7 @@ docker run -d \
   -v "${VOLUME_NAME}:/ouroboros-volume" \
   -e VOLUME_MOUNT_PATH=/ouroboros-volume \
   -e VOLUME_SERVER_URL=http://host.docker.internal:3001 \
+  -e PLUGIN_GIT_SHA="${PLUGIN_GIT_SHA}" \
   -e CUDA_DEVICE_ORDINAL="${CUDA_DEVICE_ORDINAL}" \
   -e SAM3_VIDEO_STATE_PROFILE="${SAM3_VIDEO_STATE_PROFILE}" \
   -e SAM3_VIDEO_FEATURE_CACHE_ENTRIES="${SAM3_VIDEO_FEATURE_CACHE_ENTRIES}" \

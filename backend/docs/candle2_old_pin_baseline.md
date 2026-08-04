@@ -38,12 +38,14 @@ docker build -f backend/Dockerfile --target cuda-runtime \
   --build-arg CANDLE_FEATURES=cuda \
   --build-arg CUDA_COMPUTE_CAP=75 \
   --build-arg CANDLE_SAM3_COMMIT=770d20ca8db4f834ba4c89c845bca196fbfc97ea \
-  --build-arg PLUGIN_GIT_SHA=c8d3c0218acde2c31f77f9a37d630368c83667cc \
   -t ouroboros-autoseg-backend:candle2-baseline backend
 ```
 
 Then run `backend/scripts/biological_video_smoke_gpu.sh` with
-`INPUT_STACK`, `CHECKPOINT_PATH`, and `ARTIFACT_DIR` set. The script records
+`INPUT_STACK`, `CHECKPOINT_PATH`, `ARTIFACT_DIR`, and (when reproducing the
+historical log exactly) `PLUGIN_GIT_SHA=c8d3c0218acde2c31f77f9a37d630368c83667cc`
+set. Plugin revision metadata is supplied to the container at runtime so it
+does not invalidate dependency compilation. The script records
 `revisions.env`, synchronized `telemetry.csv`, a bounded `backend.log`, and the
 validated output TIFF. Use the same fixture and settings with only
 `CANDLE_SAM3_COMMIT` changed for the CANDLE-2.2 comparison.

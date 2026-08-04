@@ -42,7 +42,7 @@ pub fn load_sam3_handle(
         .is_cuda()
         .then(|| configured_cuda_ordinal().to_string())
         .unwrap_or_else(|| "n/a".to_string());
-    let plugin_sha = option_env!("PLUGIN_GIT_SHA").unwrap_or("unknown");
+    let plugin_sha = std::env::var("PLUGIN_GIT_SHA").unwrap_or_else(|_| "unknown".to_string());
     let candle_sha = option_env!("CANDLE_SAM3_GIT_SHA").unwrap_or("unknown");
     info!(
         model = %model_name,
