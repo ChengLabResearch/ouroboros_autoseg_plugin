@@ -97,6 +97,7 @@ async function pruneBuildOnlyFiles(artifactRoot) {
 		'docs',
 		'poetry.lock',
 		'pyproject.toml',
+		'scripts',
 		'src',
 		'tests'
 	]
