@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /build
 
 # Clone candle_sam3 at the pinned commit used during development.
-ARG CANDLE_SAM3_COMMIT=71690361a0e4eb839cfc22a52fcdf5cfbf047f0a
+ARG CANDLE_SAM3_COMMIT=c0400c6513c21655828bb92633cc190a3501a6f6
 ARG PLUGIN_GIT_SHA=unknown
 ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
 ENV PLUGIN_GIT_SHA=${PLUGIN_GIT_SHA}
@@ -32,6 +32,11 @@ COPY . backend/
 
 WORKDIR /build/plugin/backend
 RUN cargo build --release --bin ouroboros-autoseg-plugin-backend
+
+# ── Test target used by CI before either runtime image can publish ───────────
+FROM builder AS test
+
+RUN cargo test --release --locked
 
 # ── Stage 2: build the Rust backend for CUDA runtimes ────────────────────────
 FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS cuda-builder
@@ -53,7 +58,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 
 WORKDIR /build
 
-ARG CANDLE_SAM3_COMMIT=71690361a0e4eb839cfc22a52fcdf5cfbf047f0a
+ARG CANDLE_SAM3_COMMIT=c0400c6513c21655828bb92633cc190a3501a6f6
 ARG PLUGIN_GIT_SHA=unknown
 ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
 ENV PLUGIN_GIT_SHA=${PLUGIN_GIT_SHA}

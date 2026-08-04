@@ -5,7 +5,12 @@
 	"index": "./index.html",
 	"dockerCompose": "./compose.yml",
 	"private": true,
-	"version": "0.4.0-beta.1",
+	"version": "0.4.0-beta.2",
+	"packageManager": "npm@11.19.0",
+	"engines": {
+		"node": ">=24",
+		"npm": "11.19.0"
+	},
 	"type": "module",
 	"main": "dist/main.js",
 	"files": [
@@ -18,6 +23,7 @@
 		"build": "tsc -b && vite build",
 		"build:release": "npm run build && node scripts/prepare-release-artifacts.mjs",
 		"validate:release": "node scripts/validate-release-artifacts.mjs",
+		"validate:archive": "node scripts/validate-release-archive.mjs",
 		"lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
 		"test": "vitest run",
 		"preview": "vite preview"
@@ -42,5 +48,8 @@
 		"vite": "^7.3.1",
 		"vite-plugin-static-copy": "^3.2.0",
 		"vite-plugin-webfont-dl": "^3.12.0"
+	},
+	"allowScripts": {
+		"esbuild": true
 	}
 }
