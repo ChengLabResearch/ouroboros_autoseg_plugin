@@ -2,86 +2,123 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
-const FINGERPRINT_SCHEMA_VERSION = 1
-const VARIANT_STAGES = {
-	cpu: ['builder', 'runtime'],
-	cuda: ['cuda-builder', 'cuda-runtime']
+const FINGERPRINT_SCHEMA_VERSION = 2
+const VARIANTS = {
+	cpu: {
+		baseStages: ['builder', 'runtime'],
+		targetStages: ['test', 'runtime']
+	},
+	cuda: {
+		baseStages: ['cuda-builder', 'cuda-runtime'],
+		targetStages: ['cuda-runtime']
+	}
 }
 
-const options = parseArguments(process.argv.slice(2))
-const root = resolve(options.root ?? process.cwd())
-const backendRoot = join(root, 'backend')
-const variant = options.variant
-
-if (!Object.hasOwn(VARIANT_STAGES, variant)) {
-	throw new Error(`Unsupported backend variant "${variant}". Expected cpu or cuda.`)
+const invokedPath = process.argv[1]
+if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
+	await main()
 }
 
-const dockerfilePath = join(backendRoot, 'Dockerfile')
-const dockerfile = await readFile(dockerfilePath, 'utf8')
-const stageImages = dockerfileStageImages(dockerfile)
-const digestOverrides = parseDigestOverrides(process.env.BACKEND_BASE_IMAGE_DIGESTS)
-const baseImages = []
-
-for (const stage of VARIANT_STAGES[variant]) {
-	const image = stageImages.get(stage)
-	if (!image) throw new Error(`Dockerfile does not define required stage "${stage}"`)
-
-	baseImages.push({
-		stage,
-		image,
-		digest: digestOverrides[stage] ?? resolveImageDigest(image)
+async function main() {
+	const options = parseArguments(process.argv.slice(2))
+	const root = resolve(options.root ?? process.cwd())
+	const record = await buildFingerprint({
+		root,
+		variant: options.variant,
+		platform: options.platform,
+		digestOverrides: parseDigestOverrides(process.env.BACKEND_BASE_IMAGE_DIGESTS)
 	})
+
+	if (options.output) {
+		const outputPath = resolve(root, options.output)
+		await mkdir(dirname(outputPath), { recursive: true })
+		await writeFile(outputPath, `${JSON.stringify(record, null, 2)}\n`)
+	}
+
+	process.stdout.write(`${record.fingerprint}\n`)
 }
 
-const inputPaths = [
-	join(backendRoot, '.dockerignore'),
-	join(backendRoot, 'Cargo.lock'),
-	join(backendRoot, 'Cargo.toml'),
-	dockerfilePath,
-	join(backendRoot, 'src'),
-	join(backendRoot, 'tests'),
-	join(root, 'scripts', 'backend-build-fingerprint.mjs')
-]
-const inputFiles = []
-
-for (const inputPath of inputPaths) {
-	inputFiles.push(...(await filesUnder(inputPath)))
-}
-
-inputFiles.sort((left, right) => relative(root, left).localeCompare(relative(root, right)))
-
-const inputTreeHash = createHash('sha256')
-for (const file of inputFiles) {
-	const fileStat = await stat(file)
-	const filePath = relative(root, file).replaceAll('\\', '/')
-	inputTreeHash.update(`${filePath}\0${(fileStat.mode & 0o777).toString(8)}\0`)
-	inputTreeHash.update(await readFile(file))
-	inputTreeHash.update('\0')
-}
-
-const inputs = {
-	schemaVersion: FINGERPRINT_SCHEMA_VERSION,
+export async function buildFingerprint({
+	root: rootOption = process.cwd(),
 	variant,
-	platform: options.platform ?? 'linux/amd64',
-	inputTreeDigest: `sha256:${inputTreeHash.digest('hex')}`,
-	baseImages
-}
-const fingerprint = createHash('sha256').update(stableJson(inputs)).digest('hex')
-const record = {
-	...inputs,
-	fingerprint,
-	createdBy: 'scripts/backend-build-fingerprint.mjs'
-}
+	platform = 'linux/amd64',
+	digestOverrides = {},
+	resolveDigest = resolveImageDigest
+}) {
+	const variantConfig = VARIANTS[variant]
+	if (!variantConfig) {
+		throw new Error(`Unsupported backend variant "${variant}". Expected cpu or cuda.`)
+	}
 
-if (options.output) {
-	const outputPath = resolve(root, options.output)
-	await mkdir(dirname(outputPath), { recursive: true })
-	await writeFile(outputPath, `${JSON.stringify(record, null, 2)}\n`)
-}
+	const root = resolve(rootOption)
+	const backendRoot = join(root, 'backend')
+	const dockerfilePath = join(backendRoot, 'Dockerfile')
+	const dockerfile = await readFile(dockerfilePath, 'utf8')
+	const parsedDockerfile = parseDockerfile(dockerfile)
+	const stageImages = dockerfileStageImages(parsedDockerfile)
+	const baseImages = []
 
-process.stdout.write(`${fingerprint}\n`)
+	for (const stage of variantConfig.baseStages) {
+		const image = stageImages.get(stage)
+		if (!image) throw new Error(`Dockerfile does not define required stage "${stage}"`)
+
+		baseImages.push({
+			stage,
+			image,
+			digest: digestOverrides[stage] ?? resolveDigest(image)
+		})
+	}
+
+	const dockerfileInput = dockerfileTargetInput(parsedDockerfile, variantConfig.targetStages)
+	const dockerfileDigest = `sha256:${createHash('sha256')
+		.update(stableJson(dockerfileInput))
+		.digest('hex')}`
+	const inputPaths = [
+		join(backendRoot, '.dockerignore'),
+		join(backendRoot, 'Cargo.lock'),
+		join(backendRoot, 'Cargo.toml'),
+		join(backendRoot, 'src'),
+		join(backendRoot, 'tests'),
+		join(root, 'scripts', 'backend-build-fingerprint.mjs')
+	]
+	const inputFiles = []
+
+	for (const inputPath of inputPaths) {
+		inputFiles.push(...(await filesUnder(inputPath)))
+	}
+
+	inputFiles.sort((left, right) => relative(root, left).localeCompare(relative(root, right)))
+
+	const inputTreeHash = createHash('sha256')
+	for (const file of inputFiles) {
+		const fileStat = await stat(file)
+		const filePath = relative(root, file).replaceAll('\\', '/')
+		inputTreeHash.update(`${filePath}\0${(fileStat.mode & 0o777).toString(8)}\0`)
+		inputTreeHash.update(await readFile(file))
+		inputTreeHash.update('\0')
+	}
+
+	const inputs = {
+		schemaVersion: FINGERPRINT_SCHEMA_VERSION,
+		variant,
+		platform,
+		inputTreeDigest: `sha256:${inputTreeHash.digest('hex')}`,
+		dockerfile: {
+			digest: dockerfileDigest,
+			stages: dockerfileInput.stages.map(({ name }) => name)
+		},
+		baseImages
+	}
+	const fingerprint = createHash('sha256').update(stableJson(inputs)).digest('hex')
+
+	return {
+		...inputs,
+		fingerprint,
+		createdBy: 'scripts/backend-build-fingerprint.mjs'
+	}
+}
 
 function parseArguments(args) {
 	const parsed = {}
@@ -103,27 +140,107 @@ function parseArguments(args) {
 	}
 }
 
-function dockerfileStageImages(text) {
-	const args = new Map()
-	const stages = new Map()
+export function parseDockerfile(text) {
+	const directives = []
+	const globalArgs = new Map()
+	const stages = []
+	let currentStage = null
+	let sawStage = false
 
 	for (const rawLine of text.split(/\r?\n/u)) {
 		const line = rawLine.trim()
-		const argMatch = /^ARG\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(\S+))?$/u.exec(line)
-		if (argMatch?.[2]) args.set(argMatch[1], argMatch[2])
+		if (!sawStage) {
+			const directiveMatch = /^#\s*(syntax|escape|check)\s*=/iu.exec(line)
+			if (directiveMatch) directives.push(line)
 
-		const fromMatch = /^FROM\s+(\S+)\s+AS\s+(\S+)$/iu.exec(line)
-		if (!fromMatch) continue
+			const argMatch = /^ARG\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(\S+))?$/u.exec(line)
+			if (argMatch?.[2]) globalArgs.set(argMatch[1], argMatch[2])
+		}
 
-		const image = fromMatch[1].replace(/^\$\{([^}]+)\}$/u, (_, name) => {
-			const value = args.get(name)
+		const fromMatch = /^FROM(?:\s+--platform=\S+)?\s+(\S+)\s+AS\s+(\S+)$/iu.exec(line)
+		if (fromMatch) {
+			const stagePreamble = []
+			while (currentStage) {
+				const priorLine = currentStage.lines.at(-1)?.trim()
+				if (priorLine && !priorLine.startsWith('#')) break
+				stagePreamble.unshift(currentStage.lines.pop())
+			}
+			sawStage = true
+			currentStage = {
+				name: fromMatch[2],
+				source: fromMatch[1],
+				lines: [...stagePreamble, rawLine]
+			}
+			stages.push(currentStage)
+			continue
+		}
+
+		if (currentStage) currentStage.lines.push(rawLine)
+	}
+
+	return { directives, globalArgs, stages }
+}
+
+function dockerfileStageImages(parsedDockerfile) {
+	const stages = new Map()
+	for (const stage of parsedDockerfile.stages) {
+		const image = stage.source.replace(/\$\{([^}]+)\}/gu, (_, name) => {
+			const value = parsedDockerfile.globalArgs.get(name)
 			if (!value) throw new Error(`Dockerfile ARG ${name} has no default image value`)
 			return value
 		})
-		stages.set(fromMatch[2], image)
+		stages.set(stage.name, image)
+	}
+	return stages
+}
+
+export function dockerfileTargetInput(parsedDockerfile, targetStages) {
+	const stagesByName = new Map(parsedDockerfile.stages.map((stage) => [stage.name, stage]))
+	const selectedStages = new Set()
+
+	const resolveLocalStage = (reference) => {
+		if (stagesByName.has(reference)) return reference
+		if (!/^\d+$/u.test(reference)) return null
+		return parsedDockerfile.stages[Number.parseInt(reference, 10)]?.name ?? null
 	}
 
-	return stages
+	const visit = (stageName) => {
+		if (selectedStages.has(stageName)) return
+		const stage = stagesByName.get(stageName)
+		if (!stage) throw new Error(`Dockerfile does not define target stage "${stageName}"`)
+
+		const sourceStage = resolveLocalStage(stage.source)
+		if (sourceStage) visit(sourceStage)
+
+		const definition = stage.lines.join('\n')
+		for (const match of definition.matchAll(/--from=(?:"([^"]+)"|'([^']+)'|([^\s\\]+))/gu)) {
+			const referencedStage = resolveLocalStage(match[1] ?? match[2] ?? match[3])
+			if (referencedStage) visit(referencedStage)
+		}
+
+		selectedStages.add(stageName)
+	}
+
+	for (const targetStage of targetStages) visit(targetStage)
+
+	const stages = parsedDockerfile.stages
+		.filter(({ name }) => selectedStages.has(name))
+		.map((stage) => ({ name: stage.name, definition: stage.lines.join('\n') }))
+	const referencedGlobalArgs = new Set()
+	for (const stage of stages) {
+		for (const match of stage.definition.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/gu)) {
+			const name = match[1] ?? match[2]
+			if (parsedDockerfile.globalArgs.has(name)) referencedGlobalArgs.add(name)
+		}
+	}
+
+	return {
+		directives: parsedDockerfile.directives,
+		globalArgs: Object.fromEntries(
+			[...parsedDockerfile.globalArgs].filter(([name]) => referencedGlobalArgs.has(name))
+		),
+		stages
+	}
 }
 
 function resolveImageDigest(image) {
