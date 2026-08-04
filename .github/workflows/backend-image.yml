@@ -1,26 +1,43 @@
-name: Publish Backend Image
+name: Build and Certify Backend Images
 
 on:
   pull_request:
     paths:
       - .github/workflows/backend-image.yml
       - backend/**
+      - scripts/backend-build-fingerprint.mjs
       - README.md
   push:
-    tags:
-      - v*.*.*
+    branches:
+      - main
   workflow_dispatch:
 
 env:
   REGISTRY_IMAGE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend
 
-jobs:
-  backend-tests:
-    name: Backend Tests
-    runs-on: ubuntu-latest
+concurrency:
+  group: backend-images-${{ github.event.pull_request.number || github.ref }}
+  # Every main commit must retain its exact sha-* images for later tag promotion.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+jobs:
+  prepare:
+    name: Resolve Build Inputs
+    runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
+    outputs:
+      cpu_fingerprint: ${{ steps.fingerprint.outputs.cpu_fingerprint }}
+      cuda_fingerprint: ${{ steps.fingerprint.outputs.cuda_fingerprint }}
+      can_publish: ${{ steps.context.outputs.can_publish }}
+      is_main: ${{ steps.context.outputs.is_main }}
+      candidate_scope: ${{ steps.context.outputs.candidate_scope }}
+      pr_number: ${{ steps.context.outputs.pr_number }}
+      cpu_builder_image: ${{ steps.fingerprint.outputs.cpu_builder_image }}
+      cpu_runtime_image: ${{ steps.fingerprint.outputs.cpu_runtime_image }}
+      cuda_builder_image: ${{ steps.fingerprint.outputs.cuda_builder_image }}
+      cuda_runtime_image: ${{ steps.fingerprint.outputs.cuda_runtime_image }}
 
     steps:
       - name: Check out Git repository
@@ -29,35 +46,106 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Test Backend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./backend
-          file: ./backend/Dockerfile
-          target: test
-          push: false
-          build-args: |
-            PLUGIN_GIT_SHA=${{ github.sha }}
-          cache-from: type=gha,scope=backend-tests
-          cache-to: type=gha,mode=max,scope=backend-tests
+      - name: Fingerprint CPU and CUDA build inputs
+        id: fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir="${RUNNER_TEMP}/backend-fingerprints"
+          mkdir -p "${output_dir}"
+          cpu_fingerprint="$({ node scripts/backend-build-fingerprint.mjs \
+            --variant cpu \
+            --output "${output_dir}/cpu.json"; } | tail -n 1)"
+          cuda_fingerprint="$({ node scripts/backend-build-fingerprint.mjs \
+            --variant cuda \
+            --output "${output_dir}/cuda.json"; } | tail -n 1)"
+          cpu_builder_image="$(jq -r '.baseImages[] | select(.stage == "builder") | "\(.image)@\(.digest)"' "${output_dir}/cpu.json")"
+          cpu_runtime_image="$(jq -r '.baseImages[] | select(.stage == "runtime") | "\(.image)@\(.digest)"' "${output_dir}/cpu.json")"
+          cuda_builder_image="$(jq -r '.baseImages[] | select(.stage == "cuda-builder") | "\(.image)@\(.digest)"' "${output_dir}/cuda.json")"
+          cuda_runtime_image="$(jq -r '.baseImages[] | select(.stage == "cuda-runtime") | "\(.image)@\(.digest)"' "${output_dir}/cuda.json")"
+          printf '%s\n' \
+            "cpu_fingerprint=${cpu_fingerprint}" \
+            "cuda_fingerprint=${cuda_fingerprint}" \
+            "cpu_builder_image=${cpu_builder_image}" \
+            "cpu_runtime_image=${cpu_runtime_image}" \
+            "cuda_builder_image=${cuda_builder_image}" \
+            "cuda_runtime_image=${cuda_runtime_image}" \
+            >> "${GITHUB_OUTPUT}"
+          printf 'CPU fingerprint: `%s`\n\nCUDA fingerprint: `%s`\n' \
+            "${cpu_fingerprint}" "${cuda_fingerprint}" \
+            >> "${GITHUB_STEP_SUMMARY}"
 
-  backend-image:
-    name: Backend Image (${{ matrix.variant }})
-    needs: backend-tests
+      - name: Determine candidate publication mode
+        id: context
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          can_publish=false
+          if [[ "${EVENT_NAME}" != "pull_request" || "${PR_HEAD_REPOSITORY}" == "${GITHUB_REPOSITORY}" ]]; then
+            can_publish=true
+          fi
+
+          is_main=false
+          if [[ "${GITHUB_REF}" == "refs/heads/main" && "${EVENT_NAME}" != "pull_request" ]]; then
+            is_main=true
+          fi
+
+          pr_number=""
+          candidate_scope="manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            pr_number="${PR_NUMBER}"
+            candidate_scope="pr-${pr_number}"
+          elif [[ "${is_main}" == "true" ]]; then
+            if ! pr_number="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | sort_by(.merged_at) | last | .number // empty' \
+              2>/dev/null)"; then
+              echo "Unable to query the pull request associated with ${GITHUB_SHA}; using the main fallback scope" >&2
+              pr_number=""
+            fi
+
+            if [[ -n "${pr_number}" ]]; then
+              candidate_scope="pr-${pr_number}"
+            else
+              candidate_scope="main-${GITHUB_SHA}"
+            fi
+          fi
+
+          printf '%s\n' \
+            "can_publish=${can_publish}" \
+            "is_main=${is_main}" \
+            "candidate_scope=${candidate_scope}" \
+            "pr_number=${pr_number}" \
+            >> "${GITHUB_OUTPUT}"
+
+      - name: Upload build fingerprints
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-build-fingerprints-${{ github.run_id }}
+          path: ${{ runner.temp }}/backend-fingerprints
+          if-no-files-found: error
+
+  cpu:
+    name: CPU Tests and Candidate
+    needs: prepare
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: cpu
-            target: runtime
-            tag_suffix: ''
-          - variant: cuda
-            target: cuda-runtime
-            tag_suffix: -cuda
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.resolve.outputs.digest }}
+
+    env:
+      CANDIDATE_IMAGE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend:candidate-${{ needs.prepare.outputs.candidate_scope }}-${{ needs.prepare.outputs.cpu_fingerprint }}
+      CANONICAL_CACHE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend:buildcache-cpu
+      CPU_BUILDER_IMAGE: ${{ needs.prepare.outputs.cpu_builder_image }}
+      CPU_RUNTIME_IMAGE: ${{ needs.prepare.outputs.cpu_runtime_image }}
 
     steps:
       - name: Check out Git repository
@@ -67,34 +155,328 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
+        if: needs.prepare.outputs.can_publish == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker Metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY_IMAGE }}
-          flavor: |
-            suffix=${{ matrix.tag_suffix }}
-          tags: |
-            type=ref,event=tag
-            type=sha,prefix=sha-
+      - name: Check for an existing CPU candidate
+        id: inspect
+        shell: bash
+        run: |
+          set -euo pipefail
+          if digest="$(docker buildx imagetools inspect "${CANDIDATE_IMAGE}" --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
+            printf '%s\n' "exists=true" "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          else
+            printf '%s\n' "exists=false" "digest=" >> "${GITHUB_OUTPUT}"
+          fi
 
-      - name: Build Backend Image
+      - name: Test backend
+        if: steps.inspect.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./backend
           file: ./backend/Dockerfile
-          target: ${{ matrix.target }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          target: test
+          push: false
           build-args: |
-            PLUGIN_GIT_SHA=${{ github.sha }}
-          cache-from: type=gha,scope=backend-${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=backend-${{ matrix.variant }}
+            CPU_BUILDER_IMAGE=${{ env.CPU_BUILDER_IMAGE }}
+            CPU_RUNTIME_IMAGE=${{ env.CPU_RUNTIME_IMAGE }}
+          cache-from: |
+            type=registry,ref=${{ env.CANONICAL_CACHE }}
+
+      - name: Build and publish CPU candidate
+        id: publish
+        if: steps.inspect.outputs.exists != 'true' && needs.prepare.outputs.can_publish == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          target: runtime
+          push: true
+          tags: ${{ env.CANDIDATE_IMAGE }}
+          build-args: |
+            CPU_BUILDER_IMAGE=${{ env.CPU_BUILDER_IMAGE }}
+            CPU_RUNTIME_IMAGE=${{ env.CPU_RUNTIME_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=Ouroboros autoseg backend (CPU candidate)
+            io.ouroboros.build.fingerprint=${{ needs.prepare.outputs.cpu_fingerprint }}
+            io.ouroboros.build.variant=cpu
+          cache-from: |
+            type=registry,ref=${{ env.CANONICAL_CACHE }}
+          cache-to: type=registry,ref=${{ env.CANONICAL_CACHE }},mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Build CPU candidate without publishing
+        id: local
+        if: steps.inspect.outputs.exists != 'true' && needs.prepare.outputs.can_publish != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          target: runtime
+          push: false
+          load: true
+          provenance: false
+          tags: ouroboros-autoseg-backend:cpu-${{ needs.prepare.outputs.cpu_fingerprint }}
+          build-args: |
+            CPU_BUILDER_IMAGE=${{ env.CPU_BUILDER_IMAGE }}
+            CPU_RUNTIME_IMAGE=${{ env.CPU_RUNTIME_IMAGE }}
+          cache-from: |
+            type=registry,ref=${{ env.CANONICAL_CACHE }}
+
+      - name: Resolve CPU candidate digest
+        id: resolve
+        shell: bash
+        env:
+          EXISTING_DIGEST: ${{ steps.inspect.outputs.digest }}
+          PUBLISHED_DIGEST: ${{ steps.publish.outputs.digest }}
+          LOCAL_DIGEST: ${{ steps.local.outputs.digest }}
+          CAN_PUBLISH: ${{ needs.prepare.outputs.can_publish }}
+          LOCAL_IMAGE: ouroboros-autoseg-backend:cpu-${{ needs.prepare.outputs.cpu_fingerprint }}
+        run: |
+          set -euo pipefail
+          digest="${EXISTING_DIGEST:-${PUBLISHED_DIGEST:-${LOCAL_DIGEST:-}}}"
+          if [[ -z "${digest}" && "${CAN_PUBLISH}" != "true" ]]; then
+            digest="$(docker image inspect "${LOCAL_IMAGE}" --format '{{.Id}}')"
+          fi
+          [[ -n "${digest}" ]] || {
+            echo "Unable to resolve CPU candidate digest" >&2
+            exit 1
+          }
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          printf 'CPU candidate: `%s` (`%s`)\n' "${CANDIDATE_IMAGE}" "${digest}" >> "${GITHUB_STEP_SUMMARY}"
+
+  cuda:
+    name: CUDA Candidate
+    needs: [prepare, cpu]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.resolve.outputs.digest }}
+
+    env:
+      CANDIDATE_IMAGE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend:candidate-${{ needs.prepare.outputs.candidate_scope }}-${{ needs.prepare.outputs.cuda_fingerprint }}-cuda
+      CANONICAL_CACHE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend:buildcache-cuda
+      CUDA_BUILDER_IMAGE: ${{ needs.prepare.outputs.cuda_builder_image }}
+      CUDA_RUNTIME_IMAGE: ${{ needs.prepare.outputs.cuda_runtime_image }}
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.prepare.outputs.can_publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for an existing CUDA candidate
+        id: inspect
+        shell: bash
+        run: |
+          set -euo pipefail
+          if digest="$(docker buildx imagetools inspect "${CANDIDATE_IMAGE}" --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
+            printf '%s\n' "exists=true" "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          else
+            printf '%s\n' "exists=false" "digest=" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build and publish CUDA candidate
+        id: publish
+        if: steps.inspect.outputs.exists != 'true' && needs.prepare.outputs.can_publish == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          target: cuda-runtime
+          push: true
+          tags: ${{ env.CANDIDATE_IMAGE }}
+          build-args: |
+            CUDA_BUILDER_IMAGE=${{ env.CUDA_BUILDER_IMAGE }}
+            CUDA_RUNTIME_IMAGE=${{ env.CUDA_RUNTIME_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=Ouroboros autoseg backend (CUDA candidate)
+            io.ouroboros.build.fingerprint=${{ needs.prepare.outputs.cuda_fingerprint }}
+            io.ouroboros.build.variant=cuda
+          cache-from: |
+            type=registry,ref=${{ env.CANONICAL_CACHE }}
+          cache-to: type=registry,ref=${{ env.CANONICAL_CACHE }},mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Build CUDA candidate without publishing
+        id: local
+        if: steps.inspect.outputs.exists != 'true' && needs.prepare.outputs.can_publish != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          target: cuda-runtime
+          push: false
+          load: true
+          provenance: false
+          tags: ouroboros-autoseg-backend:cuda-${{ needs.prepare.outputs.cuda_fingerprint }}
+          build-args: |
+            CUDA_BUILDER_IMAGE=${{ env.CUDA_BUILDER_IMAGE }}
+            CUDA_RUNTIME_IMAGE=${{ env.CUDA_RUNTIME_IMAGE }}
+          cache-from: |
+            type=registry,ref=${{ env.CANONICAL_CACHE }}
+
+      - name: Resolve CUDA candidate digest
+        id: resolve
+        shell: bash
+        env:
+          EXISTING_DIGEST: ${{ steps.inspect.outputs.digest }}
+          PUBLISHED_DIGEST: ${{ steps.publish.outputs.digest }}
+          LOCAL_DIGEST: ${{ steps.local.outputs.digest }}
+          CAN_PUBLISH: ${{ needs.prepare.outputs.can_publish }}
+          LOCAL_IMAGE: ouroboros-autoseg-backend:cuda-${{ needs.prepare.outputs.cuda_fingerprint }}
+        run: |
+          set -euo pipefail
+          digest="${EXISTING_DIGEST:-${PUBLISHED_DIGEST:-${LOCAL_DIGEST:-}}}"
+          if [[ -z "${digest}" && "${CAN_PUBLISH}" != "true" ]]; then
+            digest="$(docker image inspect "${LOCAL_IMAGE}" --format '{{.Id}}')"
+          fi
+          [[ -n "${digest}" ]] || {
+            echo "Unable to resolve CUDA candidate digest" >&2
+            exit 1
+          }
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          printf 'CUDA candidate: `%s` (`%s`)\n' "${CANDIDATE_IMAGE}" "${digest}" >> "${GITHUB_STEP_SUMMARY}"
+
+  record-candidates:
+    name: Record Candidate Images
+    needs: [prepare, cpu, cuda]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Write candidate image record
+        shell: bash
+        env:
+          CANDIDATE_SCOPE: ${{ needs.prepare.outputs.candidate_scope }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          CAN_PUBLISH: ${{ needs.prepare.outputs.can_publish }}
+          CPU_FINGERPRINT: ${{ needs.prepare.outputs.cpu_fingerprint }}
+          CUDA_FINGERPRINT: ${{ needs.prepare.outputs.cuda_fingerprint }}
+          CPU_DIGEST: ${{ needs.cpu.outputs.digest }}
+          CUDA_DIGEST: ${{ needs.cuda.outputs.digest }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg event "${GITHUB_EVENT_NAME}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg candidate_scope "${CANDIDATE_SCOPE}" \
+            --arg pr_number "${PR_NUMBER}" \
+            --argjson published "${CAN_PUBLISH}" \
+            --arg cpu_fingerprint "${CPU_FINGERPRINT}" \
+            --arg cuda_fingerprint "${CUDA_FINGERPRINT}" \
+            --arg cpu_digest "${CPU_DIGEST}" \
+            --arg cuda_digest "${CUDA_DIGEST}" \
+            --arg cpu_image "${REGISTRY_IMAGE}:candidate-${CANDIDATE_SCOPE}-${CPU_FINGERPRINT}" \
+            --arg cuda_image "${REGISTRY_IMAGE}:candidate-${CANDIDATE_SCOPE}-${CUDA_FINGERPRINT}-cuda" \
+            '{
+              schemaVersion: 1,
+              repository: $repository,
+              commit: $commit,
+              event: $event,
+              runId: $run_id,
+              runAttempt: $run_attempt,
+              candidateScope: $candidate_scope,
+              pullRequest: (if $pr_number == "" then null else ($pr_number | tonumber) end),
+              published: $published,
+              cpu: {fingerprint: $cpu_fingerprint, image: $cpu_image, digest: $cpu_digest},
+              cuda: {fingerprint: $cuda_fingerprint, image: $cuda_image, digest: $cuda_digest}
+            }' > "${RUNNER_TEMP}/backend-candidates.json"
+
+      - name: Upload candidate image record
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-candidates-${{ github.run_id }}
+          path: ${{ runner.temp }}/backend-candidates.json
+          if-no-files-found: error
+
+  certify-main:
+    name: Certify Main Commit Images
+    if: needs.prepare.outputs.is_main == 'true'
+    needs: [prepare, cpu, cuda]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify and promote candidate manifests
+        shell: bash
+        env:
+          CPU_CANDIDATE: ${{ env.REGISTRY_IMAGE }}:candidate-${{ needs.prepare.outputs.candidate_scope }}-${{ needs.prepare.outputs.cpu_fingerprint }}
+          CUDA_CANDIDATE: ${{ env.REGISTRY_IMAGE }}:candidate-${{ needs.prepare.outputs.candidate_scope }}-${{ needs.prepare.outputs.cuda_fingerprint }}-cuda
+          CPU_DIGEST: ${{ needs.cpu.outputs.digest }}
+          CUDA_DIGEST: ${{ needs.cuda.outputs.digest }}
+        run: |
+          set -euo pipefail
+          actual_cpu="$(docker buildx imagetools inspect "${CPU_CANDIDATE}" --format '{{.Manifest.Digest}}')"
+          actual_cuda="$(docker buildx imagetools inspect "${CUDA_CANDIDATE}" --format '{{.Manifest.Digest}}')"
+          [[ "${actual_cpu}" == "${CPU_DIGEST}" ]] || {
+            echo "CPU candidate digest changed: expected ${CPU_DIGEST}, found ${actual_cpu}" >&2
+            exit 1
+          }
+          [[ "${actual_cuda}" == "${CUDA_DIGEST}" ]] || {
+            echo "CUDA candidate digest changed: expected ${CUDA_DIGEST}, found ${actual_cuda}" >&2
+            exit 1
+          }
+
+          docker buildx imagetools create \
+            --tag "${REGISTRY_IMAGE}:sha-${GITHUB_SHA}" \
+            "${REGISTRY_IMAGE}@${CPU_DIGEST}"
+          docker buildx imagetools create \
+            --tag "${REGISTRY_IMAGE}:sha-${GITHUB_SHA}-cuda" \
+            "${REGISTRY_IMAGE}@${CUDA_DIGEST}"
+
+          jq -n \
+            --arg commit "${GITHUB_SHA}" \
+            --arg cpu_fingerprint "${{ needs.prepare.outputs.cpu_fingerprint }}" \
+            --arg cuda_fingerprint "${{ needs.prepare.outputs.cuda_fingerprint }}" \
+            --arg cpu_digest "${CPU_DIGEST}" \
+            --arg cuda_digest "${CUDA_DIGEST}" \
+            '{
+              schemaVersion: 1,
+              commit: $commit,
+              cpu: {fingerprint: $cpu_fingerprint, digest: $cpu_digest},
+              cuda: {fingerprint: $cuda_fingerprint, digest: $cuda_digest}
+            }' > "${RUNNER_TEMP}/backend-images.json"
+
+          printf 'Certified main images\n\n- CPU: `%s@%s`\n- CUDA: `%s@%s`\n' \
+            "${REGISTRY_IMAGE}" "${CPU_DIGEST}" \
+            "${REGISTRY_IMAGE}" "${CUDA_DIGEST}" \
+            >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload certified image manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-images-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-images.json
+          if-no-files-found: error

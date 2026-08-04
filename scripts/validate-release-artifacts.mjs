@@ -15,6 +15,8 @@ const imageRepository =
 const imageTag = process.env.OUROBOROS_AUTOSEG_BACKEND_IMAGE_TAG ?? releaseTag
 const cpuDigest = process.env.OUROBOROS_AUTOSEG_BACKEND_CPU_DIGEST ?? null
 const cudaDigest = process.env.OUROBOROS_AUTOSEG_BACKEND_CUDA_DIGEST ?? null
+const releaseCommit =
+	process.env.OUROBOROS_AUTOSEG_PLUGIN_COMMIT ?? process.env.GITHUB_SHA ?? null
 
 const variants = [
 	{
@@ -90,6 +92,11 @@ for (const variant of variants) {
 	assert(manifest.icon === packageJson.icon, `${variant.name} manifest icon mismatch`)
 	assert(manifest.dockerCompose === packageJson.dockerCompose, `${variant.name} manifest compose mismatch`)
 	assert(compose.includes(`image: ${variant.image}`), `${variant.name} compose image mismatch`)
+	assert(
+		compose.includes(`PLUGIN_GIT_SHA=${releaseCommit ?? 'unknown'}`),
+		`${variant.name} compose plugin revision mismatch`
+	)
+	assert(manifest.commit === releaseCommit, `${variant.name} manifest commit mismatch`)
 
 	const assetPaths = referencedAssets(indexHtml)
 	assert(assetPaths.length > 0, `${variant.name} index does not reference built assets`)

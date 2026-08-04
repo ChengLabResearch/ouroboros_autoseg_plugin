@@ -16,6 +16,8 @@ const imageRepository =
 const imageTag = process.env.OUROBOROS_AUTOSEG_BACKEND_IMAGE_TAG ?? releaseTag
 const cpuDigest = process.env.OUROBOROS_AUTOSEG_BACKEND_CPU_DIGEST ?? null
 const cudaDigest = process.env.OUROBOROS_AUTOSEG_BACKEND_CUDA_DIGEST ?? null
+const releaseCommit =
+	process.env.OUROBOROS_AUTOSEG_PLUGIN_COMMIT ?? process.env.GITHUB_SHA ?? null
 
 const variants = [
 	{
@@ -69,7 +71,7 @@ function manifestForVariant(variant) {
 		backendImageRepository: imageRepository,
 		backendImageTag: imageTag,
 		cuda: variant.cuda,
-		commit: process.env.GITHUB_SHA ?? null,
+		commit: releaseCommit,
 		ref: process.env.GITHUB_REF_NAME ?? null
 	}
 }
@@ -131,6 +133,7 @@ function composeForVariant(variant) {
     environment:
       - VOLUME_MOUNT_PATH=/ouroboros-volume
       - VOLUME_SERVER_URL=http://host.docker.internal:3001
+      - PLUGIN_GIT_SHA=${releaseCommit ?? 'unknown'}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     shm_size: 1gb

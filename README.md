@@ -78,10 +78,9 @@ The beta.2 backend is pinned to Candle SAM3 commit
 
 Both archives unpack to the normal Ouroboros plugin folder layout, including
 `package.json`, `index.html`, `icon.svg`, `compose.yml`, frontend assets, and
-`plugin-release.json`. The CPU artifact `compose.yml` points at
-`ghcr.io/chenglabresearch/ouroboros-autoseg-backend:<tag>`. The CUDA artifact
-points at `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:<tag>-cuda` and
-includes the NVIDIA GPU device reservation.
+`plugin-release.json`. Release artifacts pin the CPU or CUDA backend by its
+certified `ghcr.io/chenglabresearch/ouroboros-autoseg-backend@sha256:...`
+digest. The CUDA artifact also includes the NVIDIA GPU device reservation.
 
 For production package preinstalls, unpack the selected artifact under
 `extra-resources/preinstalled-plugins/auto-segmentation/` before building the
@@ -98,14 +97,23 @@ Those compose files select the `cuda-runtime` Docker target and pass `CANDLE_FEA
 
 ### Registry Backend Images
 
-The `Publish Backend Image` workflow publishes the Rust backend image to GHCR for release tags and commit SHAs:
+The `Build and Certify Backend Images` workflow fingerprints the actual CPU and
+CUDA build inputs. Same-repository pull requests publish
+`candidate-pr-<number>-<fingerprint>` images and update the bounded canonical
+CPU/CUDA registry caches; fork pull requests only read those caches. A matching
+`main` build locates the merged pull request and reuses its candidates instead
+of rerunning Cargo. Successful `main` builds publish commit tags:
 
-- `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:<release-tag>`
 - `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>`
-- `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:<release-tag>-cuda`
 - `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>-cuda`
 
-The unsuffixed tags use the CPU runtime target, and the `-cuda` tags use the CUDA runtime target. The existing `backend/compose.yml` remains the local-build fallback. `backend/compose.registry.yml` is an opt-in packaged compose file for release builds that want to use a prebuilt immutable image by setting `OUROBOROS_AUTOSEG_BACKEND_IMAGE`.
+Version-tag jobs verify those exact commit images, promote their manifests to
+the release tags, and build plugin archives containing the certified digests;
+they do not rebuild the Rust backend. The unsuffixed tags use the CPU runtime
+target, and the `-cuda` tags use the CUDA runtime target. The existing
+`backend/compose.yml` remains the local-build fallback.
+`backend/compose.registry.yml` is an opt-in compose file that accepts a prebuilt
+immutable image through `OUROBOROS_AUTOSEG_BACKEND_IMAGE`.
 
 ### `package.json`
 
