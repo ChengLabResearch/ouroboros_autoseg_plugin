@@ -14,6 +14,7 @@ on:
 
 env:
   REGISTRY_IMAGE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend
+  CUDA_CANDLE_FEATURES: cuda,cudnn
 
 concurrency:
   group: backend-images-${{ github.event.pull_request.number || github.ref }}
@@ -304,6 +305,7 @@ jobs:
           build-args: |
             CUDA_BUILDER_IMAGE=${{ env.CUDA_BUILDER_IMAGE }}
             CUDA_RUNTIME_IMAGE=${{ env.CUDA_RUNTIME_IMAGE }}
+            CANDLE_FEATURES=${{ env.CUDA_CANDLE_FEATURES }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.title=Ouroboros autoseg backend (CUDA candidate)
@@ -328,6 +330,7 @@ jobs:
           build-args: |
             CUDA_BUILDER_IMAGE=${{ env.CUDA_BUILDER_IMAGE }}
             CUDA_RUNTIME_IMAGE=${{ env.CUDA_RUNTIME_IMAGE }}
+            CANDLE_FEATURES=${{ env.CUDA_CANDLE_FEATURES }}
           cache-from: |
             type=registry,ref=${{ env.CANONICAL_CACHE }}
 
@@ -352,6 +355,34 @@ jobs:
           }
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           printf 'CUDA candidate: `%s` (`%s`)\n' "${CANDIDATE_IMAGE}" "${digest}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Verify CUDA and cuDNN compile capabilities
+        shell: bash
+        env:
+          CUDA_DIGEST: ${{ steps.resolve.outputs.digest }}
+          CAN_PUBLISH: ${{ needs.prepare.outputs.can_publish }}
+          LOCAL_IMAGE: ouroboros-autoseg-backend:cuda-${{ needs.prepare.outputs.cuda_fingerprint }}
+        run: |
+          set -euo pipefail
+          image="${LOCAL_IMAGE}"
+          if [[ "${CAN_PUBLISH}" == "true" ]]; then
+            image="${REGISTRY_IMAGE}@${CUDA_DIGEST}"
+          fi
+
+          docker run --rm \
+            --entrypoint /bin/sh \
+            "${image}" \
+            -ceu '
+              test "${OUROBOROS_COMPILED_FEATURES}" = "cuda,cudnn"
+              test "${OUROBOROS_COMPILED_CUDA}" = "true"
+              test "${OUROBOROS_COMPILED_CUDNN}" = "true"
+              linkage="$(ldd /usr/local/bin/ouroboros-autoseg-plugin-backend)"
+              printf "%s\n" "${linkage}"
+              printf "%s\n" "${linkage}" | grep -Eq "libcudnn[.]so([.][0-9]+)* => /"
+              ! printf "%s\n" "${linkage}" | grep -Eq "libcudnn[.]so([.][0-9]+)* => not found"
+            '
+          printf 'Hosted CUDA gate passed for `%s`: `cuda,cudnn` compiled and cuDNN resolves.\n' \
+            "${image}" >> "${GITHUB_STEP_SUMMARY}"
 
   record-candidates:
     name: Record Candidate Images
@@ -449,6 +480,18 @@ jobs:
             exit 1
           }
 
+          gpu_certification="${REGISTRY_IMAGE}:gpu-certified-${CUDA_DIGEST#sha256:}"
+          if ! certified_cuda="$(docker buildx imagetools inspect \
+            "${gpu_certification}" --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
+            echo "CUDA candidate ${REGISTRY_IMAGE}@${CUDA_DIGEST} has not passed the exact-digest GPU gate." >&2
+            echo "Run backend/scripts/certify_cuda_candidate_gpu.sh against that digest, then rerun this workflow." >&2
+            exit 1
+          fi
+          [[ "${certified_cuda}" == "${CUDA_DIGEST}" ]] || {
+            echo "GPU certification marker changed: expected ${CUDA_DIGEST}, found ${certified_cuda}" >&2
+            exit 1
+          }
+
           docker buildx imagetools create \
             --tag "${REGISTRY_IMAGE}:sha-${GITHUB_SHA}" \
             "${REGISTRY_IMAGE}@${CPU_DIGEST}"
@@ -462,11 +505,16 @@ jobs:
             --arg cuda_fingerprint "${{ needs.prepare.outputs.cuda_fingerprint }}" \
             --arg cpu_digest "${CPU_DIGEST}" \
             --arg cuda_digest "${CUDA_DIGEST}" \
+            --arg gpu_certification "${gpu_certification}" \
             '{
               schemaVersion: 1,
               commit: $commit,
               cpu: {fingerprint: $cpu_fingerprint, digest: $cpu_digest},
-              cuda: {fingerprint: $cuda_fingerprint, digest: $cuda_digest}
+              cuda: {
+                fingerprint: $cuda_fingerprint,
+                digest: $cuda_digest,
+                gpuCertification: $gpu_certification
+              }
             }' > "${RUNNER_TEMP}/backend-images.json"
 
           printf 'Certified main images\n\n- CPU: `%s@%s`\n- CUDA: `%s@%s`\n' \

@@ -18,6 +18,7 @@ Usage:
 Common options:
   BUILD_IMAGE=0                 Use BACKEND_IMAGE instead of building this checkout.
   BACKEND_IMAGE=name:tag         CUDA backend image to build/run.
+  REQUIRE_IMAGE_DIGEST=1        Require BACKEND_IMAGE to end in @sha256:<digest>.
   CUDA_COMPUTE_CAP=75            CUDA compute capability used for the local image build.
   CHECKPOINT_PATH=/path/model.pt Use an existing Medical SAM3 3D checkpoint.
   CHECKPOINT_URL=https://...     Override the default checkpoint_3D.pt URL.
@@ -152,6 +153,7 @@ INPUT_STACK="$(resolve_path "${INPUT_STACK}")"
 
 BACKEND_IMAGE="${BACKEND_IMAGE:-${DEFAULT_IMAGE}}"
 BUILD_IMAGE="${BUILD_IMAGE:-1}"
+REQUIRE_IMAGE_DIGEST="${REQUIRE_IMAGE_DIGEST:-0}"
 CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP:-75}"
 CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT:-c0400c6513c21655828bb92633cc190a3501a6f6}"
 PLUGIN_GIT_SHA="${PLUGIN_GIT_SHA:-$(git -C "${BACKEND_DIR}/.." rev-parse HEAD)}"
@@ -223,15 +225,36 @@ if [[ "${BUILD_IMAGE}" != "0" ]]; then
   docker build \
     -f "${BACKEND_DIR}/Dockerfile" \
     --target cuda-runtime \
-    --build-arg CANDLE_FEATURES=cuda \
+    --build-arg CANDLE_FEATURES=cuda,cudnn \
     --build-arg CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
     --build-arg CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT}" \
     -t "${BACKEND_IMAGE}" \
     "${BACKEND_DIR}"
 else
-  docker image inspect "${BACKEND_IMAGE}" >/dev/null 2>&1 \
-    || die "Docker image not found or Docker is not accessible: ${BACKEND_IMAGE}"
+  if [[ "${REQUIRE_IMAGE_DIGEST}" == "1" && ! "${BACKEND_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+    die "Certification requires BACKEND_IMAGE to use an exact @sha256 digest: ${BACKEND_IMAGE}"
+  fi
+  if ! docker image inspect "${BACKEND_IMAGE}" >/dev/null 2>&1; then
+    log "Pulling prebuilt CUDA backend image: ${BACKEND_IMAGE}"
+    docker pull "${BACKEND_IMAGE}" >/dev/null \
+      || die "Unable to pull prebuilt Docker image: ${BACKEND_IMAGE}"
+  fi
 fi
+
+log "Verifying compiled CUDA/cuDNN capabilities and runtime linkage"
+docker run --rm \
+  --entrypoint /bin/sh \
+  "${BACKEND_IMAGE}" \
+  -ceu '
+    test "${OUROBOROS_COMPILED_FEATURES}" = "cuda,cudnn"
+    test "${OUROBOROS_COMPILED_CUDA}" = "true"
+    test "${OUROBOROS_COMPILED_CUDNN}" = "true"
+    linkage="$(ldd /usr/local/bin/ouroboros-autoseg-plugin-backend)"
+    printf "%s\n" "${linkage}"
+    printf "%s\n" "${linkage}" | grep -Eq "libcudnn[.]so([.][0-9]+)* => /"
+    ! printf "%s\n" "${linkage}" | grep -Eq "libcudnn[.]so([.][0-9]+)* => not found"
+  ' >/dev/null \
+  || die "CUDA image does not prove the canonical cuda,cudnn build and resolved cuDNN runtime"
 
 docker volume create "${VOLUME_NAME}" >/dev/null
 if [[ "${REUSE_STAGED_CHECKPOINT}" == "1" ]]; then
@@ -253,7 +276,9 @@ plugin_dirty=${PLUGIN_DIRTY}
 candle_sha=${CANDLE_SAM3_COMMIT}
 input_sha256=$(sha256sum "${INPUT_STACK}" | awk '{print $1}')
 checkpoint_sha256=${CHECKPOINT_SHA256}
+image_reference=${BACKEND_IMAGE}
 image_id=$(docker image inspect --format '{{.Id}}' "${BACKEND_IMAGE}")
+compiled_features=$(docker run --rm --entrypoint /bin/sh "${BACKEND_IMAGE}" -c 'printf %s "${OUROBOROS_COMPILED_FEATURES:-unknown}"')
 cuda_compute_cap=${CUDA_COMPUTE_CAP}
 cuda_device_ordinal=${CUDA_DEVICE_ORDINAL}
 sam3_video_state_profile=${SAM3_VIDEO_STATE_PROFILE}
@@ -406,6 +431,9 @@ grep -F "plugin_sha=${PLUGIN_GIT_SHA}" "${ARTIFACT_DIR}/backend.log" >/dev/null 
   || die "Backend log does not contain the expected plugin SHA"
 grep -F "candle_sha=${CANDLE_SAM3_COMMIT}" "${ARTIFACT_DIR}/backend.log" >/dev/null \
   || die "Backend log does not contain the expected Candle SHA"
+grep -F 'backend compiled capabilities: cuda=true cudnn=true features=cuda,cudnn' \
+  "${ARTIFACT_DIR}/backend.log" >/dev/null \
+  || die "Backend log does not report the compiled CUDA/cuDNN capabilities"
 
 log "Verifying output in Docker volume"
 docker run --rm \

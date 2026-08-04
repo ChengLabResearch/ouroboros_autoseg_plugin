@@ -31,7 +31,9 @@ separate frame-derived progress work remains in `den-sq/sam_parity#38`.
 
 ## Reproduction
 
-Build the fixed CUDA control:
+Check out the recorded plugin revision before building; this command preserves
+the historical CUDA-without-cuDNN feature configuration intentionally and is
+not the current production configuration:
 
 ```bash
 docker build -f backend/Dockerfile --target cuda-runtime \
