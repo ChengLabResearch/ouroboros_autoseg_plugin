@@ -79,7 +79,7 @@ The beta.3 backend is pinned to Candle SAM3 commit
 Both archives unpack to the normal Ouroboros plugin folder layout, including
 `package.json`, `index.html`, `icon.svg`, `compose.yml`, frontend assets, and
 `plugin-release.json`. Release artifacts pin the CPU or CUDA backend by its
-certified `ghcr.io/chenglabresearch/ouroboros-autoseg-backend@sha256:...`
+verified `ghcr.io/chenglabresearch/ouroboros-autoseg-backend@sha256:...`
 digest. The CUDA artifact also includes the NVIDIA GPU device reservation.
 
 For production package preinstalls, unpack the selected artifact under
@@ -102,7 +102,7 @@ toolkit available.
 
 ### Registry Backend Images
 
-The `Build and Certify Backend Images` workflow fingerprints the actual CPU and
+The `Build and Verify Backend Images` workflow fingerprints the actual CPU and
 CUDA build inputs. Same-repository pull requests publish
 `candidate-pr-<number>-<fingerprint>` images and update the bounded canonical
 CPU/CUDA registry caches; fork pull requests only read those caches. A matching
@@ -113,17 +113,17 @@ of rerunning Cargo. Successful `main` builds publish commit tags:
 - `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>-cuda`
 
 Version-tag jobs verify those exact commit images, promote their manifests to
-the release tags, and build plugin archives containing the certified digests;
+the release tags, and build plugin archives containing the verified digests;
 they do not rebuild the Rust backend. The unsuffixed tags use the CPU runtime
 target, and the `-cuda` tags use the CUDA runtime target. The existing
 `backend/compose.yml` remains the local-build fallback.
 `backend/compose.registry.yml` is an opt-in compose file that accepts a prebuilt
 immutable image through `OUROBOROS_AUTOSEG_BACKEND_IMAGE`.
 
-CUDA certification has two gates against the same candidate digest. Hosted CI
-checks the declared `cuda,cudnn` capabilities and verifies that the backend's
-ELF dependencies resolve the cuDNN runtime without initializing a GPU. The
-checkpoint-backed encoder gate runs on a GPU host and must not rebuild:
+Hosted CI checks the declared `cuda,cudnn` capabilities and verifies that the
+backend's ELF dependencies resolve the cuDNN runtime without initializing a
+GPU. An optional checkpoint-backed pre-release diagnostic can exercise an
+exact image digest on a GPU host without rebuilding it:
 
 ```bash
 BACKEND_IMAGE=ghcr.io/chenglabresearch/ouroboros-autoseg-backend@sha256:<digest> \
@@ -132,15 +132,10 @@ CHECKPOINT_PATH=/path/to/checkpoint_3D.pt \
   backend/scripts/certify_cuda_candidate_gpu.sh
 ```
 
-After the smoke passes, the script records a digest-specific
-`gpu-certified-<digest>` registry marker. The `main` workflow refuses to create
-the immutable `sha-<commit>-cuda` tag unless that marker resolves to the exact
-candidate digest. If the GPU gate happens after the merge build, rerun the
-failed workflow; it reuses the existing candidate instead of compiling again.
-Publishing the marker requires a prior `docker login ghcr.io` with package
-write access. The smoke's `ARTIFACT_DIR` retains the exact image reference,
+The diagnostic is not a dependency of the `main` image workflow and does not
+write registry state. Its `ARTIFACT_DIR` retains the exact image reference,
 compiled features, revisions, telemetry, bounded backend log, and validated
-output.
+output for release review.
 
 ### `package.json`
 
