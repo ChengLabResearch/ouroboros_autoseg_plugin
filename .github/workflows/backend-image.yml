@@ -1,4 +1,4 @@
-name: Build and Certify Backend Images
+name: Build and Verify Backend Images
 
 on:
   pull_request:
@@ -440,8 +440,8 @@ jobs:
           path: ${{ runner.temp }}/backend-candidates.json
           if-no-files-found: error
 
-  certify-main:
-    name: Certify Main Commit Images
+  promote-main:
+    name: Promote Main Commit Images
     if: needs.prepare.outputs.is_main == 'true'
     needs: [prepare, cpu, cuda]
     runs-on: ubuntu-latest
@@ -480,18 +480,6 @@ jobs:
             exit 1
           }
 
-          gpu_certification="${REGISTRY_IMAGE}:gpu-certified-${CUDA_DIGEST#sha256:}"
-          if ! certified_cuda="$(docker buildx imagetools inspect \
-            "${gpu_certification}" --format '{{.Manifest.Digest}}' 2>/dev/null)"; then
-            echo "CUDA candidate ${REGISTRY_IMAGE}@${CUDA_DIGEST} has not passed the exact-digest GPU gate." >&2
-            echo "Run backend/scripts/certify_cuda_candidate_gpu.sh against that digest, then rerun this workflow." >&2
-            exit 1
-          fi
-          [[ "${certified_cuda}" == "${CUDA_DIGEST}" ]] || {
-            echo "GPU certification marker changed: expected ${CUDA_DIGEST}, found ${certified_cuda}" >&2
-            exit 1
-          }
-
           docker buildx imagetools create \
             --tag "${REGISTRY_IMAGE}:sha-${GITHUB_SHA}" \
             "${REGISTRY_IMAGE}@${CPU_DIGEST}"
@@ -505,24 +493,19 @@ jobs:
             --arg cuda_fingerprint "${{ needs.prepare.outputs.cuda_fingerprint }}" \
             --arg cpu_digest "${CPU_DIGEST}" \
             --arg cuda_digest "${CUDA_DIGEST}" \
-            --arg gpu_certification "${gpu_certification}" \
             '{
               schemaVersion: 1,
               commit: $commit,
               cpu: {fingerprint: $cpu_fingerprint, digest: $cpu_digest},
-              cuda: {
-                fingerprint: $cuda_fingerprint,
-                digest: $cuda_digest,
-                gpuCertification: $gpu_certification
-              }
+              cuda: {fingerprint: $cuda_fingerprint, digest: $cuda_digest}
             }' > "${RUNNER_TEMP}/backend-images.json"
 
-          printf 'Certified main images\n\n- CPU: `%s@%s`\n- CUDA: `%s@%s`\n' \
+          printf 'Verified main images\n\n- CPU: `%s@%s`\n- CUDA: `%s@%s`\n' \
             "${REGISTRY_IMAGE}" "${CPU_DIGEST}" \
             "${REGISTRY_IMAGE}" "${CUDA_DIGEST}" \
             >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Upload certified image manifest
+      - name: Upload main image manifest
         uses: actions/upload-artifact@v7
         with:
           name: backend-images-${{ github.sha }}

@@ -106,7 +106,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve and promote certified backend images
+      - name: Resolve and promote main backend images
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
@@ -116,11 +116,11 @@ jobs:
           cuda_commit_image="${REGISTRY_IMAGE}:sha-${release_commit}-cuda"
 
           cpu_digest="$(docker buildx imagetools inspect "${cpu_commit_image}" --format '{{.Manifest.Digest}}')" || {
-            echo "No certified CPU image exists for ${release_commit}" >&2
+            echo "No verified main CPU image exists for ${release_commit}" >&2
             exit 1
           }
           cuda_digest="$(docker buildx imagetools inspect "${cuda_commit_image}" --format '{{.Manifest.Digest}}')" || {
-            echo "No certified CUDA image exists for ${release_commit}" >&2
+            echo "No verified main CUDA image exists for ${release_commit}" >&2
             exit 1
           }
 
