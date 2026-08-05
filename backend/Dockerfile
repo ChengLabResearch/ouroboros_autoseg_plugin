@@ -1,7 +1,7 @@
 ARG CPU_BUILDER_IMAGE=rust:1.88-slim-bookworm
 ARG CPU_RUNTIME_IMAGE=debian:bookworm-slim
-ARG CUDA_BUILDER_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04
-ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:12.4.1-runtime-ubuntu22.04
+ARG CUDA_BUILDER_IMAGE=nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 # ── Stage 1: build the Rust backend for CPU runtimes ─────────────────────────
 # Rust 1.88+ is required by the locked image dependency; it also supports edition 2024 manifests.
@@ -77,11 +77,13 @@ RUN git clone https://github.com/den-sq/candle_sam3.git candle_sam3_main \
     && git -C candle_sam3_main checkout "${CANDLE_SAM3_COMMIT}"
 
 WORKDIR /build/plugin/backend
-ARG CANDLE_FEATURES=cuda
+ARG CANDLE_FEATURES=cuda,cudnn
 ARG CUDA_COMPUTE_CAP=75
 ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src \
+RUN test "${CANDLE_FEATURES}" = "cuda,cudnn" \
+    || { echo "CANDLE_FEATURES must equal the canonical cuda,cudnn feature set" >&2; exit 1; } \
+    && mkdir -p src \
     && printf 'fn main() {}\n' > src/main.rs \
     && printf '' > src/lib.rs \
     && cargo build --release --locked --features "${CANDLE_FEATURES}" \
@@ -112,6 +114,14 @@ CMD ["/usr/local/bin/ouroboros-autoseg-plugin-backend"]
 # ── Stage 4: CUDA runtime image ──────────────────────────────────────────────
 FROM ${CUDA_RUNTIME_IMAGE} AS cuda-runtime
 
+ARG CANDLE_FEATURES=cuda,cudnn
+ENV OUROBOROS_COMPILED_FEATURES=${CANDLE_FEATURES} \
+    OUROBOROS_COMPILED_CUDA=true \
+    OUROBOROS_COMPILED_CUDNN=true
+LABEL io.ouroboros.backend.compiled.features=${CANDLE_FEATURES} \
+      io.ouroboros.backend.compiled.cuda="true" \
+      io.ouroboros.backend.compiled.cudnn="true"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
@@ -123,4 +133,4 @@ COPY --from=cuda-builder \
 
 EXPOSE 8686
 
-CMD ["/usr/local/bin/ouroboros-autoseg-plugin-backend"]
+CMD ["/bin/sh", "-c", "printf '%s\\n' 'backend compiled capabilities: cuda=true cudnn=true features=cuda,cudnn' >&2; exec /usr/local/bin/ouroboros-autoseg-plugin-backend"]

@@ -67,13 +67,13 @@ Tagged releases publish two preinstallable plugin artifacts:
 
 The current production beta pin for Ouroboros package builds is:
 
-- tag: `v0.4.0-beta.2`
-- CPU asset: `auto-segmentation-v0.4.0-beta.2-cpu.zip`
-- CUDA asset: `auto-segmentation-v0.4.0-beta.2-cuda.zip`
-- CPU backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta.2`
-- CUDA backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta.2-cuda`
+- tag: `v0.4.0-beta.3`
+- CPU asset: `auto-segmentation-v0.4.0-beta.3-cpu.zip`
+- CUDA asset: `auto-segmentation-v0.4.0-beta.3-cuda.zip`
+- CPU backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta.3`
+- CUDA backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta.3-cuda`
 
-The beta.2 backend is pinned to Candle SAM3 commit
+The beta.3 backend is pinned to Candle SAM3 commit
 `c0400c6513c21655828bb92633cc190a3501a6f6`.
 
 Both archives unpack to the normal Ouroboros plugin folder layout, including
@@ -93,7 +93,12 @@ The GPU compose files use a CUDA-specific Docker target:
 - `backend/compose.gpu.yml` for packaged GPU backends
 - `backend/compose.gpu.dev.yml` for local GPU development
 
-Those compose files select the `cuda-runtime` Docker target and pass `CANDLE_FEATURES=cuda`, which forwards the plugin crate's `cuda` feature to the Candle dependencies. Building these images requires an NVIDIA-capable Docker environment with the NVIDIA container toolkit available.
+Those compose files select the `cuda-runtime` Docker target and pass the
+canonical `CANDLE_FEATURES=cuda,cudnn` feature set to the Candle dependencies.
+The target uses matching CUDA 12.4.1 cuDNN development and runtime bases and
+reports `cuda=true cudnn=true` in its startup log. Building or running these
+images requires an NVIDIA-capable Docker environment with the NVIDIA container
+toolkit available.
 
 ### Registry Backend Images
 
@@ -114,6 +119,28 @@ target, and the `-cuda` tags use the CUDA runtime target. The existing
 `backend/compose.yml` remains the local-build fallback.
 `backend/compose.registry.yml` is an opt-in compose file that accepts a prebuilt
 immutable image through `OUROBOROS_AUTOSEG_BACKEND_IMAGE`.
+
+CUDA certification has two gates against the same candidate digest. Hosted CI
+checks the declared `cuda,cudnn` capabilities and verifies that the backend's
+ELF dependencies resolve the cuDNN runtime without initializing a GPU. The
+checkpoint-backed encoder gate runs on a GPU host and must not rebuild:
+
+```bash
+BACKEND_IMAGE=ghcr.io/chenglabresearch/ouroboros-autoseg-backend@sha256:<digest> \
+INPUT_STACK=/path/to/straightened-stack.tif \
+CHECKPOINT_PATH=/path/to/checkpoint_3D.pt \
+  backend/scripts/certify_cuda_candidate_gpu.sh
+```
+
+After the smoke passes, the script records a digest-specific
+`gpu-certified-<digest>` registry marker. The `main` workflow refuses to create
+the immutable `sha-<commit>-cuda` tag unless that marker resolves to the exact
+candidate digest. If the GPU gate happens after the merge build, rerun the
+failed workflow; it reuses the existing candidate instead of compiling again.
+Publishing the marker requires a prior `docker login ghcr.io` with package
+write access. The smoke's `ARTIFACT_DIR` retains the exact image reference,
+compiled features, revisions, telemetry, bounded backend log, and validated
+output.
 
 ### `package.json`
 

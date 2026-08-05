@@ -36,7 +36,7 @@ jobs:
       contents: read
 
     env:
-      OUROBOROS_AUTOSEG_PLUGIN_RELEASE_TAG: v0.4.0-beta.2-ci
+      OUROBOROS_AUTOSEG_PLUGIN_RELEASE_TAG: v0.4.0-beta.3-ci
 
     steps:
       - name: Check out Git repository
