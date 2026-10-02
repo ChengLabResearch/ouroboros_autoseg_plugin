@@ -54,15 +54,9 @@ pub async fn download_model(
         tokio::fs::remove_dir_all(&target_path).await?;
     }
 
-    match descriptor.download_source {
-        DownloadSource::PublicUrl(url) => {
-            download_to_path(client, url, None, &target_path).await?;
-        }
-        DownloadSource::HuggingFace {
-            repo,
-            filename,
-            requires_token,
-        } => {
+    let token = match descriptor.download_source {
+        DownloadSource::PublicUrl(_) => None,
+        DownloadSource::HuggingFace { requires_token, .. } => {
             let token = request
                 .hf_token
                 .as_deref()
@@ -72,10 +66,11 @@ pub async fn download_model(
                     "Authentication Token required for SAM3 (Official)",
                 ));
             }
-            let url = config.huggingface_resolve_url(repo, filename);
-            download_to_path(client, &url, token, &target_path).await?;
+            token
         }
-    }
+    };
+    let url = descriptor.download_source.url(&config.huggingface_base_url);
+    download_to_path(client, &url, token, &target_path).await?;
 
     Ok(DownloadModelResponse {
         status: "success".to_string(),

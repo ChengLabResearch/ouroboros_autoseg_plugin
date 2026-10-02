@@ -10,9 +10,27 @@ pub enum DownloadSource {
     PublicUrl(&'static str),
     HuggingFace {
         repo: &'static str,
+        revision: &'static str,
         filename: &'static str,
         requires_token: bool,
     },
+}
+
+impl DownloadSource {
+    pub fn url(&self, huggingface_base_url: &str) -> String {
+        match self {
+            Self::PublicUrl(url) => (*url).to_string(),
+            Self::HuggingFace {
+                repo,
+                revision,
+                filename,
+                ..
+            } => {
+                let base = huggingface_base_url.trim_end_matches('/');
+                format!("{base}/{repo}/resolve/{revision}/{filename}")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +74,7 @@ const MODEL_CATALOG: &[ModelDescriptor] = &[
         checkpoint_file: "sam3.pt",
         download_source: DownloadSource::HuggingFace {
             repo: "facebook/sam3",
+            revision: "main",
             filename: "sam3.pt",
             requires_token: true,
         },
@@ -65,6 +84,9 @@ const MODEL_CATALOG: &[ModelDescriptor] = &[
         checkpoint_file: "medical_sam3.pt",
         download_source: DownloadSource::HuggingFace {
             repo: "ChongCong/Medical-SAM3",
+            // Preserve the point-prompted checkpoint-5 baseline. Upstream removed
+            // this file from main; checkpoint 8 and LoRA require separate validation.
+            revision: "716c9e1fb70edbdbbe65526b781e3a60f382d6cc",
             filename: "checkpoint_3D.pt",
             requires_token: false,
         },
@@ -157,11 +179,6 @@ impl AppConfig {
         let base = self.volume_server_url.trim_end_matches('/');
         let path = path.trim_start_matches('/');
         format!("{base}/{path}")
-    }
-
-    pub fn huggingface_resolve_url(&self, repo: &str, filename: &str) -> String {
-        let base = self.huggingface_base_url.trim_end_matches('/');
-        format!("{base}/{repo}/resolve/main/{filename}")
     }
 }
 

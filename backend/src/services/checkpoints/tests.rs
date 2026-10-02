@@ -126,6 +126,72 @@ async fn download_model_reports_existing_files() {
     assert_eq!(response.status, "exists");
 }
 
+#[tokio::test]
+async fn download_model_uses_catalog_revision_and_preserves_checkpoint_contract() {
+    use axum::{http::HeaderMap, routing::get, Router};
+
+    // Only the expected revision exists: a request to main for Medical SAM3
+    // returns 404, reproducing the upstream deletion without network access.
+    for (model, path, token, stored_name) in [
+        (
+            "medical_sam3",
+            "/ChongCong/Medical-SAM3/resolve/716c9e1fb70edbdbbe65526b781e3a60f382d6cc/checkpoint_3D.pt",
+            None,
+            "medical_sam3.pt",
+        ),
+        (
+            "sam3",
+            "/facebook/sam3/resolve/main/sam3.pt",
+            Some("fixture-token"),
+            "sam3.pt",
+        ),
+    ] {
+        let app = Router::new().route(
+            path,
+            get(move |headers: HeaderMap| async move {
+                let expected = token.map(|value| format!("Bearer {value}"));
+                let actual = headers.get("authorization").and_then(|value| value.to_str().ok());
+                if actual != expected.as_deref() {
+                    return (StatusCode::UNAUTHORIZED, "unexpected authorization");
+                }
+                (StatusCode::OK, "checkpoint fixture")
+            }),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
+        listener.set_nonblocking(true).expect("nonblocking listener");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(
+            axum::Server::from_tcp(listener)
+                .expect("fixture server")
+                .serve(app.into_make_service()),
+        );
+        let root = tempfile::tempdir().expect("checkpoint directory");
+        // Also exercise the existing trailing-slash base URL override contract.
+        let config = test_config(&format!("http://{address}/"), root.path().to_path_buf());
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("client");
+        let result = download_model(
+            &config,
+            &client,
+            &DownloadRequest {
+                model_type: model.to_string(),
+                hf_token: token.map(str::to_string),
+            },
+        )
+        .await;
+        server.abort();
+
+        assert_eq!(result.expect("download from catalog source").status, "success");
+        let target = config.checkpoint_dir.join(stored_name);
+        assert_eq!(std::fs::read(&target).expect("published checkpoint"), b"checkpoint fixture");
+        assert!(!partial_download_path(&target).exists());
+        assert_eq!(model_status(&config).await.expect("model status").models.get(model), Some(&true));
+    }
+}
+
 #[test]
 fn sam3_descriptor_uses_official_checkpoint() {
     let root = unique_temp_dir();
@@ -138,10 +204,12 @@ fn sam3_descriptor_uses_official_checkpoint() {
     match descriptor.download_source {
         DownloadSource::HuggingFace {
             repo,
+            revision,
             filename,
             requires_token,
         } => {
             assert_eq!(repo, "facebook/sam3");
+            assert_eq!(revision, "main");
             assert_eq!(filename, "sam3.pt");
             assert!(requires_token);
         }
@@ -161,10 +229,12 @@ fn medical_sam3_descriptor_uses_public_medical_checkpoint() {
     match descriptor.download_source {
         DownloadSource::HuggingFace {
             repo,
+            revision,
             filename,
             requires_token,
         } => {
             assert_eq!(repo, "ChongCong/Medical-SAM3");
+            assert_eq!(revision, "716c9e1fb70edbdbbe65526b781e3a60f382d6cc");
             assert_eq!(filename, "checkpoint_3D.pt");
             assert!(!requires_token);
         }
