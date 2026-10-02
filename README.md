@@ -15,7 +15,20 @@ checkpoint is downloaded and loaded.
 | Selector value | Display label | Checkpoint source | Stored checkpoint | Token required | Prompt support |
 | --- | --- | --- | --- | --- | --- |
 | `sam3` | SAM3 | Hugging Face `facebook/sam3`, file `sam3.pt` | `sam3.pt` | Yes | Image points, video points |
-| `medical_sam3` | Medical SAM3 | Hugging Face `ChongCong/Medical-SAM3`, file `checkpoint_3D.pt` | `medical_sam3.pt` | No | Image points, video points |
+| `medical_sam3` | Medical SAM3 | Hugging Face `ChongCong/Medical-SAM3`, file `checkpoint_3D.pt` at revision `716c9e1fb70edbdbbe65526b781e3a60f382d6cc` | `medical_sam3.pt` | No | Image points, video points |
+
+The production Rust model catalog pins Medical SAM3 to the previously tested
+stage-1 checkpoint 5. Upstream removed `checkpoint_3D.pt` from `main` on
+2026-08-16, causing new downloads to fail with an upstream 404 (reported by the
+plugin as HTTP 502). The [pinned checkpoint](https://huggingface.co/ChongCong/Medical-SAM3/resolve/716c9e1fb70edbdbbe65526b781e3a60f382d6cc/checkpoint_3D.pt)
+has SHA-256 `6e40bbaa739ac44e3e47dc6355ef6dedc560a30411377ad891f8af9e6df0dbd6`,
+matching the recorded [point-prompted video baseline](backend/docs/candle2_old_pin_baseline.md).
+Existing `medical_sam3.pt` files are reused without redownloading; the download
+path does not revalidate their contents or enforce this checksum.
+
+The newer `checkpoint_3D_checkpoint8.pt` uses a different training resolution,
+and `checkpoint_3D_LoRA2D.pt` is an adapter requiring checkpoint 8. Neither is
+selected by this fix. Image and video point prompts remain supported.
 
 The `/model-status` endpoint reports `sam3` and `medical_sam3` only, matching
 the current production SAM3 surface. The `/download-model` endpoint stores
