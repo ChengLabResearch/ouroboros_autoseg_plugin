@@ -78,15 +78,15 @@ Tagged releases publish two preinstallable plugin artifacts:
 - `auto-segmentation-<tag>-cpu.zip`
 - `auto-segmentation-<tag>-cuda.zip`
 
-The current production beta pin for Ouroboros package builds is:
+The beta.4 plugin release uses these artifact names and image tags:
 
-- tag: `v0.4.0-beta.3`
-- CPU asset: `auto-segmentation-v0.4.0-beta.3-cpu.zip`
-- CUDA asset: `auto-segmentation-v0.4.0-beta.3-cuda.zip`
-- CPU backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta.3`
-- CUDA backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta.3-cuda`
+- tag: `v0.4.0-beta.4`
+- CPU asset: `auto-segmentation-v0.4.0-beta.4-cpu.zip`
+- CUDA asset: `auto-segmentation-v0.4.0-beta.4-cuda.zip`
+- CPU backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta.4`
+- CUDA backend image: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:v0.4.0-beta.4-cuda`
 
-The beta.3 backend is pinned to Candle SAM3 commit
+The beta.4 backend is pinned to Candle SAM3 commit
 `c0400c6513c21655828bb92633cc190a3501a6f6`.
 
 Both archives unpack to the normal Ouroboros plugin folder layout, including
