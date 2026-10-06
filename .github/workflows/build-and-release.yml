@@ -6,6 +6,7 @@ on:
       - .github/workflows/build-and-release.yml
       - package.json
       - package-lock.json
+      - audit-ci.jsonc
       - scripts/**
       - tests/**
       - tsconfig*.json
@@ -62,7 +63,7 @@ jobs:
 
       - name: Audit dependencies
         if: runner.os == 'Linux'
-        run: npm audit --audit-level=moderate
+        run: npm run audit:ci
 
       - name: Build release layouts
         run: npm run build:release
