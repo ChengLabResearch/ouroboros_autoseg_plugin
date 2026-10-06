@@ -1,0 +1,10 @@
+{
+  "moderate": true,
+  "allowlist": [
+    // Reviewed 2026-10-06: not exploitable in this project's usage.
+    // vite.config.ts supplies repository-controlled file-watching patterns;
+    // segmentation input cannot supply patterns to this dependency.
+    // Reassess if this input boundary or dependency path changes.
+    "GHSA-vfj7-8cjw-p6xm|vite-plugin-static-copy>chokidar>braces"
+  ]
+}
