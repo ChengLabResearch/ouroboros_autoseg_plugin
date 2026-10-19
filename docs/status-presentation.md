@@ -21,3 +21,10 @@ at render time, never from a percentage. A reported failure survives dismissal o
 its detailed diagnostic; a missing-job response retains any last progress while
 showing an unknown outcome, even when no status snapshot preceded it. The existing
 run/job-ID flags still schedule requests and provide pre-response waiting text.
+
+The stateless `Notice` component owns message appearance, matching the main app's
+`Alert`. Page retains the task-error list and its dismissal, cap, and deduplication;
+model facilities retain their own nondismissible feedback. Existing errors keep
+error severity and `role="alert"`, including communication/request errors, while
+the reconnect message is informational. Severity does not infer job failure; the
+separate source-derived task outcome remains visible after a diagnostic is dismissed.

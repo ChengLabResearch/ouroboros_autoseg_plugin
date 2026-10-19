@@ -1,4 +1,4 @@
-import styles from '../assets/styles.module.css';
+import Notice from './Notice';
 import type { ModelStatusError, ModelStatusSnapshot } from '../modelDownloads';
 
 export default function ModelStatusNotice({ error, snapshot }: {
@@ -7,12 +7,8 @@ export default function ModelStatusNotice({ error, snapshot }: {
 }) {
     if (!error || (!snapshot && error.kind === 'unavailable')) return null;
 
-    return (
-        <div className={styles.inlineError} role="alert">
-            {snapshot
-                ? 'Unable to refresh model downloads. Last reported progress is shown. '
-                : 'Unable to read model download status. '}
-            {error.message}
-        </div>
-    );
+    const context = snapshot
+        ? 'Unable to refresh model downloads. Last reported progress is shown. '
+        : 'Unable to read model download status. ';
+    return <Notice type="error" message={`${context}${error.message}`} />;
 }

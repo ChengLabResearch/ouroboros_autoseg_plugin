@@ -66,14 +66,21 @@ describe('model download progress', () => {
         const html = markup(download('downloading'), { request: { pending: false, error: 'Response lost. Checking the backend.' } });
         expect(html).toContain('Downloading');
         expect(html).toContain('Response lost');
+        expect(html).toContain('data-type="error" role="alert"');
+        expect(html).not.toContain('Dismiss');
         expect(html).toContain('disabled=""');
         expect(html).not.toContain('Download failed');
     });
 
     it('shows actual backend failure with retry and its error', () => {
-        const html = markup(download('failed', { error: 'Disk is full', bytes_received: 1024, total_bytes: 4096 }));
+        const html = markup(download('failed', { error: 'Disk is full', bytes_received: 1024, total_bytes: 4096 }), {
+            request: { pending: false, error: 'Earlier download request failed' },
+        });
         expect(html).toContain('Download failed');
         expect(html).toContain('Disk is full');
+        expect(html).toContain('data-type="error" role="alert"');
+        expect(html).not.toContain('Earlier download request failed');
+        expect(html).not.toContain('Dismiss');
         expect(html).toContain('Retry');
         expect(html).not.toContain('disabled=""');
         expect(html).toContain('aria-valuenow="25"');

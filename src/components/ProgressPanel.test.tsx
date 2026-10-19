@@ -79,6 +79,14 @@ describe('initialization presentation', () => {
         expect(running).toContain('data-status="waiting">Checking');
         expect(running).not.toContain('Connected');
     });
+
+    it('keeps the existing reconnect message informational and nondismissible', () => {
+        const html = markup(null, { reconnected: true });
+        expect(html).toContain('data-type="info" role="status"');
+        expect(html).toContain('Reconnected to an active run.');
+        expect(html).not.toContain('Dismiss');
+        expect(markup(null)).not.toContain('Reconnected to an active run.');
+    });
 });
 
 const running: JobStatusRecord = {
@@ -130,11 +138,14 @@ describe('task presentation', () => {
         } };
         const html = markup(null, { jobObservation, errors: [{ id: 'failure', message: jobObservation.record.error }], onDismissError: () => {} });
         expect(html.match(/Inference: Device unavailable/g)).toHaveLength(1);
+        expect(html).toMatch(/aria-label="Segmentation task".*data-type="error" role="alert"/);
+        expect(html).toMatch(/<button[^>]+>Dismiss<\/button>/);
         expect(html).toContain('Failed during Inference');
         expect(html).toMatch(/aria-label="Inference"[^>]+aria-valuetext="Failed"/);
         const dismissed = markup(null, { jobObservation });
         expect(dismissed).toContain('Failed during Inference');
         expect(dismissed).not.toContain('Device unavailable');
+        expect(dismissed).not.toContain('Dismiss');
     });
 
     it.each([null, running])('shows unknown outcome after a missing job with prior record %j', (lastRecord) => {

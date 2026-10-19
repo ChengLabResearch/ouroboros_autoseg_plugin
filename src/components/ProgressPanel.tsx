@@ -4,6 +4,7 @@ import type { BackendStatus, VolumeServerState } from '../statusPresentation';
 import { presentJob } from '../jobStatus';
 import type { JobObservation } from '../jobStatus';
 import StatusLabel from './StatusLabel';
+import Notice from './Notice';
 export type { BackendStatus, BackendStep, VolumeServerState } from '../statusPresentation';
 export type ErrorEntry = { id: string; message: string; };
 
@@ -43,9 +44,7 @@ export default function ProgressPanel({
                         <StatusLabel {...initialization.summary} />
                     </div>
                     {reconnected && (
-                        <div className={styles.reconnectBanner}>
-                            Reconnected to an active run.
-                        </div>
+                        <Notice type="info" message="Reconnected to an active run." />
                     )}
                     {backendStatus && (
                         <dl className={styles.backendSteps}>
@@ -58,26 +57,19 @@ export default function ProgressPanel({
                         </dl>
                     )}
                 </section>
-                {errors.length > 0 && (
-                    <div className={styles.errorStack}>
-                        {errors.map((err) => (
-                            <div key={err.id} className={styles.errorBanner} role="alert">
-                                <span className={styles.errorText}>{err.message}</span>
-                                {onDismissError && (
-                                    <button
-                                        type="button"
-                                        onClick={() => onDismissError(err.id)}
-                                        className={styles.errorDismiss}
-                                        aria-label="Dismiss error"
-                                    >
-                                        ×
-                                    </button>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                )}
                 <section aria-label="Segmentation task">
+                    {errors.length > 0 && (
+                        <div className={styles.errorStack}>
+                            {errors.map((err) => (
+                                <Notice
+                                    key={err.id}
+                                    type="error"
+                                    message={err.message}
+                                    onDismiss={onDismissError ? () => onDismissError(err.id) : undefined}
+                                />
+                            ))}
+                        </div>
+                    )}
                     {task.summary && (
                         <div className={styles.taskSummary} role="status">
                             <strong>Segmentation</strong>
