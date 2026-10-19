@@ -1,13 +1,16 @@
 import styles from '../assets/styles.module.css';
-import { presentInitialization } from '../statusPresentation';
+import { presentInitialization, STATUS_LABELS } from '../statusPresentation';
 import type { BackendStatus, VolumeServerState } from '../statusPresentation';
+import { presentJob } from '../jobStatus';
+import type { JobObservation } from '../jobStatus';
 import StatusLabel from './StatusLabel';
 export type { BackendStatus, BackendStep, VolumeServerState } from '../statusPresentation';
-export type ProgressItem = { name: string; progress: number; };
 export type ErrorEntry = { id: string; message: string; };
 
 export default function ProgressPanel({
-    items,
+    jobObservation,
+    isRunning,
+    jobId,
     connected,
     backendStatus,
     reconnected,
@@ -15,7 +18,9 @@ export default function ProgressPanel({
     onDismissError,
     volumeServer = 'unchecked'
 }: {
-    items: ProgressItem[],
+    jobObservation: JobObservation,
+    isRunning: boolean,
+    jobId: string | null,
     connected: boolean,
     backendStatus: BackendStatus | null,
     reconnected?: boolean,
@@ -24,6 +29,7 @@ export default function ProgressPanel({
     volumeServer?: VolumeServerState
 }) {
     const initialization = presentInitialization(backendStatus, connected ? volumeServer : undefined);
+    const task = presentJob(jobObservation, isRunning, jobId);
 
     return (
         <div className={styles.container}>
@@ -71,15 +77,38 @@ export default function ProgressPanel({
                         ))}
                     </div>
                 )}
-                {items.map((i, idx) => (
-                    <div key={idx} className={styles.progressItem}>
-                        <div className={styles.progressLabelRow}><span>{i.name}</span><span>{i.progress}%</span></div>
-                        <div className={styles.progressBarBg}>
-                            <div className={styles.progressBarFill} style={{ width: `${i.progress}%` }} />
+                <section aria-label="Segmentation task">
+                    {task.summary && (
+                        <div className={styles.taskSummary} role="status">
+                            <strong>Segmentation</strong>
+                            <StatusLabel {...task.summary} />
                         </div>
-                    </div>
-                ))}
-                {items.length === 0 && <div style={{color:'#666', fontStyle:'italic', fontSize: '0.9rem'}}>No active tasks.</div>}
+                    )}
+                    {task.detail && <div className={styles.taskDetail}>{task.detail}</div>}
+                    {task.steps.map((step) => (
+                        <div key={step.name} className={styles.taskProgressItem}>
+                            <div className={styles.taskProgressHeading}>
+                                <span>{step.name}</span>
+                                <StatusLabel status={step.status} />
+                            </div>
+                            <div className={styles.taskProgressRow}>
+                                <div
+                                    className={styles.taskProgressBar}
+                                    role="progressbar"
+                                    aria-label={step.name}
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    aria-valuenow={step.progress}
+                                    aria-valuetext={STATUS_LABELS[step.status]}
+                                >
+                                    <div className={styles.taskProgressFill} style={{ width: `${step.progress}%` }} />
+                                </div>
+                                <span className={styles.taskProgressPercent}>{step.progress}%</span>
+                            </div>
+                        </div>
+                    ))}
+                    {!task.summary && <div className={styles.taskDetail}>No active tasks.</div>}
+                </section>
             </div>
         </div>
     );

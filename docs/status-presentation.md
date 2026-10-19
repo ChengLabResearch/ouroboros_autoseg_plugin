@@ -14,3 +14,10 @@ Container Startup rows retain their distinct meanings. The lazy ML-runtime warni
 reads “Loads on first run” with neutral styling. Backend and browser volume checks
 remain separate, explicitly named observations; a container running or a readiness
 boolean does not establish a separately observed API connection.
+
+For tasks, Page retains one `JobObservation` from the existing job-response flow.
+`src/jobStatus.ts` derives stage labels and the overall result from that observation
+at render time, never from a percentage. A reported failure survives dismissal of
+its detailed diagnostic; a missing-job response retains any last progress while
+showing an unknown outcome, even when no status snapshot preceded it. The existing
+run/job-ID flags still schedule requests and provide pre-response waiting text.

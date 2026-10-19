@@ -1,11 +1,4 @@
-import type { ProgressItem } from './components/ProgressPanel';
-
-export type JobStatusRecord = {
-    status: 'running' | 'completed' | 'error' | string;
-    steps: ProgressItem[];
-    active_phase?: string;
-    error?: string;
-};
+import type { JobStatusRecord } from './jobStatus';
 
 export type ReconnectedJob = {
     jobId: string;
