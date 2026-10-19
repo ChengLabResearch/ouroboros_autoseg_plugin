@@ -5,7 +5,11 @@ use std::{
 
 use crate::{
     app_state::{AppState, Sam3ModelHandle},
-    domain::{jobs::JobPhase, paths::parse_mixed_path, requests::ProcessRequest},
+    domain::{
+        jobs::JobPhase,
+        paths::{parse_mixed_path, MixedPathParts},
+        requests::ProcessRequest,
+    },
     error::AppError,
     imaging::{
         annotations::{
@@ -23,14 +27,14 @@ use crate::{
     },
     services::{
         progress::{report_frame, report_phase, ProgressSender},
-        volume::VolumeFileMapping,
+        volume::{self, VolumeFileMapping},
     },
 };
 
 #[derive(Debug, Clone)]
 pub struct PipelinePlan {
     pub host_source: String,
-    pub host_output: String,
+    pub host_output: MixedPathParts,
     pub volume_source: PathBuf,
     pub temp_volume_dir: PathBuf,
     pub volume_output: PathBuf,
@@ -49,11 +53,23 @@ impl PipelinePlan {
         vec![VolumeFileMapping::new(self.host_source.clone(), "")]
     }
 
-    pub fn copy_to_host_mappings(&self) -> Vec<VolumeFileMapping> {
-        vec![VolumeFileMapping::new(
-            self.host_output.clone(),
+    pub fn copy_to_host_mappings(&self, include_overlay: bool) -> Vec<VolumeFileMapping> {
+        let mut files = vec![VolumeFileMapping::new(
+            self.host_output.raw.clone(),
             "Segmentation",
-        )]
+        )];
+        if include_overlay {
+            let overlay = annotation_overlay_path(&self.volume_output);
+            let file_name = overlay
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("overlay filename derives from a UTF-8 request path");
+            files.push(VolumeFileMapping::new(
+                self.host_output.with_file_name(file_name),
+                "Segmentation",
+            ));
+        }
+        files
     }
 }
 
@@ -64,10 +80,10 @@ pub fn plan(state: &AppState, request: &ProcessRequest) -> Result<PipelinePlan, 
 
     Ok(PipelinePlan {
         host_source: input.raw,
-        host_output: output.raw,
         volume_source: plugin_root.join(&input.file_name),
         temp_volume_dir: plugin_root.join(format!("{}_temp", input.stem)),
         volume_output: plugin_root.join("Segmentation").join(&output.file_name),
+        host_output: output,
     })
 }
 
@@ -78,6 +94,12 @@ pub async fn prepare(
     request.validate()?;
 
     let plan = plan(state, request)?;
+    volume::copy_to_volume(
+        state.http_client(),
+        state.config(),
+        &plan.copy_to_volume_mappings(),
+    )
+    .await?;
     let volume = inspect_volume(&plan.volume_source).await?;
     let frames = read_volume_frames(&plan.volume_source).await?;
     let annotation_points = volume.annotation_points.clone().unwrap_or_else(|| {
@@ -126,7 +148,7 @@ pub async fn run(
         tokio::fs::remove_dir_all(&prepared.plan.temp_volume_dir).await?;
     }
     tokio::fs::create_dir_all(&prepared.plan.temp_volume_dir).await?;
-    let result = run_prepared(&handle, &prepared, request, progress).await;
+    let result = run_prepared(state, &handle, &prepared, request, progress).await;
     let cleanup = tokio::fs::remove_dir_all(&prepared.plan.temp_volume_dir).await;
     match (result, cleanup) {
         (Err(error), _) => Err(error),
@@ -136,6 +158,7 @@ pub async fn run(
 }
 
 async fn run_prepared(
+    state: &AppState,
     handle: &Arc<Sam3ModelHandle>,
     prepared: &PreparedPipelineInput,
     request: &ProcessRequest,
@@ -153,23 +176,41 @@ async fn run_prepared(
         _ => unreachable!("validated by ProcessRequest::validate"),
     };
 
+    save_masks(state, prepared, request, &masks, progress).await
+}
+
+async fn save_masks(
+    state: &AppState,
+    prepared: &PreparedPipelineInput,
+    request: &ProcessRequest,
+    masks: &[FrameMask],
+    progress: &ProgressSender,
+) -> Result<(), AppError> {
+    report_phase(progress, JobPhase::Saving);
     if let Some(parent) = prepared.plan.volume_output.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    report_phase(progress, JobPhase::Saving);
-    write_mask_stack_with_progress(&prepared.plan.volume_output, &masks, |frame, total| {
+    write_mask_stack_with_progress(&prepared.plan.volume_output, masks, |frame, total| {
         report_frame(progress, JobPhase::Saving, frame, total)
     })
     .await?;
     if request.overlay_annotation_points {
         write_annotation_overlay_stack(
             &annotation_overlay_path(&prepared.plan.volume_output),
-            &masks,
+            masks,
             &prepared.annotation_points,
             request.annotation_overlay_intensity,
         )
         .await?;
     }
+    volume::copy_to_host(
+        state.http_client(),
+        state.config(),
+        &prepared
+            .plan
+            .copy_to_host_mappings(request.overlay_annotation_points),
+    )
+    .await?;
     Ok(())
 }
 

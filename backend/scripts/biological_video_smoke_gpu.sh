@@ -39,10 +39,10 @@ Common options:
   TIFF_VALIDATOR_PYTHON=python3  Python interpreter with tifffile and numpy installed.
   KEEP_CONTAINER=1               Leave the backend container running after the script exits.
 
-The script builds/runs the CUDA Docker target with --gpus all, stages the input
-stack and Medical SAM3 3D checkpoint into the Docker volume, submits a
-VideoPredictor job, polls it to completion, and verifies that the mask stack was
-written. If Python tifffile is available, it also checks output geometry.
+The script builds/runs the CUDA Docker target with --gpus all and stages the
+Medical SAM3 3D checkpoint. A bounded diagnostic volume service copies input and
+output through the backend's production HTTP transfer protocol. The script
+submits a VideoPredictor job and validates the TIFF returned to the host.
 USAGE
 }
 
@@ -123,6 +123,10 @@ cleanup() {
     kill "${TELEMETRY_PID}" >/dev/null 2>&1 || true
     wait "${TELEMETRY_PID}" 2>/dev/null || true
   fi
+  if [[ -n "${VOLUME_SERVER_PID:-}" ]]; then
+    kill "${VOLUME_SERVER_PID}" >/dev/null 2>&1 || true
+    wait "${VOLUME_SERVER_PID}" 2>/dev/null || true
+  fi
   capture_backend_log
   if [[ -n "${VALIDATION_DIR:-}" && -d "${VALIDATION_DIR}" ]]; then
     rm -rf "${VALIDATION_DIR}"
@@ -184,10 +188,17 @@ else
 fi
 TIFF_VALIDATOR_PYTHON="${TIFF_VALIDATOR_PYTHON:-${DEFAULT_TIFF_VALIDATOR_PYTHON}}"
 
-INPUT_DIR="$(dirname -- "${INPUT_STACK}")"
 INPUT_NAME="$(basename -- "${INPUT_STACK}")"
 INPUT_STEM="${INPUT_NAME%.*}"
 OUTPUT_NAME="${OUTPUT_NAME:-${INPUT_STEM}_video_smoke_mask.tif}"
+[[ "${OUTPUT_NAME}" == "$(basename -- "${OUTPUT_NAME}")" ]] || die "OUTPUT_NAME must be a filename"
+OUTPUT_OVERLAY_NAME="$(python3 - "${OUTPUT_NAME}" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+print(f"{path.stem}_annotation_overlay{path.suffix or '.tif'}")
+PY
+)"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${OUTPUT_DIR:-/tmp/autoseg-smoke-${INPUT_STEM}}}"
 mkdir -p "${ARTIFACT_DIR}"
 TELEMETRY_CSV="${ARTIFACT_DIR}/telemetry.csv"
@@ -298,42 +309,70 @@ if [[ "${SKIP_GPU_CHECK:-0}" != "1" ]]; then
   docker run --rm --gpus all --entrypoint nvidia-smi "${BACKEND_IMAGE}" >/dev/null
 fi
 
-log "Staging input and checkpoint in Docker volume: ${VOLUME_NAME}"
+log "Staging checkpoint and clearing previous input/output in Docker volume: ${VOLUME_NAME}"
 if [[ "${REUSE_STAGED_CHECKPOINT}" == "1" ]]; then
   docker run --rm \
     --entrypoint /bin/sh \
     -v "${VOLUME_NAME}:/volume" \
-    -v "${INPUT_DIR}:/input:ro" \
     -e INPUT_NAME="${INPUT_NAME}" \
     -e OUTPUT_NAME="${OUTPUT_NAME}" \
+    -e OUTPUT_OVERLAY_NAME="${OUTPUT_OVERLAY_NAME}" \
     "${BACKEND_IMAGE}" \
     -ceu '
       plugin_root=/volume/sam3-segmentation
       test -s "${plugin_root}/chkpts/medical_sam3.pt"
       mkdir -p "${plugin_root}/Segmentation"
-      rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}"
-      cp "/input/${INPUT_NAME}" "${plugin_root}/${INPUT_NAME}"
+      rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}" \
+        "${plugin_root}/Segmentation/${OUTPUT_OVERLAY_NAME}"
     '
 else
   docker run --rm \
     --entrypoint /bin/sh \
     -v "${VOLUME_NAME}:/volume" \
-    -v "${INPUT_DIR}:/input:ro" \
     -v "${CHECKPOINT_DIR}:/checkpoint:ro" \
     -e INPUT_NAME="${INPUT_NAME}" \
     -e CHECKPOINT_NAME="${CHECKPOINT_NAME}" \
     -e OUTPUT_NAME="${OUTPUT_NAME}" \
+    -e OUTPUT_OVERLAY_NAME="${OUTPUT_OVERLAY_NAME}" \
     "${BACKEND_IMAGE}" \
     -ceu '
       plugin_root=/volume/sam3-segmentation
       mkdir -p "${plugin_root}/chkpts" "${plugin_root}/Segmentation"
-      rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}"
-      cp "/input/${INPUT_NAME}" "${plugin_root}/${INPUT_NAME}"
+      rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}" \
+        "${plugin_root}/Segmentation/${OUTPUT_OVERLAY_NAME}"
       cp "/checkpoint/${CHECKPOINT_NAME}" "${plugin_root}/chkpts/medical_sam3.pt"
     '
 fi
 
+VALIDATION_DIR="$(mktemp -d)"
 trap cleanup EXIT
+
+log "Starting diagnostic volume service for this run's input and output"
+TRANSFER_EVENTS="${ARTIFACT_DIR}/transfers.jsonl"
+: >"${TRANSFER_EVENTS}"
+volume_server_args=(
+  --input "${INPUT_STACK}"
+  --output "${VALIDATION_DIR}/${OUTPUT_NAME}"
+  --volume "${VOLUME_NAME}"
+  --image "${BACKEND_IMAGE}"
+  --ready-file "${VALIDATION_DIR}/volume-server.json"
+  --events-file "${TRANSFER_EVENTS}"
+)
+if [[ "${OVERLAY_ANNOTATION_POINTS,,}" == "true" ]]; then
+  volume_server_args+=(--output "${VALIDATION_DIR}/${OUTPUT_OVERLAY_NAME}")
+fi
+python3 "${SCRIPT_DIR}/smoke_volume_server.py" "${volume_server_args[@]}" \
+  >"${ARTIFACT_DIR}/volume-server.log" 2>&1 &
+VOLUME_SERVER_PID=$!
+for _ in $(seq 1 50); do
+  [[ ! -s "${VALIDATION_DIR}/volume-server.json" ]] || break
+  kill -0 "${VOLUME_SERVER_PID}" 2>/dev/null || die "Diagnostic volume service failed to start"
+  sleep 0.1
+done
+[[ -s "${VALIDATION_DIR}/volume-server.json" ]] || die "Diagnostic volume service did not become ready"
+VOLUME_SERVER_PORT="$(json_value "$(cat "${VALIDATION_DIR}/volume-server.json")" port)"
+curl -fsS "http://127.0.0.1:${VOLUME_SERVER_PORT}/" >/dev/null \
+  || die "Diagnostic volume service is not reachable"
 
 log "Starting CUDA backend container: ${CONTAINER_NAME}"
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
@@ -343,7 +382,7 @@ docker run -d \
   -p "127.0.0.1:${HOST_PORT}:8686" \
   -v "${VOLUME_NAME}:/ouroboros-volume" \
   -e VOLUME_MOUNT_PATH=/ouroboros-volume \
-  -e VOLUME_SERVER_URL=http://host.docker.internal:3001 \
+  -e VOLUME_SERVER_URL="http://host.docker.internal:${VOLUME_SERVER_PORT}" \
   -e PLUGIN_GIT_SHA="${PLUGIN_GIT_SHA}" \
   -e CUDA_DEVICE_ORDINAL="${CUDA_DEVICE_ORDINAL}" \
   -e SAM3_VIDEO_STATE_PROFILE="${SAM3_VIDEO_STATE_PROFILE}" \
@@ -375,14 +414,14 @@ curl -fsS "http://127.0.0.1:${HOST_PORT}/" >/dev/null || die "Backend did not be
 
 log "Submitting VideoPredictor smoke job"
 REQUEST_BODY="$(
-  python3 - "${INPUT_NAME}" "${OUTPUT_NAME}" "${OVERLAY_ANNOTATION_POINTS}" <<'PY'
+  python3 - "${INPUT_STACK}" "${VALIDATION_DIR}/${OUTPUT_NAME}" "${OVERLAY_ANNOTATION_POINTS}" <<'PY'
 import json
 import sys
 
-input_name, output_name, overlay = sys.argv[1:4]
+input_path, output_path, overlay = sys.argv[1:4]
 print(json.dumps({
-    "file_path": f"/smoke/{input_name}",
-    "output_file": f"/smoke/{output_name}",
+    "file_path": input_path,
+    "output_file": output_path,
     "model_type": "medical_sam3",
     "predictor_type": "VideoPredictor",
     "overlay_annotation_points": overlay.lower() == "true",
@@ -443,14 +482,28 @@ docker run --rm \
   "${BACKEND_IMAGE}" \
   -ceu 'test -s "/volume/sam3-segmentation/Segmentation/${OUTPUT_NAME}"'
 
-VALIDATION_DIR="$(mktemp -d)"
-docker run --rm \
-  --entrypoint /bin/sh \
-  -v "${VOLUME_NAME}:/volume" \
-  -v "${VALIDATION_DIR}:/out" \
-  -e OUTPUT_NAME="${OUTPUT_NAME}" \
-  "${BACKEND_IMAGE}" \
-  -ceu 'cp "/volume/sam3-segmentation/Segmentation/${OUTPUT_NAME}" "/out/${OUTPUT_NAME}"'
+log "Verifying backend transfers and output returned to the host"
+python3 - "${TRANSFER_EVENTS}" "${INPUT_STACK}" "${VALIDATION_DIR}/${OUTPUT_NAME}" \
+  "${OVERLAY_ANNOTATION_POINTS}" "${VALIDATION_DIR}/${OUTPUT_OVERLAY_NAME}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+events_path, input_path, output_path, overlay, overlay_path = sys.argv[1:]
+events = [json.loads(line) for line in Path(events_path).read_text().splitlines()]
+transfers = [(event["operation"], mapping["sourcePath"], mapping["targetPath"])
+             for event in events for mapping in event["files"]]
+expected = [("copy-to-volume", input_path, ""), ("copy-to-host", output_path, "Segmentation")]
+outputs = [output_path]
+if overlay.lower() == "true":
+    expected.append(("copy-to-host", overlay_path, "Segmentation"))
+    outputs.append(overlay_path)
+if transfers != expected:
+    raise SystemExit(f"unexpected backend transfers: {transfers!r}; expected {expected!r}")
+for output in outputs:
+    if not Path(output).is_file() or Path(output).stat().st_size == 0:
+        raise SystemExit(f"backend did not return output to host: {output}")
+PY
 
 "${TIFF_VALIDATOR_PYTHON}" -c 'import numpy, tifffile' >/dev/null 2>&1 \
   || die "TIFF validation requires numpy and tifffile in ${TIFF_VALIDATOR_PYTHON}"
@@ -489,6 +542,9 @@ PY
 if [[ -n "${OUTPUT_DIR:-}" ]]; then
   mkdir -p "${OUTPUT_DIR}"
   cp "${VALIDATION_DIR}/${OUTPUT_NAME}" "${OUTPUT_DIR}/${OUTPUT_NAME}"
+  if [[ "${OVERLAY_ANNOTATION_POINTS,,}" == "true" ]]; then
+    cp "${VALIDATION_DIR}/${OUTPUT_OVERLAY_NAME}" "${OUTPUT_DIR}/${OUTPUT_OVERLAY_NAME}"
+  fi
   log "Copied output to ${OUTPUT_DIR}/${OUTPUT_NAME}"
 fi
 

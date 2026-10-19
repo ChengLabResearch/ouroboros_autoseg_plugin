@@ -6,6 +6,15 @@ pub enum PathFlavor {
     Windows,
 }
 
+impl PathFlavor {
+    fn separators(self) -> &'static [char] {
+        match self {
+            Self::Posix => &['/'],
+            Self::Windows => &['/', '\\'],
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MixedPathParts {
     pub raw: String,
@@ -15,6 +24,14 @@ pub struct MixedPathParts {
     pub flavor: PathFlavor,
 }
 
+impl MixedPathParts {
+    pub fn with_file_name(&self, file_name: &str) -> String {
+        let normalized = self.raw.trim_end_matches(self.flavor.separators());
+        let prefix = &normalized[..normalized.len() - self.file_name.len()];
+        format!("{prefix}{file_name}")
+    }
+}
+
 pub fn parse_mixed_path(raw: &str) -> Result<MixedPathParts, AppError> {
     let cleaned = raw.trim().trim_matches('"').trim_matches('\'').to_string();
     if cleaned.is_empty() {
@@ -22,10 +39,7 @@ pub fn parse_mixed_path(raw: &str) -> Result<MixedPathParts, AppError> {
     }
 
     let flavor = detect_path_flavor(&cleaned);
-    let separators: &[char] = match flavor {
-        PathFlavor::Posix => &['/'],
-        PathFlavor::Windows => &['/', '\\'],
-    };
+    let separators = flavor.separators();
     let normalized = cleaned.trim_end_matches(separators);
     let normalized = if normalized.is_empty() {
         cleaned.as_str()

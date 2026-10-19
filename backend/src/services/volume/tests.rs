@@ -71,3 +71,47 @@ fn copy_to_host_returns_upstream_message_on_error() {
         "Volume operation failed with status 502 Bad Gateway"
     );
 }
+
+#[tokio::test]
+async fn copies_can_outlast_the_clients_status_probe_timeout() {
+    use axum::{routing::post, Router};
+    use std::time::Duration;
+
+    async fn slow_copy() -> &'static str {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        "Files copied successfully."
+    }
+
+    let app = Router::new()
+        .route("/copy-to-volume", post(slow_copy))
+        .route("/copy-to-host", post(slow_copy));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let address = listener.local_addr().expect("fixture address");
+    let server = tokio::spawn(
+        axum::Server::from_tcp(listener)
+            .expect("fixture server")
+            .serve(app.into_make_service()),
+    );
+    let config = test_config(&format!("http://{address}"));
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_millis(10))
+        .build()
+        .expect("client");
+    let files = [VolumeFileMapping::new("/host/input.tif", "")];
+    let input_result = super::copy_to_volume(&client, &config, &files).await;
+    let output_result = super::copy_to_host(&client, &config, &files).await;
+    server.abort();
+
+    assert_eq!(
+        input_result.expect("input copy").message,
+        "Files copied successfully."
+    );
+    assert_eq!(
+        output_result.expect("output copy").message,
+        "Files copied successfully."
+    );
+}
