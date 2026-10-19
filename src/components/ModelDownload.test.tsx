@@ -1,12 +1,14 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import ModelDownload from './ModelDownload';
+import { ModelStatusError } from '../modelDownloads';
 import type { ModelDownloadStatus } from '../modelDownloads';
 
 function markup(status: ModelDownloadStatus | undefined, props: Partial<Parameters<typeof ModelDownload>[0]> = {}): string {
     return renderToStaticMarkup(<ModelDownload
         label="SAM3 (Medical)"
         status={status}
+        statusError={null}
         fresh
         request={{ pending: false, error: null }}
         onDownload={() => {}}
@@ -100,6 +102,18 @@ describe('model download progress', () => {
         expect(pending).toContain('Request pending');
         expect(pending).toContain('disabled=""');
         expect(pending).not.toContain('Downloading');
+    });
+
+    it('shows the initial status request failure without inventing a model download failure', () => {
+        const statusError = new ModelStatusError('unavailable', 'Model status request failed (HTTP 500). Retrying…');
+        const html = markup(undefined, { fresh: false, statusError });
+        expect(html).toContain('Model status unavailable — retrying…');
+        expect(html).not.toContain('Checking model status');
+        expect(html).not.toContain('Download failed');
+        expect(html).toContain('disabled=""');
+        const recovered = markup(download('idle'));
+        expect(recovered).toContain('Ready to download');
+        expect(recovered).not.toContain('Model status unavailable');
     });
 
     it('shows downloaded only from backend availability', () => {

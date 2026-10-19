@@ -24,7 +24,10 @@ run/job-ID flags still schedule requests and provide pre-response waiting text.
 
 The stateless `Notice` component owns message appearance, matching the main app's
 `Alert`. Page retains the task-error list and its dismissal, cap, and deduplication;
-model facilities retain their own nondismissible feedback. Existing errors keep
-error severity and `role="alert"`, including communication/request errors, while
-the reconnect message is informational. Severity does not infer job failure; the
-separate source-derived task outcome remains visible after a diagnostic is dismissed.
+model facilities retain their own nondismissible feedback. Before the first model
+snapshot, an unavailable status request displays an informational waiting/retry
+notice with its diagnostic detail; it is not suppressed during backend startup.
+Other errors keep error severity and `role="alert"`, including communication/request
+errors after a model snapshot, while the reconnect message is informational. Severity
+does not infer job failure; the separate source-derived task outcome remains visible
+after a diagnostic is dismissed.
