@@ -19,20 +19,21 @@ describe('model status notices', () => {
     it.each(['unavailable', 'http', 'invalid-response'] as const)(
         'presents %s according to snapshot availability', (kind) => {
             // Message contents do not determine visibility; the watcher owns classification.
-            const error = new ModelStatusError(kind, 'Details from the status request.');
+            const error = new ModelStatusError(kind, 'Details from the status request.\nCheckpoint path: /models/checkpoint.pt');
             const initial = markup(error, null);
             if (kind === 'unavailable') {
                 expect(initial).toBe('');
             } else {
-                expect(initial).toContain('role="alert"');
+                expect(initial).toContain('data-type="error" role="alert"');
                 expect(initial).toContain('Unable to read model download status.');
                 expect(initial).toContain(error.message);
                 expect(initial).not.toContain('Last reported progress');
             }
             const stale = markup(error, snapshot);
-            expect(stale).toContain('role="alert"');
+            expect(stale).toContain('data-type="error" role="alert"');
             expect(stale).toContain('Last reported progress is shown.');
             expect(stale).toContain(error.message);
+            expect(stale).not.toContain('Dismiss');
         },
     );
 

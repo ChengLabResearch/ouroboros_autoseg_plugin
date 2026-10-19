@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import styles from '../assets/styles.module.css';
 import { formatDownloadBytes, isActiveDownload } from '../modelDownloads';
 import type { DownloadRequestFeedback, ModelDownloadStatus } from '../modelDownloads';
+import Notice from './Notice';
 
 const stateLabels: Record<ModelDownloadStatus['state'], string> = {
     idle: 'Ready to download',
@@ -90,8 +91,8 @@ export default function ModelDownload({
                     </div>
                 </div>
             )}
-            {failed && status?.error && <div className={styles.inlineError} role="alert">{status.error}</div>}
-            {request.error && !failed && <div className={styles.inlineError} role="alert">{request.error}</div>}
+            {failed && status?.error && <Notice type="error" message={status.error} />}
+            {request.error && !failed && <Notice type="error" message={request.error} />}
         </div>
     );
 }
