@@ -1,21 +1,10 @@
 import styles from '../assets/styles.module.css';
+import { presentInitialization } from '../statusPresentation';
+import type { BackendStatus, VolumeServerState } from '../statusPresentation';
+import StatusLabel from './StatusLabel';
+export type { BackendStatus, BackendStep, VolumeServerState } from '../statusPresentation';
 export type ProgressItem = { name: string; progress: number; };
-export type BackendStep = { name: string; status: string; };
-export type BackendStatus = {
-    is_ready: boolean;
-    initialization_steps: BackendStep[];
-    start_time: number | null;
-    ready_time: number | null;
-};
 export type ErrorEntry = { id: string; message: string; };
-export type VolumeServerState = 'unchecked' | 'ok' | 'unreachable';
-
-function statusClass(status: string): string {
-    if (status === 'completed') return styles.statusCompleted;
-    if (status === 'warning' || status === 'error') return styles.statusWarning;
-    if (status === 'in_progress') return styles.statusInProgress;
-    return styles.statusPending;
-}
 
 export default function ProgressPanel({
     items,
@@ -34,45 +23,18 @@ export default function ProgressPanel({
     onDismissError?: (id: string) => void,
     volumeServer?: VolumeServerState
 }) {
-    const hasBackendError = Boolean(
-        backendStatus?.initialization_steps?.some(
-            (step) => step.status === 'error'
-        )
-    );
-    const backendLabel = connected
-        ? 'Ready'
-        : hasBackendError
-            ? 'Error'
-            : backendStatus
-                ? 'Building'
-                : 'Disconnected';
-    const backendLabelClass = connected
-        ? styles.statusCompleted
-        : hasBackendError
-            ? styles.statusWarning
-            : styles.statusPending;
+    const initialization = presentInitialization(backendStatus, connected ? volumeServer : undefined);
 
     return (
         <div className={styles.container}>
             <div className={styles.headerRow}>
                 <span className={styles.headerTitle}>PROGRESS</span>
-                <div className={styles.connectionIndicator}>
-                    <div
-                        className={`${styles.connectionDot} ${connected ? styles.connected : ''}`}
-                        title={connected ? 'Backend Connected' : 'Backend Disconnected'}
-                    />
-                    <span className={styles.connectionLabel}>
-                        {connected ? 'Connected' : 'Waiting for Server'}
-                    </span>
-                </div>
             </div>
             <div className={styles.progressContent}>
-                <div className={styles.backendStatusBlock}>
+                <section className={styles.backendStatusBlock} aria-label="Backend initialization">
                     <div className={styles.backendStatusHeader}>
-                        <span>Docker Backend</span>
-                        <span className={`${styles.backendStatusBadge} ${backendLabelClass}`}>
-                            {backendLabel}
-                        </span>
+                        <strong>Backend</strong>
+                        <StatusLabel {...initialization.summary} />
                     </div>
                     {reconnected && (
                         <div className={styles.reconnectBanner}>
@@ -80,38 +42,16 @@ export default function ProgressPanel({
                         </div>
                     )}
                     {backendStatus && (
-                        <div className={styles.backendSteps}>
-                            {backendStatus.initialization_steps.map((step) => (
-                                <div key={step.name} className={styles.backendStepRow}>
-                                    <span>{step.name}</span>
-                                    <span className={`${styles.backendStatusBadge} ${statusClass(step.status)}`}>
-                                        {step.status.replace('_', ' ')}
-                                    </span>
+                        <dl className={styles.backendSteps}>
+                            {initialization.steps.map((step) => (
+                                <div key={step.name}>
+                                    <dt>{step.name}</dt>
+                                    <dd><StatusLabel status={step.status} label={step.label} /></dd>
                                 </div>
                             ))}
-                            {connected && (
-                                <div className={styles.backendStepRow}>
-                                    <span>Volume Server</span>
-                                    <span
-                                        className={`${styles.backendStatusBadge} ${
-                                            volumeServer === 'ok'
-                                                ? styles.statusCompleted
-                                                : volumeServer === 'unreachable'
-                                                    ? styles.statusWarning
-                                                    : styles.statusPending
-                                        }`}
-                                    >
-                                        {volumeServer === 'ok'
-                                            ? 'reachable'
-                                            : volumeServer === 'unreachable'
-                                                ? 'unreachable'
-                                                : 'checking'}
-                                    </span>
-                                </div>
-                            )}
-                        </div>
+                        </dl>
                     )}
-                </div>
+                </section>
                 {errors.length > 0 && (
                     <div className={styles.errorStack}>
                         {errors.map((err) => (
