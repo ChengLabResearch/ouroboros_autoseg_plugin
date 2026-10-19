@@ -84,9 +84,9 @@ export default function ModelsPanel({ connected }: { connected: boolean }) {
             </div>
             <div className={styles.scrollContent}>
                 <div className={styles.section}>
-                    {statusError && (
+                    {statusError && snapshot && (
                         <div className={styles.inlineError} role="alert">
-                            Unable to refresh model downloads. {snapshot && 'Last reported progress is shown. '}{statusError}
+                            Unable to refresh model downloads. Last reported progress is shown. {statusError}
                         </div>
                     )}
                     <ModelDownload
