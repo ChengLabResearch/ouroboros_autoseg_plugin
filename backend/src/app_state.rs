@@ -12,6 +12,7 @@ use crate::{
     },
     error::AppError,
     inference::registry::ModelRegistry,
+    services::checkpoints::CheckpointService,
 };
 
 pub struct Sam3ModelHandle {
@@ -25,6 +26,7 @@ pub struct Sam3ModelHandle {
 pub struct AppState {
     config: Arc<AppConfig>,
     http_client: reqwest::Client,
+    checkpoints: CheckpointService,
     jobs: Arc<RwLock<HashMap<String, JobRecord>>>,
     startup_status: Arc<RwLock<StartupStatus>>,
     model_registry: Arc<Mutex<ModelRegistry>>,
@@ -37,10 +39,13 @@ impl AppState {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()?;
+        let config = Arc::new(config);
+        let checkpoints = CheckpointService::new(config.clone(), http_client.clone());
 
         Ok(Self {
-            config: Arc::new(config),
+            config,
             http_client,
+            checkpoints,
             jobs: Arc::new(RwLock::new(HashMap::new())),
             startup_status: Arc::new(RwLock::new(StartupStatus::pending())),
             model_registry: Arc::new(Mutex::new(ModelRegistry::new())),
@@ -55,6 +60,10 @@ impl AppState {
 
     pub fn http_client(&self) -> &reqwest::Client {
         &self.http_client
+    }
+
+    pub fn checkpoints(&self) -> &CheckpointService {
+        &self.checkpoints
     }
 
     pub async fn startup_status(&self) -> StartupStatus {

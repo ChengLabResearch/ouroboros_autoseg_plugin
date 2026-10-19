@@ -36,6 +36,13 @@ checkpoints under the plugin checkpoint directory, and `/process` lazy-loads
 the selected checkpoint through the Candle SAM3 path before staging input
 frames.
 
+The Models panel shows download stages and received bytes. When the source
+provides a reliable total, it also shows a percentage; otherwise the progress
+bar stays indeterminate. Reopening the panel reconnects to an active download.
+Downloads become available after the checkpoint is finalized, and failed
+downloads can be retried. See the [download status contract](backend/docs/checkpoints.md#download-status)
+for API and restart behavior.
+
 To get started with developing a plugin:
 
 **Option 1:** Clone the main repository and make a folder/repository inside of the plugins folder. Push only that folder to GitHub. 
