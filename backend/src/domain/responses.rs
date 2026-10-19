@@ -76,6 +76,46 @@ impl StartupStatus {
 pub struct ModelStatusResponse {
     pub checkpoint_dir: String,
     pub models: HashMap<String, bool>,
+    pub downloads: HashMap<String, ModelDownloadStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelDownloadState {
+    Idle,
+    Connecting,
+    Downloading,
+    Finalizing,
+    Available,
+    Failed,
+}
+
+impl ModelDownloadState {
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Connecting | Self::Downloading | Self::Finalizing
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelDownloadStatus {
+    pub state: ModelDownloadState,
+    pub bytes_received: u64,
+    pub total_bytes: Option<u64>,
+    pub error: Option<String>,
+}
+
+impl Default for ModelDownloadStatus {
+    fn default() -> Self {
+        Self {
+            state: ModelDownloadState::Idle,
+            bytes_received: 0,
+            total_bytes: None,
+            error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

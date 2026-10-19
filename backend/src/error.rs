@@ -9,6 +9,8 @@ pub enum AppError {
     #[error("{0}")]
     BadRequest(String),
     #[error("{0}")]
+    Conflict(String),
+    #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
     NotImplemented(String),
@@ -33,6 +35,10 @@ impl AppError {
         Self::NotFound(message.into())
     }
 
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::Conflict(message.into())
+    }
+
     pub fn not_implemented(message: impl Into<String>) -> Self {
         Self::NotImplemented(message.into())
     }
@@ -50,6 +56,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Internal(_) | Self::Io(_) | Self::Http(_) | Self::Json(_) => {

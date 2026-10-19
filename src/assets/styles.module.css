@@ -372,6 +372,41 @@
     margin-top: 0.75rem;
 }
 
+.modelDownloadStatus {
+    color: var(--primary-text);
+    font-family: 'Poppins', sans-serif;
+    font-size: 0.8rem;
+    margin: 0.35rem 0;
+}
+
+.modelDownloadProgress .progressLabelRow {
+    font-size: 0.8rem;
+    gap: 0.5rem;
+}
+
+.modelDownloadProgress .progressBarBg {
+    height: 0.55rem;
+    border-radius: 0.25rem;
+}
+
+.modelDownloadIndeterminate {
+    animation: modelDownloadSweep 1.5s ease-in-out infinite;
+}
+
+@keyframes modelDownloadSweep {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(290%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .modelDownloadIndeterminate {
+        animation: none;
+    }
+    .modelDownloadProgress .progressBarFill {
+        transition: none;
+    }
+}
+
 .tokenInput {
     width: 100%;
     max-width: calc(100% - 8rem);
