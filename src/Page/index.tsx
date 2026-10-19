@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import styles from '../assets/styles.module.css';
 import OptionsPanel from '../components/OptionsPanel';
-import ProgressPanel, { BackendStatus, ErrorEntry, ProgressItem, VolumeServerState } from '../components/ProgressPanel';
+import ProgressPanel, { BackendStatus, ErrorEntry, VolumeServerState } from '../components/ProgressPanel';
 import ModelsPanel from '../components/ModelsPanel';
 import { BACKEND_URL } from '../config';
 import { findRunningJob } from '../jobReconnect';
+import type { JobObservation, JobStatusRecord } from '../jobStatus';
 
 const MAX_ERRORS = 5;
 const DEDUP_WINDOW_MS = 5000;
@@ -19,7 +20,7 @@ type RunOptions = {
 };
 
 export default function SAM3Page() {
-    const [prog, setProg] = useState<ProgressItem[]>([]);
+    const [jobObservation, setJobObservation] = useState<JobObservation>(null);
     const [run, setRun] = useState(false);
     const [jobId, setJobId] = useState<string | null>(null);
     const [connected, setConnected] = useState(false);
@@ -148,11 +149,7 @@ export default function SAM3Page() {
 
     const handleRun = async (opts: RunOptions) => {
         setRun(true);
-        setProg([
-            {name: 'Transferring', progress: 0},
-            {name: 'Inference', progress: 0},
-            {name: 'Saving', progress: 0}
-        ]);
+        setJobObservation(null);
         clearStoredJobId();
         try {
             const res = await fetch(`${BACKEND_URL}/process-stack`, {
@@ -199,7 +196,7 @@ export default function SAM3Page() {
                 if (storedJobId) clearStoredJobId();
                 return;
             }
-            setProg(restored.record.steps);
+            setJobObservation({ kind: 'status', record: restored.record });
             setJobId(restored.jobId);
             setStoredJobId(restored.jobId);
             setRun(true);
@@ -217,8 +214,8 @@ export default function SAM3Page() {
                 try {
                     const res = await fetch(`${BACKEND_URL}/status/${jobId}`);
                     if(res.ok) {
-                        const data = await res.json();
-                        setProg(data.steps);
+                        const data: JobStatusRecord = await res.json();
+                        setJobObservation({ kind: 'status', record: data });
                         if(data.status === 'completed' || data.status === 'error') {
                             if (data.status === 'error') {
                                 addError(data.error ?? `${data.active_phase ?? 'Unknown'} phase failed`);
@@ -228,6 +225,10 @@ export default function SAM3Page() {
                             clearStoredJobId();
                         }
                     } else if (res.status === 404) {
+                        setJobObservation((previous) => ({
+                            kind: 'missing',
+                            lastRecord: previous?.kind === 'status' ? previous.record : previous?.lastRecord ?? null,
+                        }));
                         addError('Job disappeared from the backend before it completed.');
                         setRun(false);
                         setJobId(null);
@@ -260,7 +261,9 @@ export default function SAM3Page() {
             <div className={styles.centerArea}>
                 <div className={styles.progressArea}>
                     <ProgressPanel
-                        items={prog}
+                        jobObservation={jobObservation}
+                        isRunning={run}
+                        jobId={jobId}
                         connected={connected}
                         backendStatus={backendStatus}
                         reconnected={reconnected}

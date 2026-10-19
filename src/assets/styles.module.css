@@ -220,10 +220,47 @@
     flex: 1;
 }
 
-.progressItem { margin: 0.75rem 1rem; }
 .progressLabelRow { display: flex; justify-content: space-between; color: var(--primary-text); font-size: 1rem; margin-bottom: 0.35rem; font-family: 'Poppins', sans-serif; }
 .progressBarBg { height: 1.1rem; background: #0f1016; overflow: hidden; }
 .progressBarFill { height: 100%; background: var(--option-highlight-color); transition: width 0.3s ease-out; }
+.taskSummary,
+.taskProgressItem {
+    margin: 0.65rem 1rem;
+    width: calc(100% - 2rem);
+    color: var(--primary-text);
+}
+.taskSummary,
+.taskProgressHeading,
+.taskProgressRow {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+.taskSummary,
+.taskProgressHeading {
+    justify-content: space-between;
+}
+.taskDetail {
+    margin: 0.2rem 1rem;
+    font-size: 0.8rem;
+    color: var(--panel-header-text);
+}
+.taskProgressBar {
+    flex: 1;
+    min-width: 0;
+    height: 0.5rem;
+    background: var(--light-background);
+    border-radius: 0.25rem;
+    overflow: hidden;
+}
+.taskProgressFill {
+    height: 100%;
+    background-color: var(--progress-bar-color);
+}
+.taskProgressPercent {
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
 .backendStatusBlock {
     box-sizing: border-box;
     width: calc(100% - 2rem);
