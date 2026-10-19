@@ -1,6 +1,12 @@
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{config::AppConfig, error::AppError};
+
+// Copies include Docker startup and potentially large TIFF stacks. Keep health
+// probes on the client's short default timeout, as checkpoint downloads do.
+const VOLUME_COPY_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,7 +77,12 @@ async fn perform_operation(
     let url = config.volume_server_endpoint(path);
     let request = build_operation_request(config, files);
 
-    let response = client.post(url).json(&request).send().await?;
+    let response = client
+        .post(url)
+        .timeout(VOLUME_COPY_TIMEOUT)
+        .json(&request)
+        .send()
+        .await?;
     let status = response.status();
     let message = response.text().await.unwrap_or_default();
     if status.is_success() {

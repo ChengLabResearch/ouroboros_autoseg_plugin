@@ -33,10 +33,30 @@ include both allocations.
 ## GPU Biological-Stack Smoke
 
 Use the smoke script for the checkpoint/dataset-dependent portion of AUTO-4. It
-builds the CUDA backend target, verifies Docker GPU access, stages the input
-stack and Medical SAM3 3D checkpoint into the plugin Docker volume, submits a
-`VideoPredictor` request, polls the job, and verifies that the output mask stack
-is present.
+builds the CUDA backend target, verifies Docker GPU access, and stages the
+Medical SAM3 3D checkpoint into the plugin Docker volume. It submits real host
+input/output paths to `VideoPredictor`, polls the job, and validates the mask
+stack returned to the host through the backend's volume-transfer requests.
+
+The standalone harness starts `smoke_volume_server.py`, a diagnostic fixture
+implementing the production `/copy-to-volume` and `/copy-to-host` protocol. It
+accepts only this run's input and output paths and plugin folder. Its Docker
+adapter maps the backend's logical `ouroboros-volume` to the harness's physical
+`VOLUME_NAME`, so isolated benchmark volumes still work without production
+configuration changes. The fixture uses the already selected backend image
+and host Python standard library, listens on an ephemeral port reachable from
+the backend through `host.docker.internal`, and stops when the harness exits.
+
+Inputs are absent from the volume before submission; host output validation
+uses only files returned by the backend. The harness requires successful input
+and output transfer events in `transfers.jsonl`, including the separate overlay
+when requested. This catches regressions that manual input staging and direct
+output extraction would conceal. `volume-server.log` records fixture requests.
+Run its focused protocol tests without Docker or a GPU:
+
+```bash
+python3 -m unittest discover -s backend/scripts/tests
+```
 
 ```bash
 INPUT_STACK=local_data/psd_anno_thing.tif \
@@ -63,8 +83,9 @@ SAM3 checkpoint. A valid smoke run should:
   straightened input
 - keep normal output clean when `overlay_annotation_points` is false
 
-Each run writes a `revisions.env`, bounded `backend.log`, and synchronized
-`telemetry.csv` under `ARTIFACT_DIR` (or `OUTPUT_DIR` when set). The telemetry
+Each run writes a `revisions.env`, bounded `backend.log`, `transfers.jsonl`,
+`volume-server.log`, and synchronized `telemetry.csv` under `ARTIFACT_DIR` (or
+`OUTPUT_DIR` when set). The telemetry
 rows record elapsed time, GPU utilization, GPU memory, and container memory.
 The harness also verifies that the model-load log contains the requested CUDA
 ordinal plus the exact plugin and Candle revisions, and that every output TIFF

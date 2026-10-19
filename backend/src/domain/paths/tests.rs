@@ -34,3 +34,19 @@ fn rejects_empty_paths() {
     let error = parse_mixed_path(" '' ").expect_err("empty path should fail");
     assert_eq!(error.to_string(), "Path must not be empty");
 }
+
+#[test]
+fn replaces_file_names_using_the_original_host_path_flavor() {
+    for (original, expected) in [
+        ("/data.v1/stack.tif", "/data.v1/overlay.tif"),
+        ("/stack.tif", "/overlay.tif"),
+        ("stack.tif", "overlay.tif"),
+        (r"C:\data.v1\stack.tif", r"C:\data.v1\overlay.tif"),
+        (r"C:\stack.tif", r"C:\overlay.tif"),
+        (r"C:\data/stack.tif", r"C:\data/overlay.tif"),
+        (r"\\server\share\stack.tif", r"\\server\share\overlay.tif"),
+    ] {
+        let parsed = parse_mixed_path(original).expect("path");
+        assert_eq!(parsed.with_file_name("overlay.tif"), expected);
+    }
+}

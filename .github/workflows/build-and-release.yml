@@ -61,6 +61,10 @@ jobs:
       - name: Test frontend
         run: npm test
 
+      - name: Test diagnostic volume transfer protocol
+        if: runner.os == 'Linux'
+        run: python3 -m unittest discover -s backend/scripts/tests
+
       - name: Audit dependencies
         if: runner.os == 'Linux'
         run: npm run audit:ci
