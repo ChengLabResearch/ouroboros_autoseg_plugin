@@ -89,6 +89,7 @@ export default function ModelsPanel({ connected }: { connected: boolean }) {
                     <ModelDownload
                         label="SAM3 (Official; Authenticated)"
                         status={snapshot?.downloads.sam3}
+                        statusError={statusError}
                         fresh={fresh}
                         request={{ pending: requestControllers.current.has('sam3'), error: requestErrors.sam3 }}
                         requiresToken
@@ -107,6 +108,7 @@ export default function ModelsPanel({ connected }: { connected: boolean }) {
                     <ModelDownload
                         label="SAM3 (Medical)"
                         status={snapshot?.downloads.medical_sam3}
+                        statusError={statusError}
                         fresh={fresh}
                         request={{ pending: requestControllers.current.has('medical_sam3'), error: requestErrors.medical_sam3 }}
                         onDownload={() => { void downloadModel('medical_sam3'); }}

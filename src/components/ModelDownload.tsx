@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import styles from '../assets/styles.module.css';
 import { formatDownloadBytes, isActiveDownload } from '../modelDownloads';
-import type { DownloadRequestFeedback, ModelDownloadStatus } from '../modelDownloads';
+import type { DownloadRequestFeedback, ModelDownloadStatus, ModelStatusError } from '../modelDownloads';
 import Notice from './Notice';
 
 const stateLabels: Record<ModelDownloadStatus['state'], string> = {
@@ -16,6 +16,7 @@ const stateLabels: Record<ModelDownloadStatus['state'], string> = {
 export default function ModelDownload({
     label,
     status,
+    statusError,
     fresh,
     request,
     requiresToken = false,
@@ -25,6 +26,7 @@ export default function ModelDownload({
 }: {
     label: string;
     status: ModelDownloadStatus | undefined;
+    statusError: ModelStatusError | null;
     fresh: boolean;
     request: DownloadRequestFeedback;
     requiresToken?: boolean;
@@ -63,7 +65,8 @@ export default function ModelDownload({
                 </button>
             </div>
             <div className={styles.modelDownloadStatus} aria-live="polite">
-                {status ? `${fresh ? '' : 'Last reported: '}${stateLabels[status.state]}` : 'Checking model status…'}
+                {status ? `${fresh ? '' : 'Last reported: '}${stateLabels[status.state]}`
+                    : statusError ? 'Model status unavailable — retrying…' : 'Checking model status…'}
             </div>
             {showProgress && status && (
                 <div className={styles.modelDownloadProgress}>

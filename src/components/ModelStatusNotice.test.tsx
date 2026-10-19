@@ -22,13 +22,14 @@ describe('model status notices', () => {
             const error = new ModelStatusError(kind, 'Details from the status request.\nCheckpoint path: /models/checkpoint.pt');
             const initial = markup(error, null);
             if (kind === 'unavailable') {
-                expect(initial).toBe('');
+                expect(initial).toContain('data-type="info" role="status"');
+                expect(initial).toContain('Model status unavailable. Retrying automatically.');
             } else {
                 expect(initial).toContain('data-type="error" role="alert"');
                 expect(initial).toContain('Unable to read model download status.');
-                expect(initial).toContain(error.message);
-                expect(initial).not.toContain('Last reported progress');
             }
+            expect(initial).toContain(error.message);
+            expect(initial).not.toContain('Last reported progress');
             const stale = markup(error, snapshot);
             expect(stale).toContain('data-type="error" role="alert"');
             expect(stale).toContain('Last reported progress is shown.');
