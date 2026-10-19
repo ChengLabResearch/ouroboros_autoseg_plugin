@@ -50,12 +50,16 @@ describe('model download progress', () => {
         expect(html).not.toContain('Downloaded');
     });
 
-    it('labels stale progress and stops its animation during contact loss', () => {
-        const html = markup(download('downloading', { bytes_received: 20 }), { fresh: false });
+    it.each([null, 4096])('retains stale progress and stops animation with total %s', (total) => {
+        const html = markup(download('downloading', { bytes_received: 1024, total_bytes: total }), { fresh: false });
         expect(html).toContain('Last reported: Downloading');
         expect(html).not.toContain('modelDownloadIndeterminate');
         expect(html).toContain('aria-busy="false"');
         expect(html).toContain('disabled=""');
+        if (total !== null) {
+            expect(html).toContain('1.0 KiB / 4.0 KiB');
+            expect(html).toContain('aria-valuenow="25"');
+        }
     });
 
     it('keeps a backend download active despite a lost POST response', () => {

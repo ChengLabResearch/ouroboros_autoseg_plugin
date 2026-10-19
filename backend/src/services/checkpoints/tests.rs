@@ -1,21 +1,18 @@
 use std::{path::PathBuf, sync::Arc};
 
 use reqwest::StatusCode;
-use uuid::Uuid;
 
 use super::{
     download_failure_message, partial_download_path, prepare_download_target, CheckpointService,
 };
 use crate::{
-    config::{AppConfig, DownloadSource},
+    config::AppConfig,
     domain::{requests::DownloadRequest, responses::ModelDownloadState},
 };
 
-fn unique_temp_dir() -> PathBuf {
-    let path = std::env::temp_dir().join(format!("ouroboros-rust-phase2-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&path).expect("create temp dir");
-    path
-}
+#[path = "../../../tests/support/mod.rs"]
+mod support;
+use support::Server;
 
 fn test_config(base_url: &str, root: PathBuf) -> AppConfig {
     let plugin_name = "sam3-segmentation".to_string();
@@ -34,8 +31,8 @@ fn test_config(base_url: &str, root: PathBuf) -> AppConfig {
 
 #[tokio::test]
 async fn model_status_reports_existing_checkpoints() {
-    let root = unique_temp_dir();
-    let config = test_config("https://huggingface.co", root.clone());
+    let root = tempfile::tempdir().unwrap();
+    let config = test_config("https://huggingface.co", root.path().to_path_buf());
     std::fs::create_dir_all(&config.checkpoint_dir).expect("checkpoint dir");
     std::fs::write(config.checkpoint_dir.join("medical_sam3.pt"), b"weights")
         .expect("write checkpoint");
@@ -49,47 +46,27 @@ async fn model_status_reports_existing_checkpoints() {
 }
 
 #[tokio::test]
-async fn prepare_download_target_removes_stale_partial_file() {
-    let target_dir = unique_temp_dir();
-    let target_path = target_dir.join("weights.pt");
-    let partial_path = partial_download_path(&target_path);
-    tokio::fs::write(&partial_path, b"stale")
-        .await
-        .expect("write part");
-
-    let prepared = prepare_download_target(&target_path)
-        .await
-        .expect("prepare target");
-
-    assert_eq!(prepared, partial_path);
-    assert!(!prepared.exists());
-}
-
-#[tokio::test]
-async fn prepare_download_target_removes_stale_partial_directory() {
-    let target_dir = unique_temp_dir();
-    let target_path = target_dir.join("weights.pt");
-    let partial_path = partial_download_path(&target_path);
-    tokio::fs::create_dir_all(&partial_path)
-        .await
-        .expect("create part dir");
-
-    let prepared = prepare_download_target(&target_path)
-        .await
-        .expect("prepare target");
-
-    assert_eq!(prepared, partial_path);
-    assert!(!prepared.exists());
+async fn prepare_download_target_removes_stale_partial_files_and_directories() {
+    for directory in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let target_path = root.path().join("weights.pt");
+        let partial_path = partial_download_path(&target_path);
+        if directory {
+            tokio::fs::create_dir(&partial_path).await.unwrap();
+        } else {
+            tokio::fs::write(&partial_path, b"stale").await.unwrap();
+        }
+        let prepared = prepare_download_target(&target_path).await.unwrap();
+        assert_eq!(prepared, partial_path);
+        assert!(!prepared.exists());
+    }
 }
 
 #[tokio::test]
 async fn download_model_rejects_missing_hf_token() {
-    let root = unique_temp_dir();
-    let config = test_config("https://huggingface.co", root);
-    let client = reqwest::Client::new();
-
-    let service = CheckpointService::new(Arc::new(config), client);
-    let error = service
+    let root = tempfile::tempdir().unwrap();
+    let config = test_config("https://huggingface.co", root.path().to_path_buf());
+    let error = service(&config)
         .download_model(&DownloadRequest {
             model_type: "sam3".to_string(),
             hf_token: None,
@@ -105,15 +82,12 @@ async fn download_model_rejects_missing_hf_token() {
 
 #[tokio::test]
 async fn download_model_reports_existing_files() {
-    let root = unique_temp_dir();
-    let config = test_config("https://huggingface.co", root);
+    let root = tempfile::tempdir().unwrap();
+    let config = test_config("https://huggingface.co", root.path().to_path_buf());
     std::fs::create_dir_all(&config.checkpoint_dir).expect("checkpoint dir");
     std::fs::write(config.checkpoint_dir.join("medical_sam3.pt"), b"weights")
         .expect("write checkpoint");
-    let client = reqwest::Client::new();
-
-    let service = CheckpointService::new(Arc::new(config), client);
-    let response = service
+    let response = service(&config)
         .download_model(&DownloadRequest {
             model_type: "medical_sam3".to_string(),
             hf_token: None,
@@ -155,23 +129,11 @@ async fn download_model_uses_catalog_revision_and_preserves_checkpoint_contract(
                 (StatusCode::OK, "checkpoint fixture")
             }),
         );
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
-        listener.set_nonblocking(true).expect("nonblocking listener");
-        let address = listener.local_addr().expect("fixture address");
-        let server = tokio::spawn(
-            axum::Server::from_tcp(listener)
-                .expect("fixture server")
-                .serve(app.into_make_service()),
-        );
+        let server = Server::start(app);
         let root = tempfile::tempdir().expect("checkpoint directory");
         // Also exercise the existing trailing-slash base URL override contract.
-        let config = test_config(&format!("http://{address}/"), root.path().to_path_buf());
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .expect("client");
-        let service = CheckpointService::new(Arc::new(config.clone()), client);
+        let config = test_config(&format!("{}/", server.url), root.path().to_path_buf());
+        let service = service(&config);
         let result = service.download_model(
             &DownloadRequest {
                 model_type: model.to_string(),
@@ -179,63 +141,12 @@ async fn download_model_uses_catalog_revision_and_preserves_checkpoint_contract(
             },
         )
         .await;
-        server.abort();
 
         assert_eq!(result.expect("download from catalog source").status, "success");
         let target = config.checkpoint_dir.join(stored_name);
         assert_eq!(std::fs::read(&target).expect("published checkpoint"), b"checkpoint fixture");
         assert!(!partial_download_path(&target).exists());
         assert_eq!(service.model_status().await.expect("model status").models.get(model), Some(&true));
-    }
-}
-
-#[test]
-fn sam3_descriptor_uses_official_checkpoint() {
-    let root = unique_temp_dir();
-    let config = test_config("https://huggingface.co", root);
-    let descriptor = config
-        .model_descriptor("sam3")
-        .expect("sam3 descriptor should exist");
-
-    assert_eq!(descriptor.checkpoint_file, "sam3.pt");
-    match descriptor.download_source {
-        DownloadSource::HuggingFace {
-            repo,
-            revision,
-            filename,
-            requires_token,
-        } => {
-            assert_eq!(repo, "facebook/sam3");
-            assert_eq!(revision, "main");
-            assert_eq!(filename, "sam3.pt");
-            assert!(requires_token);
-        }
-        DownloadSource::PublicUrl(_) => panic!("sam3 should use Hugging Face"),
-    }
-}
-
-#[test]
-fn medical_sam3_descriptor_uses_public_medical_checkpoint() {
-    let root = unique_temp_dir();
-    let config = test_config("https://huggingface.co", root);
-    let descriptor = config
-        .model_descriptor("medical_sam3")
-        .expect("medical_sam3 descriptor should exist");
-
-    assert_eq!(descriptor.checkpoint_file, "medical_sam3.pt");
-    match descriptor.download_source {
-        DownloadSource::HuggingFace {
-            repo,
-            revision,
-            filename,
-            requires_token,
-        } => {
-            assert_eq!(repo, "ChongCong/Medical-SAM3");
-            assert_eq!(revision, "716c9e1fb70edbdbbe65526b781e3a60f382d6cc");
-            assert_eq!(filename, "checkpoint_3D.pt");
-            assert!(!requires_token);
-        }
-        DownloadSource::PublicUrl(_) => panic!("medical_sam3 should use Hugging Face"),
     }
 }
 
@@ -263,24 +174,23 @@ fn download_failure_message_is_actionable_without_upstream_body() {
 fn service(config: &AppConfig) -> CheckpointService {
     CheckpointService::new(
         Arc::new(config.clone()),
-        reqwest::Client::builder().no_proxy().build().unwrap(),
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap(),
     )
 }
 
 struct HttpFixture {
-    url: String,
+    server: Server,
     streams: Vec<Option<tokio::sync::mpsc::Sender<Result<Vec<u8>, std::io::Error>>>>,
-    requests: Arc<std::sync::atomic::AtomicUsize>,
-    task: tokio::task::JoinHandle<()>,
 }
 
 impl HttpFixture {
-    async fn new(lengths: &[Option<u64>]) -> Self {
+    fn new(lengths: &[Option<u64>]) -> Self {
         use axum::{body::Body, response::Response, routing::get, Router};
-        use std::{
-            collections::VecDeque,
-            sync::atomic::{AtomicUsize, Ordering},
-        };
+        use std::collections::VecDeque;
 
         let mut streams = Vec::new();
         let mut responses = VecDeque::new();
@@ -291,13 +201,9 @@ impl HttpFixture {
             responses.push_back((*length, receiver));
         }
         let responses = Arc::new(tokio::sync::Mutex::new(responses));
-        let requests = Arc::new(AtomicUsize::new(0));
-        let count = requests.clone();
         let app = Router::new().fallback(get(move || {
             let responses = responses.clone();
-            let count = count.clone();
             async move {
-                count.fetch_add(1, Ordering::SeqCst);
                 let (length, receiver) = responses
                     .lock()
                     .await
@@ -313,21 +219,9 @@ impl HttpFixture {
                 builder.body(Body::wrap_stream(stream)).unwrap()
             }
         }));
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("fixture listener");
-        listener.set_nonblocking(true).unwrap();
-        let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move {
-            axum::Server::from_tcp(listener)
-                .unwrap()
-                .serve(app.into_make_service())
-                .await
-                .unwrap();
-        });
         Self {
-            url: format!("http://{address}"),
+            server: Server::start(app),
             streams,
-            requests,
-            task,
         }
     }
 
@@ -336,12 +230,6 @@ impl HttpFixture {
         index: usize,
     ) -> tokio::sync::mpsc::Sender<Result<Vec<u8>, std::io::Error>> {
         self.streams[index].take().unwrap()
-    }
-}
-
-impl Drop for HttpFixture {
-    fn drop(&mut self) {
-        self.task.abort();
     }
 }
 
@@ -384,48 +272,11 @@ async fn wait_status(
 }
 
 #[tokio::test]
-async fn streamed_bytes_are_live_and_duplicate_cannot_replace_partial_file() {
-    use std::sync::atomic::Ordering;
-    let mut fixture = HttpFixture::new(&[Some(6)]).await;
-    let stream = fixture.stream(0);
-    let root = tempfile::tempdir().unwrap();
-    let config = test_config(&fixture.url, root.path().to_path_buf());
-    let service = service(&config);
-    let request = download(&service);
-    stream.send(Ok(b"abc".to_vec())).await.unwrap();
-    let status = wait_status(&service, |status| status.bytes_received == 3).await;
-    assert_eq!(status.state, ModelDownloadState::Downloading);
-    assert_eq!(status.total_bytes, Some(6));
-    let partial = partial_download_path(&config.checkpoint_path("medical_sam3"));
-    assert!(partial.exists());
-    let duplicate = download(&service).await.unwrap().unwrap_err();
-    assert!(matches!(duplicate, crate::error::AppError::Conflict(_)));
-    assert!(partial.exists());
-    assert_eq!(fixture.requests.load(Ordering::SeqCst), 1);
-    stream.send(Ok(b"def".to_vec())).await.unwrap();
-    drop(stream);
-    assert_eq!(request.await.unwrap().unwrap().status, "success");
-    let status = wait_status(&service, |status| {
-        status.state == ModelDownloadState::Available
-    })
-    .await;
-    assert_eq!(status.bytes_received, 6);
-    assert_eq!(status.total_bytes, Some(6));
-    assert_eq!(
-        tokio::fs::read(config.checkpoint_path("medical_sam3"))
-            .await
-            .unwrap(),
-        b"abcdef"
-    );
-    assert!(!partial.exists());
-}
-
-#[tokio::test]
 async fn chunked_download_has_unknown_total_and_outlives_cancelled_caller() {
-    let mut fixture = HttpFixture::new(&[None]).await;
+    let mut fixture = HttpFixture::new(&[None]);
     let stream = fixture.stream(0);
     let root = tempfile::tempdir().unwrap();
-    let config = test_config(&fixture.url, root.path().to_path_buf());
+    let config = test_config(&fixture.server.url, root.path().to_path_buf());
     let service = service(&config);
     let request = download(&service);
     stream.send(Ok(b"first".to_vec())).await.unwrap();
@@ -451,11 +302,11 @@ async fn chunked_download_has_unknown_total_and_outlives_cancelled_caller() {
 
 #[tokio::test]
 async fn truncated_stream_cleans_partial_retains_failure_and_can_retry() {
-    let mut fixture = HttpFixture::new(&[Some(10), Some(6)]).await;
+    let mut fixture = HttpFixture::new(&[Some(10), Some(6)]);
     let failed_stream = fixture.stream(0);
     let retry_stream = fixture.stream(1);
     let root = tempfile::tempdir().unwrap();
-    let config = test_config(&fixture.url, root.path().to_path_buf());
+    let config = test_config(&fixture.server.url, root.path().to_path_buf());
     let service = service(&config);
     let request = download(&service);
     failed_stream.send(Ok(b"abc".to_vec())).await.unwrap();
@@ -491,10 +342,10 @@ async fn truncated_stream_cleans_partial_retains_failure_and_can_retry() {
 
 #[tokio::test]
 async fn rename_failure_is_not_available_and_cleans_partial() {
-    let mut fixture = HttpFixture::new(&[Some(6)]).await;
+    let mut fixture = HttpFixture::new(&[Some(6)]);
     let stream = fixture.stream(0);
     let root = tempfile::tempdir().unwrap();
-    let config = test_config(&fixture.url, root.path().to_path_buf());
+    let config = test_config(&fixture.server.url, root.path().to_path_buf());
     let service = service(&config);
     let request = download(&service);
     stream.send(Ok(b"abc".to_vec())).await.unwrap();
@@ -515,10 +366,10 @@ async fn rename_failure_is_not_available_and_cleans_partial() {
 
 #[tokio::test]
 async fn active_writer_is_not_overridden_by_external_target_and_deleted_install_becomes_idle() {
-    let mut fixture = HttpFixture::new(&[Some(6)]).await;
+    let mut fixture = HttpFixture::new(&[Some(6)]);
     let stream = fixture.stream(0);
     let root = tempfile::tempdir().unwrap();
-    let config = test_config(&fixture.url, root.path().to_path_buf());
+    let config = test_config(&fixture.server.url, root.path().to_path_buf());
     let service = service(&config);
     let request = download(&service);
     stream.send(Ok(b"abc".to_vec())).await.unwrap();
@@ -570,12 +421,12 @@ async fn failed_flush_stays_unavailable_and_uses_owner_failure_cleanup() {
             Pin::new(&mut self.0).poll_shutdown(cx)
         }
     }
-    let mut fixture = HttpFixture::new(&[Some(3)]).await;
+    let mut fixture = HttpFixture::new(&[Some(3)]);
     let stream = fixture.stream(0);
     stream.send(Ok(b"abc".to_vec())).await.unwrap();
     drop(stream);
     let root = tempfile::tempdir().unwrap();
-    let config = test_config(&fixture.url, root.path().to_path_buf());
+    let config = test_config(&fixture.server.url, root.path().to_path_buf());
     let service = service(&config);
     let target = config.checkpoint_path("medical_sam3");
     let partial = prepare_download_target(&target).await.unwrap();
@@ -586,7 +437,12 @@ async fn failed_flush_stays_unavailable_and_uses_owner_failure_cleanup() {
             ..Default::default()
         },
     );
-    let response = service.client.get(&fixture.url).send().await.unwrap();
+    let response = service
+        .client
+        .get(&fixture.server.url)
+        .send()
+        .await
+        .unwrap();
     let mut writer = FlushFailure(tokio::fs::File::create(&partial).await.unwrap());
     let result = service
         .write_response("medical_sam3", response, &mut writer)
@@ -623,16 +479,9 @@ async fn upstream_failure_body_and_url_credentials_are_not_persisted() {
     let app = Router::new().fallback(get(
         move || async move { (StatusCode::UNAUTHORIZED, secret) },
     ));
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(
-        axum::Server::from_tcp(listener)
-            .unwrap()
-            .serve(app.into_make_service()),
-    );
+    let server = Server::start(app);
     let root = tempfile::tempdir().unwrap();
-    let config = test_config(&format!("http://{address}"), root.path().to_path_buf());
+    let config = test_config(&server.url, root.path().to_path_buf());
     let service = service(&config);
     let error = service
         .download_model(&DownloadRequest {
@@ -647,7 +496,7 @@ async fn upstream_failure_body_and_url_credentials_are_not_persisted() {
     assert!(!serialized.contains(secret));
     let network_error = service
         .client
-        .get(format!("http://{address}/{secret}"))
+        .get(format!("{}/{secret}", server.url))
         .send()
         .await
         .unwrap()
@@ -656,7 +505,6 @@ async fn upstream_failure_body_and_url_credentials_are_not_persisted() {
     assert!(!super::safe_http_error(network_error)
         .to_string()
         .contains(secret));
-    server.abort();
 }
 
 #[tokio::test]

@@ -11,34 +11,10 @@ use axum::{body::Body, http::Response, routing::get, Router};
 use futures_util::{stream, StreamExt};
 use ouroboros_autoseg_plugin_backend::{api, app_state::AppState, config::AppConfig};
 use serde_json::Value;
-use tokio::{sync::Notify, task::JoinHandle};
+use tokio::sync::Notify;
 
-struct Server {
-    url: String,
-    task: JoinHandle<()>,
-}
-
-impl Server {
-    fn start(router: Router) -> Self {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("fixture listener");
-        listener.set_nonblocking(true).expect("nonblocking");
-        let url = format!("http://{}", listener.local_addr().expect("fixture address"));
-        let task = tokio::spawn(async move {
-            axum::Server::from_tcp(listener)
-                .expect("fixture server")
-                .serve(router.into_make_service())
-                .await
-                .expect("serve fixture");
-        });
-        Self { url, task }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
+mod support;
+use support::Server;
 
 async fn wait_for_state(client: &reqwest::Client, url: &str, expected: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -129,6 +105,10 @@ async fn routed_requests_share_download_owner_and_reconnect_after_caller_disconn
         Value::Null
     );
     assert!(!target.exists());
+    assert!(
+        partial.exists(),
+        "active partial file must exist before the duplicate"
+    );
 
     let duplicate = client
         .post(format!("{}/download-model", backend.url))
@@ -153,6 +133,7 @@ async fn routed_requests_share_download_owner_and_reconnect_after_caller_disconn
     let available = wait_for_state(&client, &backend.url, "available").await;
     assert_eq!(available["models"]["medical_sam3"], true);
     assert_eq!(available["downloads"]["medical_sam3"]["bytes_received"], 6);
+    assert_eq!(available["downloads"]["medical_sam3"]["total_bytes"], 6);
     assert_eq!(
         std::fs::read(&target).expect("installed checkpoint"),
         b"abcdef"
