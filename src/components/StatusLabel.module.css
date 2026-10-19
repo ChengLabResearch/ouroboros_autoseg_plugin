@@ -1,0 +1,22 @@
+.status {
+    font-size: 0.8rem;
+    color: var(--panel-header-text);
+    text-align: right;
+}
+
+.status[data-status='running'] {
+    color: #a9ceff;
+}
+
+.status[data-status='complete'] {
+    color: #a7ddb5;
+}
+
+.status[data-status='warning'] {
+    color: #f3d18b;
+}
+
+.status[data-status='failed'],
+.status[data-status='interrupted'] {
+    color: #ffb3a8;
+}
