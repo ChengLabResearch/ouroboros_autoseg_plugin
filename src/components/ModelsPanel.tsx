@@ -2,14 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import styles from '../assets/styles.module.css';
 import { BACKEND_URL } from '../config';
 import { requestModelDownload, watchModelDownloads } from '../modelDownloads';
-import type { ModelStatusSnapshot, ModelType } from '../modelDownloads';
+import type { ModelStatusError, ModelStatusSnapshot, ModelType } from '../modelDownloads';
 import ModelDownload from './ModelDownload';
+import ModelStatusNotice from './ModelStatusNotice';
 
 export default function ModelsPanel({ connected }: { connected: boolean }) {
     const [token, setToken] = useState('');
     const [snapshot, setSnapshot] = useState<ModelStatusSnapshot | null>(null);
     const [fresh, setFresh] = useState(false);
-    const [statusError, setStatusError] = useState<string | null>(null);
+    const [statusError, setStatusError] = useState<ModelStatusError | null>(null);
     const [requestErrors, setRequestErrors] = useState<Record<ModelType, string | null>>({
         sam3: null,
         medical_sam3: null,
@@ -84,11 +85,7 @@ export default function ModelsPanel({ connected }: { connected: boolean }) {
             </div>
             <div className={styles.scrollContent}>
                 <div className={styles.section}>
-                    {statusError && snapshot && (
-                        <div className={styles.inlineError} role="alert">
-                            Unable to refresh model downloads. Last reported progress is shown. {statusError}
-                        </div>
-                    )}
+                    <ModelStatusNotice error={statusError} snapshot={snapshot} />
                     <ModelDownload
                         label="SAM3 (Official; Authenticated)"
                         status={snapshot?.downloads.sam3}

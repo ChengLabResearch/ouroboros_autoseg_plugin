@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { requestModelDownload, watchModelDownloads } from './modelDownloads';
+import { ModelStatusError, requestModelDownload, watchModelDownloads } from './modelDownloads';
 import type { ModelDownloadStatus, ModelStatusSnapshot } from './modelDownloads';
 
 function download(state: ModelDownloadStatus['state'], overrides: Partial<ModelDownloadStatus> = {}): ModelDownloadStatus {
@@ -95,7 +95,7 @@ describe('model download status polling', () => {
         });
         await vi.advanceTimersByTimeAsync(1000);
         expect(snapshot).toEqual({ downloads: body(active).downloads });
-        expect(onError).toHaveBeenCalledWith('Connection lost');
+        expect(onError).toHaveBeenCalledWith(expect.objectContaining({ kind: 'unavailable', message: 'Connection lost' }));
         await vi.advanceTimersByTimeAsync(1000);
         expect(snapshot).toEqual({ downloads: body(download('available')).downloads });
         watcher.stop();
@@ -112,7 +112,9 @@ describe('model download status polling', () => {
         const onError = vi.fn();
         const watcher = watchModelDownloads({ fetcher, backendUrl: '/api', onStatus, onError });
         await vi.advanceTimersByTimeAsync(11000);
-        expect(onError).toHaveBeenCalledWith('Model status request timed out. Retrying…');
+        expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'unavailable', message: 'Model status request timed out. Retrying…',
+        }));
         expect(onStatus).toHaveBeenCalledTimes(1);
         await vi.advanceTimersByTimeAsync(1000);
         expect(onStatus.mock.calls[onStatus.mock.calls.length - 1]?.[0].downloads.medical_sam3.state).toBe('available');
@@ -151,25 +153,64 @@ describe('model download status polling', () => {
         current.stop();
     });
 
-    it('rejects legacy-only or malformed snapshots instead of inventing download states', async () => {
-        const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ models: { sam3: true } })));
+    it.each([
+        ['legacy-only schema', JSON.stringify({ models: { sam3: true } })],
+        ['invalid download state', JSON.stringify(body(download('unknown' as ModelDownloadStatus['state'])))],
+        ['malformed JSON', '<html>Wrong endpoint</html>'],
+    ])('classifies an initial %s response as invalid and recovers on a valid snapshot', async (_name, payload) => {
+        const fetcher = vi.fn<typeof fetch>()
+            .mockResolvedValueOnce(new Response(payload))
+            .mockImplementation(async () => response());
         const onStatus = vi.fn();
         const onError = vi.fn();
         const watcher = watchModelDownloads({ fetcher, backendUrl: '/api', onStatus, onError });
         await vi.advanceTimersByTimeAsync(0);
         expect(onStatus).not.toHaveBeenCalled();
-        expect(onError.mock.calls[0][0]).toContain('did not return model download progress');
+        expect(onError.mock.calls[0][0]).toBeInstanceOf(ModelStatusError);
+        expect(onError.mock.calls[0][0]).toMatchObject({
+            kind: 'invalid-response', message: expect.stringContaining('Check that the plugin and backend versions match.'),
+        });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(onStatus).toHaveBeenCalledExactlyOnceWith({ downloads: body().downloads });
+        expect(onError).toHaveBeenCalledTimes(1);
         watcher.stop();
     });
 
-    it('reports HTTP status errors without replacing the backend snapshot', async () => {
-        const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status: 503 }));
+    it.each([
+        [401, 'http'],
+        [404, 'http'],
+        [408, 'unavailable'],
+        [429, 'unavailable'],
+        [503, 'unavailable'],
+    ] as const)('classifies HTTP %i as %s without inventing a snapshot', async (status, kind) => {
+        const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status }));
         const onStatus = vi.fn();
         const onError = vi.fn();
         const watcher = watchModelDownloads({ fetcher, backendUrl: '/api', onStatus, onError });
         await vi.advanceTimersByTimeAsync(0);
         expect(onStatus).not.toHaveBeenCalled();
-        expect(onError).toHaveBeenCalledWith('Model status request failed (HTTP 503).');
+        expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+            kind,
+            message: `Model status request failed (HTTP ${status}). ${kind === 'unavailable' ? 'Retrying…' : 'Check the backend address and logs.'}`,
+        }));
+        watcher.stop();
+    });
+
+    it.each(['connect', 'read body'])('classifies an initial failure to %s as unavailable and resumes polling', async (stage) => {
+        const fetcher = vi.fn<typeof fetch>().mockImplementationOnce(async () => {
+            if (stage === 'connect') throw new TypeError('Failed to fetch');
+            return new Response(new ReadableStream({
+                start(controller) { controller.error(new TypeError('Body transfer failed')); },
+            }));
+        }).mockImplementation(async () => response());
+        const onStatus = vi.fn();
+        const onError = vi.fn();
+        const watcher = watchModelDownloads({ fetcher, backendUrl: '/api', onStatus, onError });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(onStatus).not.toHaveBeenCalled();
+        expect(onError.mock.calls[0][0]).toMatchObject({ kind: 'unavailable' });
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(onStatus).toHaveBeenCalledExactlyOnceWith({ downloads: body().downloads });
         watcher.stop();
     });
 

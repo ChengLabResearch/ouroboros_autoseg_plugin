@@ -13,6 +13,13 @@ export type ModelStatusSnapshot = {
 
 export type DownloadRequestFeedback = { pending: boolean; error: string | null };
 
+export class ModelStatusError extends Error {
+    constructor(public readonly kind: 'unavailable' | 'http' | 'invalid-response', message: string) {
+        super(message);
+        this.name = 'ModelStatusError';
+    }
+}
+
 const modelTypes: ModelType[] = ['sam3', 'medical_sam3'];
 const downloadStates = ['idle', 'connecting', 'downloading', 'finalizing', 'available', 'failed'];
 
@@ -29,7 +36,8 @@ function parseModelStatus(value: unknown): ModelStatusSnapshot {
             && (status.total_bytes === null || (Number.isFinite(status.total_bytes) && status.total_bytes >= 0))
             && (status.error === null || typeof status.error === 'string');
     })) {
-        throw new Error('The backend did not return model download progress. Check that the plugin and backend versions match.');
+        throw new ModelStatusError('invalid-response',
+            'The backend did not return model download progress. Check that the plugin and backend versions match.');
     }
     // Legacy availability booleans are deliberately not carried into the UI.
     return { downloads };
@@ -45,7 +53,7 @@ export function watchModelDownloads({
     fetcher: typeof fetch;
     backendUrl: string;
     onStatus: (snapshot: ModelStatusSnapshot) => void;
-    onError: (message: string) => void;
+    onError: (error: ModelStatusError) => void;
     hasPendingRequest?: () => boolean;
 }): { refresh: () => void; stop: () => void } {
     let stopped = false;
@@ -69,16 +77,34 @@ export function watchModelDownloads({
         let delay = 1000;
         try {
             const response = await fetcher(`${backendUrl}/model-status`, { signal: requestController.signal });
-            if (!response.ok) throw new Error(`Model status request failed (HTTP ${response.status}).`);
-            const snapshot = parseModelStatus(await response.json());
+            if (!response.ok) {
+                // These responses can accompany startup or temporary unavailability.
+                const unavailable = response.status === 408 || response.status === 429 || response.status >= 500;
+                throw new ModelStatusError(unavailable ? 'unavailable' : 'http',
+                    `Model status request failed (HTTP ${response.status}). ${unavailable ? 'Retrying…' : 'Check the backend address and logs.'}`);
+            }
+            let payload: unknown;
+            try {
+                payload = await response.json();
+            } catch (error) {
+                if (error instanceof SyntaxError) {
+                    throw new ModelStatusError('invalid-response',
+                        'The backend returned invalid JSON for model download progress. Check that the plugin and backend versions match.');
+                }
+                // A failed body transfer is still a connection problem.
+                throw error;
+            }
+            const snapshot = parseModelStatus(payload);
             if (!stopped && requestGeneration === generation) {
                 onStatus(snapshot);
                 delay = Object.values(snapshot.downloads).some(isActiveDownload) ? 1000 : 5000;
             }
         } catch (error) {
             if (!stopped && requestGeneration === generation) {
-                onError(timedOut ? 'Model status request timed out. Retrying…'
-                    : error instanceof Error ? error.message : String(error));
+                onError(timedOut
+                    ? new ModelStatusError('unavailable', 'Model status request timed out. Retrying…')
+                    : error instanceof ModelStatusError ? error
+                        : new ModelStatusError('unavailable', error instanceof Error ? error.message : String(error)));
             }
         } finally {
             if (deadline) clearTimeout(deadline);
