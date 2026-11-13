@@ -103,6 +103,9 @@ pub fn select_best_image_mask_logits(
         .map_err(|e| AppError::internal(e.to_string()))? as usize;
     let selected_logits = mask_logits
         .i((0, query_index))
+        // Match Candle's gathered mask allocation. The pinned CPU bilinear
+        // identity path ignores view offsets; contiguous() alone keeps them.
+        .and_then(|logits| logits.force_contiguous())
         .map_err(|e| AppError::internal(e.to_string()))?;
     let selected_score = scores
         .i((0, query_index, 0))

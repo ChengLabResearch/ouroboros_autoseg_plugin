@@ -113,6 +113,11 @@ fn best_image_query_selects_mask_and_score_instead_of_slot_zero() {
     let (selected_logits, selected_score) = select_best_image_mask_logits(&logits, &scores).unwrap();
     assert_eq!(selected_score, 0.75);
     assert_eq!(selected_logits.dims(), &[2, 2]);
+    assert_eq!(
+        selected_logits.to_vec2::<f32>().unwrap(),
+        vec![vec![-100.0, 100.0], vec![-100.0, 100.0]]
+    );
+    assert_eq!(selected_logits.layout().start_offset(), 0);
     let mask = threshold_mask_logits_to_frame(&selected_logits, 4, 2, 2).unwrap();
     assert_eq!((mask.width, mask.height), (4, 2));
     assert_eq!(mask.pixels, vec![0, 0, 255, 255, 0, 0, 255, 255]);
