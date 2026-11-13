@@ -13,7 +13,7 @@ use crate::{
         candle_sam3_frame_source::StagedJpegFrameSource,
         candle_sam3_helpers::{
             build_geometry_prompt, frame_to_chw_tensor, normalize_for_sam3,
-            threshold_mask_logits_to_frame, video_frame_to_mask,
+            select_best_image_mask_logits, threshold_mask_logits_to_frame, video_frame_to_mask,
         },
         image::{FrameMask, ImageSegmenter, PositivePointPrompt},
         video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
@@ -141,9 +141,15 @@ fn run_image_inference(
     let segmentation = model
         .segment_grounding(&visual, &decoder, &fused, &geo_encoded)
         .map_err(|e| AppError::internal(e.to_string()))?;
+    let scores = model
+        .text_detection_scores(&decoder)
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let (selected_logits, selected_score) =
+        select_best_image_mask_logits(&segmentation.mask_logits, &scores)?;
+    info!(selected_score, "selected highest-scoring SAM3 image query");
 
     threshold_mask_logits_to_frame(
-        &segmentation.mask_logits,
+        &selected_logits,
         frame.width,
         frame.height,
         config.image.image_size,
