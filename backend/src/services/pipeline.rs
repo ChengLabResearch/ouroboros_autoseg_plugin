@@ -16,6 +16,7 @@ use crate::{
             annotation_samples_for_video, default_annotations, interpolated_point_for_frame,
             AnnotationPoint, VolumeShape,
         },
+        cleanup::keep_centerline_components,
         output::{write_annotation_overlay_stack, write_mask_stack_with_progress},
         preprocess::{stage_input_frames_with_progress, PreparedFrame, PreparedFrameEncoding},
         tiff_io::{inspect_volume, read_volume_frames, VolumeInput},
@@ -170,23 +171,34 @@ async fn run_prepared(
     .await?;
     report_phase(progress, JobPhase::Inference);
 
-    let masks = match request.predictor_type.as_str() {
+    let mut masks = match request.predictor_type.as_str() {
         "ImagePredictor" => run_image_predictor(handle, prepared, progress).await?,
         "VideoPredictor" => run_video_predictor(handle, prepared, progress).await?,
         _ => unreachable!("validated by ProcessRequest::validate"),
     };
 
-    save_masks(state, prepared, request, &masks, progress).await
+    save_masks(state, prepared, request, &mut masks, progress).await
 }
 
 async fn save_masks(
     state: &AppState,
     prepared: &PreparedPipelineInput,
     request: &ProcessRequest,
-    masks: &[FrameMask],
+    masks: &mut [FrameMask],
     progress: &ProgressSender,
 ) -> Result<(), AppError> {
     report_phase(progress, JobPhase::Saving);
+    if request.keep_centerline_component {
+        let stats = keep_centerline_components(masks, &prepared.annotation_points)?;
+        tracing::info!(
+            output = %request.output_file,
+            frames_changed = stats.frames_changed,
+            pixels_removed = stats.pixels_removed,
+            seed_misses = stats.seed_misses,
+            frames_without_seed = stats.frames_without_seed,
+            "centre-line component cleanup complete"
+        );
+    }
     if let Some(parent) = prepared.plan.volume_output.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }

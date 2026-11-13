@@ -53,6 +53,7 @@ fn sample_request(predictor_type: &str) -> ProcessRequest {
         model_type: "sam3".to_string(),
         predictor_type: predictor_type.to_string(),
         overlay_annotation_points: false,
+        keep_centerline_component: false,
         annotation_overlay_intensity: 127,
     }
 }
@@ -339,7 +340,7 @@ async fn save_masks_delivers_primary_and_requested_overlay_to_windows_host() {
         let prepared = prepare(&fixture.state, &request)
             .await
             .expect("prepare input");
-        let masks = vec![
+        let mut masks = vec![
             FrameMask {
                 width: 4,
                 height: 2,
@@ -355,7 +356,7 @@ async fn save_masks_delivers_primary_and_requested_overlay_to_windows_host() {
         assert!(!fixture.host_outputs.exists());
         assert!(!prepared.plan.volume_output.exists());
 
-        save_masks(&fixture.state, &prepared, &request, &masks, &progress)
+        save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
             .await
             .expect("write output before requesting host delivery");
 
@@ -419,7 +420,7 @@ async fn save_masks_propagates_host_delivery_failure_and_retains_volume_output()
     let prepared = prepare(&fixture.state, &request)
         .await
         .expect("prepare input");
-    let masks = vec![
+    let mut masks = vec![
         FrameMask {
             width: 4,
             height: 2,
@@ -429,7 +430,7 @@ async fn save_masks_propagates_host_delivery_failure_and_retains_volume_output()
     ];
     let (progress, _receiver) = crate::services::progress::channel();
 
-    let error = save_masks(&fixture.state, &prepared, &request, &masks, &progress)
+    let error = save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
         .await
         .expect_err("saving must fail when host delivery fails");
 
@@ -588,4 +589,62 @@ fn annotation_overlay_path_keeps_primary_output_clean() {
         annotation_overlay_path(Path::new("/tmp/Segmentation/segmented.tif")),
         PathBuf::from("/tmp/Segmentation/segmented_annotation_overlay.tif")
     );
+}
+
+#[test]
+fn cleanup_request_defaults_off_and_accepts_opt_in() {
+    let mut json = json!({
+        "file_path": "input.tif", "output_file": "output.tif",
+        "model_type": "sam3", "predictor_type": "ImagePredictor"
+    });
+    let request: ProcessRequest = serde_json::from_value(json.clone()).unwrap();
+    assert!(!request.keep_centerline_component);
+    json["keep_centerline_component"] = json!(true);
+    let request: ProcessRequest = serde_json::from_value(json).unwrap();
+    assert!(request.keep_centerline_component);
+}
+
+#[tokio::test]
+async fn cleanup_applies_to_both_predictors_before_primary_and_overlay_delivery() {
+    for predictor in ["ImagePredictor", "VideoPredictor"] {
+        for enabled in [false, true] {
+            let fixture = VolumeFixture::start(
+                Some(r#"{"annotation_points": [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]}"#),
+                None,
+            );
+            let mut request = sample_request(predictor);
+            request.keep_centerline_component = enabled;
+            request.overlay_annotation_points = true;
+            let prepared = prepare(&fixture.state, &request).await.unwrap();
+            let mut masks = vec![
+                FrameMask {
+                    width: 4,
+                    height: 2,
+                    pixels: vec![255, 0, 0, 0, 0, 0, 0, 255],
+                };
+                2
+            ];
+            let (progress, _receiver) = crate::services::progress::channel();
+            save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
+                .await
+                .unwrap();
+            let output = read_volume_frames(&fixture.host_outputs.join("segmented.tif"))
+                .await
+                .unwrap();
+            let overlay = read_volume_frames(
+                &fixture
+                    .host_outputs
+                    .join("segmented_annotation_overlay.tif"),
+            )
+            .await
+            .unwrap();
+            for frame in 0..2 {
+                assert_eq!(output[frame].pixels, masks[frame].pixels);
+                assert_eq!(output[frame].pixels[0], 255);
+                assert_eq!(output[frame].pixels[7], if enabled { 0 } else { 255 });
+                assert_eq!(overlay[frame].pixels[0], 127);
+                assert_eq!(overlay[frame].pixels[7], output[frame].pixels[7]);
+            }
+        }
+    }
 }

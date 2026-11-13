@@ -15,6 +15,8 @@ pub struct ProcessRequest {
     pub model_type: String,
     pub predictor_type: String,
     #[serde(default)]
+    pub keep_centerline_component: bool,
+    #[serde(default)]
     pub overlay_annotation_points: bool,
     #[serde(default = "default_annotation_overlay_intensity")]
     pub annotation_overlay_intensity: u8,

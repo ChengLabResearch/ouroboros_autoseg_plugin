@@ -7,6 +7,7 @@ type SubmitPayload = {
     modelType: string;
     predictor_type: string;
     overlayAnnotationPoints: boolean;
+    keepCenterlineComponent: boolean;
 };
 
 type Props = {
@@ -20,6 +21,7 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const [model, setModel] = useState('sam3');
     const [predictor, setPredictor] = useState('ImagePredictor');
     const [overlayAnnotationPoints, setOverlayAnnotationPoints] = useState(false);
+    const [keepCenterlineComponent, setKeepCenterlineComponent] = useState(false);
     const inputFileRef = useRef<HTMLInputElement | null>(null);
     const outputFileRef = useRef<HTMLInputElement | null>(null);
 
@@ -284,7 +286,8 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             outputFile: outFp,
                             modelType: model,
                             predictor_type: predictor,
-                            overlayAnnotationPoints
+                            overlayAnnotationPoints,
+                            keepCenterlineComponent
                         })} 
                         disabled={!canRun}
                         title="Run Segmentation"
@@ -347,6 +350,23 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             </select>
                         </div>
                     </div>
+
+                    <div className={styles.row}>
+                        <label className={styles.label} htmlFor="keep-centerline-component">Keep Centre-line Component</label>
+                        <div className={styles.inputContainer}>
+                            <input
+                                id="keep-centerline-component"
+                                type="checkbox"
+                                checked={keepCenterlineComponent}
+                                onChange={(e) => setKeepCenterlineComponent(e.target.checked)}
+                                aria-describedby="centerline-component-help"
+                            />
+                        </div>
+                    </div>
+                    <p id="centerline-component-help">
+                        Keeps one connected region per slice. Separate branches or folds may be removed.
+                        If no foreground is within 10 pixels of the centre line, the slice is unchanged.
+                    </p>
 
                     <div className={styles.row}>
                         <span className={styles.label}>Draw Prompts</span>
