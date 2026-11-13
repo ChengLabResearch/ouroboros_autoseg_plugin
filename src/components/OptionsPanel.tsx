@@ -8,6 +8,7 @@ type SubmitPayload = {
     predictor_type: string;
     overlayAnnotationPoints: boolean;
     keepCenterlineComponent: boolean;
+    maxPromptGap: number | null;
 };
 
 type Props = {
@@ -22,6 +23,8 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const [predictor, setPredictor] = useState('ImagePredictor');
     const [overlayAnnotationPoints, setOverlayAnnotationPoints] = useState(false);
     const [keepCenterlineComponent, setKeepCenterlineComponent] = useState(false);
+    const [maxPromptGap, setMaxPromptGap] = useState('');
+    const [promptGapBadInput, setPromptGapBadInput] = useState(false);
     const inputFileRef = useRef<HTMLInputElement | null>(null);
     const outputFileRef = useRef<HTMLInputElement | null>(null);
 
@@ -270,7 +273,11 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
         };
     }, []);
 
-    const canRun = !isRunning && fp && outFp;
+    const videoPredictor = predictor === 'VideoPredictor';
+    const gapValue = Number(maxPromptGap);
+    const validPromptGap = !promptGapBadInput && (maxPromptGap === '' ||
+        (Number.isSafeInteger(gapValue) && gapValue > 0));
+    const canRun = !isRunning && fp && outFp && (!videoPredictor || validPromptGap);
 
     return (
         <div className={styles.container}>
@@ -287,7 +294,8 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             modelType: model,
                             predictor_type: predictor,
                             overlayAnnotationPoints,
-                            keepCenterlineComponent
+                            keepCenterlineComponent,
+                            maxPromptGap: videoPredictor && maxPromptGap !== '' ? gapValue : null
                         })} 
                         disabled={!canRun}
                         title="Run Segmentation"
@@ -350,6 +358,38 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             </select>
                         </div>
                     </div>
+
+                    {videoPredictor && <>
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="max-prompt-gap">Max Prompt Gap (slices)</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="max-prompt-gap"
+                                    className={styles.input}
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    placeholder="Off"
+                                    value={maxPromptGap}
+                                    onChange={(e) => {
+                                        setMaxPromptGap(e.target.value);
+                                        setPromptGapBadInput(e.target.validity.badInput);
+                                    }}
+                                    aria-invalid={!validPromptGap}
+                                    aria-describedby="prompt-gap-help"
+                                />
+                            </div>
+                        </div>
+                        <p id="prompt-gap-help">
+                            Leave blank to keep the original prompts. A positive integer adds
+                            interpolated prompts only between existing prompts; leading and trailing
+                            slices are unchanged. Small gaps retain more tracker states and use more
+                            memory. Added positive points force the traced location into the mask,
+                            including off-target tissue if the trace misses the lumen. Draw Prompts
+                            marks added prompts with hollow diamonds.
+                        </p>
+                        {!validPromptGap && <p role="alert">Enter a positive whole number of slices, or leave blank to turn this off.</p>}
+                    </>}
 
                     <div className={styles.row}>
                         <label className={styles.label} htmlFor="keep-centerline-component">Keep Centre-line Component</label>

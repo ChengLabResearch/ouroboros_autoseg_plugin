@@ -28,3 +28,20 @@ Missing `annotation_points` metadata means the plugin may use its configured
 fallback center prompts. Present but malformed `annotation_points` metadata is a
 bad request and must not silently fall back, because that would hide an invalid
 Ouroboros-to-plugin handoff.
+
+VideoPredictor can add prompts with the optional `max_prompt_gap` request field
+(slices). Omitted, `null`, or `0` keeps the original prompts. A positive integer
+splits gaps between consecutive prompted frames into evenly spaced intervals no
+larger than that value, rounding to the nearest frame and interpolating x/y from
+the original annotations. Existing annotations remain unchanged, including
+multiple points that round to the same frame. The same option applies to fallback
+center prompts. It has no effect on ImagePredictor.
+
+Only internal gaps are filled: no prompts are added before the first or after the
+last prompted frame. Video propagation remains forward-only. The job log reports
+the added count. With **Draw Prompts** enabled, added prompt frames have hollow
+diamond markers; other frames retain the existing star markers.
+
+Smaller gaps retain more conditioning states and use more memory. Added positive
+points force their interpolated location into the mask, including off-target
+tissue if the trace misses the lumen.

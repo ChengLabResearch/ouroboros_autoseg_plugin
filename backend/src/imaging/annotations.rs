@@ -1,10 +1,25 @@
 use crate::inference::video::VideoFramePrompt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationOrigin {
+    Metadata,
+    Fallback,
+    GapFill,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnnotationPoint {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    pub origin: AnnotationOrigin,
+}
+
+impl AnnotationPoint {
+    pub fn video_frame_index(&self, frame_count: usize) -> Option<usize> {
+        let frame_index = self.z.round() as isize;
+        (frame_index >= 0 && (frame_index as usize) < frame_count).then_some(frame_index as usize)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -28,6 +43,7 @@ pub fn default_annotations(shape: VolumeShape, interval: usize) -> Vec<Annotatio
             x: center_x,
             y: center_y,
             z: frame as f32,
+            origin: AnnotationOrigin::Fallback,
         })
         .collect::<Vec<_>>();
 
@@ -35,6 +51,7 @@ pub fn default_annotations(shape: VolumeShape, interval: usize) -> Vec<Annotatio
         x: center_x,
         y: center_y,
         z: (shape.frames - 1) as f32,
+        origin: AnnotationOrigin::Fallback,
     });
     points
 }
@@ -49,12 +66,11 @@ pub fn annotation_samples_for_video(
     > = std::collections::BTreeMap::new();
 
     for point in points {
-        let frame_index = point.z.round() as isize;
-        if frame_index < 0 || frame_index as usize >= frame_count {
+        let Some(frame_index) = point.video_frame_index(frame_count) else {
             continue;
-        }
+        };
 
-        grouped.entry(frame_index as usize).or_default().push(
+        grouped.entry(frame_index).or_default().push(
             crate::inference::image::PositivePointPrompt {
                 x: point.x,
                 y: point.y,
@@ -69,6 +85,45 @@ pub fn annotation_samples_for_video(
             points,
         })
         .collect()
+}
+
+/// Add only internal video prompt gaps. Endpoints and existing points are unchanged.
+pub fn fill_prompt_gaps(
+    points: &mut Vec<AnnotationPoint>,
+    frame_count: usize,
+    max_gap: Option<usize>,
+) -> usize {
+    let Some(max_gap) = max_gap.filter(|gap| *gap > 0) else {
+        return 0;
+    };
+    let frames = points
+        .iter()
+        .filter_map(|point| point.video_frame_index(frame_count))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut added = Vec::new();
+    for pair in frames.windows(2) {
+        let gap = pair[1] - pair[0];
+        let segments = gap.div_ceil(max_gap);
+        for step in 1..segments {
+            // Integer round-to-nearest avoids floating-point frame collisions.
+            let offset =
+                ((gap as u128 * step as u128 + segments as u128 / 2) / segments as u128) as usize;
+            let frame_index = pair[0] + offset;
+            if let Some(point) = interpolated_point_for_frame(points, frame_index) {
+                added.push(AnnotationPoint {
+                    x: point.x,
+                    y: point.y,
+                    z: frame_index as f32,
+                    origin: AnnotationOrigin::GapFill,
+                });
+            }
+        }
+    }
+    let count = added.len();
+    points.extend(added);
+    count
 }
 
 pub fn interpolated_point_for_frame(

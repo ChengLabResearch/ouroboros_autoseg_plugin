@@ -3,8 +3,8 @@ use std::path::Path;
 use crate::{
     error::AppError,
     imaging::{
-        annotations::{interpolated_point_for_frame, AnnotationPoint},
-        overlay::draw_annotation_star,
+        annotations::{interpolated_point_for_frame, AnnotationOrigin, AnnotationPoint},
+        overlay::draw_annotation_marker,
         tiff_io::{write_tiff_pages, WritableTiffPage},
     },
     inference::image::FrameMask,
@@ -69,13 +69,21 @@ pub async fn write_annotation_overlay_stack(
     let mut overlay_masks = masks.to_vec();
     for (frame_index, mask) in overlay_masks.iter_mut().enumerate() {
         if let Some(point) = interpolated_point_for_frame(annotation_points, frame_index) {
-            draw_annotation_star(
+            let origin = annotation_points
+                .iter()
+                .find(|annotation| {
+                    annotation.origin == AnnotationOrigin::GapFill
+                        && annotation.video_frame_index(masks.len()) == Some(frame_index)
+                })
+                .map_or(AnnotationOrigin::Metadata, |annotation| annotation.origin);
+            draw_annotation_marker(
                 &mut mask.pixels,
                 mask.width,
                 mask.height,
                 point.x,
                 point.y,
                 intensity,
+                origin,
             );
         }
     }

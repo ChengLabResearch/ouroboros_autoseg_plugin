@@ -14,6 +14,7 @@ use crate::{
     config::AppConfig,
     domain::requests::ProcessRequest,
     imaging::{
+        annotations::{annotation_samples_for_video, AnnotationOrigin},
         preprocess::PreparedFrameEncoding,
         tiff_io::{read_volume_frames, write_tiff_pages, WritableTiffPage},
     },
@@ -52,6 +53,7 @@ fn sample_request(predictor_type: &str) -> ProcessRequest {
         output_file: r#"/host/output/segmented.tif"#.to_string(),
         model_type: "sam3".to_string(),
         predictor_type: predictor_type.to_string(),
+        max_prompt_gap: None,
         overlay_annotation_points: false,
         keep_centerline_component: false,
         annotation_overlay_intensity: 127,
@@ -255,6 +257,11 @@ async fn prepare_uses_metadata_annotations_and_video_jpeg_targets() {
     assert_eq!(prepared.annotation_points.len(), 2);
     assert_eq!(prepared.annotation_points[0].x, 1.0);
     assert_eq!(prepared.annotation_points[1].y, 4.0);
+    assert!(prepared.volume.annotation_points.is_none());
+    assert!(prepared
+        .annotation_points
+        .iter()
+        .all(|point| point.origin == AnnotationOrigin::Metadata));
     assert_eq!(prepared.staged_frames.len(), 2);
     assert_eq!(
         prepared.staged_frames[0].encoding,
@@ -264,6 +271,93 @@ async fn prepare_uses_metadata_annotations_and_video_jpeg_targets() {
         prepared.staged_frames[0].target,
         plugin_root.join("input-stack_temp").join("0")
     );
+}
+
+#[tokio::test]
+async fn prepare_fills_video_gaps_after_metadata_or_fallback_and_image_requests_are_unchanged() {
+    for (metadata, predictor, max_gap, expected_frames, expected_added) in [
+        (true, "VideoPredictor", None, vec![2, 8], 0),
+        (true, "VideoPredictor", Some(0), vec![2, 8], 0),
+        (true, "VideoPredictor", Some(3), vec![2, 5, 8], 1),
+        (true, "ImagePredictor", Some(3), vec![2, 8], 0),
+        (false, "VideoPredictor", Some(3), vec![0, 3, 5, 8, 10], 3),
+        (false, "ImagePredictor", Some(3), vec![0, 10], 0),
+    ] {
+        let fixture = VolumeFixture::start(None, None);
+        let description =
+            metadata.then_some(r#"{"annotation_points": [[2.0, 2.0, 2.0], [6.0, 6.0, 8.0]]}"#);
+        let pages = (0..11)
+            .map(|index| WritableTiffPage {
+                width: 9,
+                height: 9,
+                channels: 1,
+                pixels: vec![index; 81],
+                description: if index == 0 {
+                    description.map(str::to_owned)
+                } else {
+                    None
+                },
+            })
+            .collect::<Vec<_>>();
+        write_tiff_pages(&fixture.host_input, &pages).expect("write annotated stack");
+        let mut request = sample_request(predictor);
+        request.max_prompt_gap = max_gap;
+
+        let prepared = prepare(&fixture.state, &request)
+            .await
+            .expect("prepare prompts");
+        assert!(
+            prepared.volume.annotation_points.is_none(),
+            "prepared annotations have one owner"
+        );
+        let prompts = annotation_samples_for_video(&prepared.annotation_points, 11);
+        assert_eq!(
+            prompts
+                .iter()
+                .map(|prompt| prompt.frame_index)
+                .collect::<Vec<_>>(),
+            expected_frames
+        );
+        assert_eq!(
+            prepared
+                .annotation_points
+                .iter()
+                .filter(|point| point.origin == AnnotationOrigin::GapFill)
+                .count(),
+            expected_added
+        );
+        assert_eq!(
+            prepared.annotation_points[0].origin,
+            if metadata {
+                AnnotationOrigin::Metadata
+            } else {
+                AnnotationOrigin::Fallback
+            }
+        );
+        if metadata {
+            assert_eq!(
+                (
+                    prepared.annotation_points[0].x,
+                    prepared.annotation_points[0].z
+                ),
+                (2.0, 2.0)
+            );
+            assert_eq!(
+                (
+                    prepared.annotation_points[1].y,
+                    prepared.annotation_points[1].z
+                ),
+                (6.0, 8.0)
+            );
+        }
+        if expected_added > 0 {
+            let middle = prompts
+                .iter()
+                .find(|prompt| prompt.frame_index == 5)
+                .unwrap();
+            assert_eq!((middle.points[0].x, middle.points[0].y), (4.0, 4.0));
+        }
+    }
 }
 
 #[tokio::test]

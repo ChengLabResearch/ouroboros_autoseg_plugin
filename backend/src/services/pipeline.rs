@@ -13,8 +13,8 @@ use crate::{
     error::AppError,
     imaging::{
         annotations::{
-            annotation_samples_for_video, default_annotations, interpolated_point_for_frame,
-            AnnotationPoint, VolumeShape,
+            annotation_samples_for_video, default_annotations, fill_prompt_gaps,
+            interpolated_point_for_frame, AnnotationPoint, VolumeShape,
         },
         cleanup::keep_centerline_components,
         output::{write_annotation_overlay_stack, write_mask_stack_with_progress},
@@ -101,9 +101,9 @@ pub async fn prepare(
         &plan.copy_to_volume_mappings(),
     )
     .await?;
-    let volume = inspect_volume(&plan.volume_source).await?;
+    let mut volume = inspect_volume(&plan.volume_source).await?;
     let frames = read_volume_frames(&plan.volume_source).await?;
-    let annotation_points = volume.annotation_points.clone().unwrap_or_else(|| {
+    let mut annotation_points = volume.annotation_points.take().unwrap_or_else(|| {
         default_annotations(
             VolumeShape {
                 frames: volume.geometry.frames,
@@ -113,6 +113,19 @@ pub async fn prepare(
             state.config().fallback_annotation_interval,
         )
     });
+    if request.predictor_type == "VideoPredictor" {
+        let added_prompts = fill_prompt_gaps(
+            &mut annotation_points,
+            volume.geometry.frames,
+            request.max_prompt_gap,
+        );
+        tracing::info!(
+            file_path = %request.file_path,
+            max_prompt_gap = ?request.max_prompt_gap,
+            added_prompts,
+            "Prepared video annotation prompts"
+        );
+    }
     let frame_name_width = frame_name_width(frames.len());
     let encoding = stage_encoding(&request.predictor_type)?;
     let staged_frames = frames

@@ -1,4 +1,5 @@
 use super::*;
+use crate::imaging::annotations::AnnotationOrigin;
 
 fn mask(width: usize, height: usize, foreground: &[(usize, usize)]) -> FrameMask {
     let mut pixels = vec![0; width * height];
@@ -15,7 +16,12 @@ fn mask(width: usize, height: usize, foreground: &[(usize, usize)]) -> FrameMask
 fn clean(mask: &mut FrameMask, x: f32, y: f32) -> CleanupStats {
     keep_centerline_components(
         std::slice::from_mut(mask),
-        &[AnnotationPoint { x, y, z: 0.0 }],
+        &[AnnotationPoint {
+            x,
+            y,
+            z: 0.0,
+            origin: AnnotationOrigin::Metadata,
+        }],
     )
     .expect("cleanup")
 }
@@ -84,6 +90,7 @@ fn diagonal_bridge_is_connected_but_frames_are_independent() {
             x: 0.0,
             y: 0.0,
             z: 0.0,
+            origin: AnnotationOrigin::Metadata,
         }],
     )
     .unwrap();
@@ -119,11 +126,13 @@ fn seeds_follow_existing_interpolation_and_default_annotation_fallback() {
             x: 0.0,
             y: 0.0,
             z: 0.0,
+            origin: AnnotationOrigin::Metadata,
         },
         AnnotationPoint {
             x: 24.0,
             y: 0.0,
             z: 2.0,
+            origin: AnnotationOrigin::Metadata,
         },
     ];
     keep_centerline_components(&mut frames, &points).unwrap();
@@ -169,7 +178,8 @@ fn invalid_mask_geometry_fails_before_indexing() {
             &[AnnotationPoint {
                 x: 0.0,
                 y: 0.0,
-                z: 0.0
+                z: 0.0,
+                origin: AnnotationOrigin::Metadata
             }]
         )
         .is_err());
