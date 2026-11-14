@@ -7,7 +7,10 @@ use std::{
 
 use serde_json::Value;
 
-use crate::{error::AppError, imaging::annotations::AnnotationPoint};
+use crate::{
+    error::AppError,
+    imaging::annotations::{AnnotationOrigin, AnnotationPoint},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageFrame {
@@ -378,6 +381,7 @@ fn parse_annotation_points(
             )));
         }
         points.push(AnnotationPoint {
+            origin: AnnotationOrigin::Metadata,
             x: parse_annotation_coordinate(&values[0], row_index, "x")?,
             y: parse_annotation_coordinate(&values[1], row_index, "y")?,
             z: parse_annotation_coordinate(&values[2], row_index, "z")?,

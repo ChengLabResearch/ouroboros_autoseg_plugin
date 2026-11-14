@@ -3,8 +3,8 @@ use candle_core::{Device, Tensor};
 use crate::{imaging::tiff_io::ImageFrame, inference::image::PositivePointPrompt};
 
 use super::{
-    build_geometry_prompt, frame_to_chw_tensor, first_frame_dimensions, normalize_for_sam3,
-    threshold_mask_logits_to_frame, video_frame_to_mask,
+    build_geometry_prompt, first_frame_dimensions, frame_to_chw_tensor, normalize_for_sam3,
+    select_best_image_mask_logits, threshold_mask_logits_to_frame, video_frame_to_mask,
 };
 
 #[test]
@@ -97,16 +97,64 @@ fn build_geometry_prompt_empty_prompts_returns_default() {
 }
 
 #[test]
+fn best_image_query_selects_mask_and_score_instead_of_slot_zero() {
+    let logits = Tensor::from_vec(
+        vec![
+            100.0f32, 100.0, 100.0, 100.0, // Query 0: full mask.
+            -100.0, 100.0, -100.0, 100.0, // Query 1: right column.
+            100.0, -100.0, 100.0, -100.0, // Query 2: left column.
+        ],
+        (1, 3, 2, 2),
+        &Device::Cpu,
+    )
+    .unwrap();
+    let scores = Tensor::from_vec(vec![0.25f32, 0.75, 0.5], (1, 3, 1), &Device::Cpu).unwrap();
+
+    let (selected_logits, selected_score) = select_best_image_mask_logits(&logits, &scores).unwrap();
+    assert_eq!(selected_score, 0.75);
+    assert_eq!(selected_logits.dims(), &[2, 2]);
+    assert_eq!(
+        selected_logits.to_vec2::<f32>().unwrap(),
+        vec![vec![-100.0, 100.0], vec![-100.0, 100.0]]
+    );
+    assert_eq!(selected_logits.layout().start_offset(), 0);
+    let mask = threshold_mask_logits_to_frame(&selected_logits, 4, 2, 2).unwrap();
+    assert_eq!((mask.width, mask.height), (4, 2));
+    assert_eq!(mask.pixels, vec![0, 0, 255, 255, 0, 0, 255, 255]);
+}
+
+#[test]
+fn best_image_query_ties_follow_candle_argmax() {
+    let logits = Tensor::from_vec(vec![1.0f32, 2.0, 3.0], (1, 3, 1, 1), &Device::Cpu).unwrap();
+    let scores = Tensor::from_vec(vec![0.25f32, 0.75, 0.75], (1, 3, 1), &Device::Cpu).unwrap();
+    let (selected_logits, selected_score) = select_best_image_mask_logits(&logits, &scores).unwrap();
+    assert_eq!(selected_score, 0.75);
+    // Candle's argmax keeps the first of the tied maximum scores.
+    assert_eq!(selected_logits.to_vec2::<f32>().unwrap(), vec![vec![2.0]]);
+}
+
+#[test]
+fn best_image_query_preserves_mask_below_detection_confidence_threshold() {
+    let logits = Tensor::from_vec(vec![-100.0f32, 100.0], (1, 2, 1, 1), &Device::Cpu).unwrap();
+    let scores = Tensor::from_vec(vec![0.01f32, 0.1], (1, 2, 1), &Device::Cpu).unwrap();
+
+    let (selected_logits, selected_score) = select_best_image_mask_logits(&logits, &scores).unwrap();
+    assert_eq!(selected_score, 0.1);
+    let mask = threshold_mask_logits_to_frame(&selected_logits, 1, 1, 1).unwrap();
+    assert_eq!(mask.pixels, vec![255]);
+}
+
+#[test]
 fn threshold_mask_logits_positive_becomes_255() {
     // Large positive logit → sigmoid ≈ 1 → 255
-    let logits = Tensor::from_vec(vec![100.0f32], (1, 1, 1, 1), &Device::Cpu).unwrap();
+    let logits = Tensor::from_vec(vec![100.0f32], (1, 1), &Device::Cpu).unwrap();
     let mask = threshold_mask_logits_to_frame(&logits, 1, 1, 1).unwrap();
     assert_eq!(mask.pixels, vec![255]);
 }
 
 #[test]
 fn threshold_mask_logits_negative_becomes_0() {
-    let logits = Tensor::from_vec(vec![-100.0f32], (1, 1, 1, 1), &Device::Cpu).unwrap();
+    let logits = Tensor::from_vec(vec![-100.0f32], (1, 1), &Device::Cpu).unwrap();
     let mask = threshold_mask_logits_to_frame(&logits, 1, 1, 1).unwrap();
     assert_eq!(mask.pixels, vec![0]);
 }
@@ -114,8 +162,7 @@ fn threshold_mask_logits_negative_becomes_0() {
 #[test]
 fn threshold_mask_logits_mixed_2x2() {
     let logits =
-        Tensor::from_vec(vec![100.0f32, -100.0, -100.0, 100.0], (1, 1, 2, 2), &Device::Cpu)
-            .unwrap();
+        Tensor::from_vec(vec![100.0f32, -100.0, -100.0, 100.0], (2, 2), &Device::Cpu).unwrap();
     let mask = threshold_mask_logits_to_frame(&logits, 2, 2, 2).unwrap();
     assert_eq!(mask.width, 2);
     assert_eq!(mask.height, 2);
@@ -124,7 +171,7 @@ fn threshold_mask_logits_mixed_2x2() {
 
 #[test]
 fn threshold_mask_logits_upsample_to_larger_output() {
-    let logits = Tensor::from_vec(vec![50.0f32], (1, 1, 1, 1), &Device::Cpu).unwrap();
+    let logits = Tensor::from_vec(vec![50.0f32], (1, 1), &Device::Cpu).unwrap();
     let mask = threshold_mask_logits_to_frame(&logits, 4, 4, 4).unwrap();
     assert_eq!(mask.pixels.len(), 16);
     assert!(mask.pixels.iter().all(|&v| v == 255));

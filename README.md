@@ -43,6 +43,22 @@ Downloads become available after the checkpoint is finalized, and failed
 downloads can be retried. See the [download status contract](backend/docs/checkpoints.md#download-status)
 for API and restart behavior.
 
+### Centre-line mask cleanup
+
+The optional **Keep Centre-line Component** control (`keep_centerline_component`,
+default `false`) applies to both predictors. Before saving, it keeps the
+8-connected foreground region containing the interpolated annotation point in
+each 2D slice. Coordinates are rounded and clamped to the image. If that pixel
+is background, the nearest foreground pixel within a 10-pixel Euclidean radius
+is used (row-major order breaks ties). If no seed is available, the slice is
+left unchanged. Missing metadata uses the existing centre-point annotations.
+
+Separate branches or folds without the seed are removed; connected leakage
+into neighbouring tissue remains. The output and optional annotation overlay
+both use the cleaned masks; a raw stack is not saved. The job log reports
+changed frames, removed pixels, background/missing seed counts (including
+recovered seeds), and frames left unchanged because no seed was found.
+
 To get started with developing a plugin:
 
 **Option 1:** Clone the main repository and make a folder/repository inside of the plugins folder. Push only that folder to GitHub. 

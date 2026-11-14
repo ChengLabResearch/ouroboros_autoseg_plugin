@@ -14,6 +14,7 @@ use crate::{
     config::AppConfig,
     domain::requests::ProcessRequest,
     imaging::{
+        annotations::{annotation_samples_for_video, AnnotationOrigin},
         preprocess::PreparedFrameEncoding,
         tiff_io::{read_volume_frames, write_tiff_pages, WritableTiffPage},
     },
@@ -52,7 +53,9 @@ fn sample_request(predictor_type: &str) -> ProcessRequest {
         output_file: r#"/host/output/segmented.tif"#.to_string(),
         model_type: "sam3".to_string(),
         predictor_type: predictor_type.to_string(),
+        max_prompt_gap: None,
         overlay_annotation_points: false,
+        keep_centerline_component: false,
         annotation_overlay_intensity: 127,
     }
 }
@@ -254,6 +257,11 @@ async fn prepare_uses_metadata_annotations_and_video_jpeg_targets() {
     assert_eq!(prepared.annotation_points.len(), 2);
     assert_eq!(prepared.annotation_points[0].x, 1.0);
     assert_eq!(prepared.annotation_points[1].y, 4.0);
+    assert!(prepared.volume.annotation_points.is_none());
+    assert!(prepared
+        .annotation_points
+        .iter()
+        .all(|point| point.origin == AnnotationOrigin::Metadata));
     assert_eq!(prepared.staged_frames.len(), 2);
     assert_eq!(
         prepared.staged_frames[0].encoding,
@@ -263,6 +271,93 @@ async fn prepare_uses_metadata_annotations_and_video_jpeg_targets() {
         prepared.staged_frames[0].target,
         plugin_root.join("input-stack_temp").join("0")
     );
+}
+
+#[tokio::test]
+async fn prepare_fills_video_gaps_after_metadata_or_fallback_and_image_requests_are_unchanged() {
+    for (metadata, predictor, max_gap, expected_frames, expected_added) in [
+        (true, "VideoPredictor", None, vec![2, 8], 0),
+        (true, "VideoPredictor", Some(0), vec![2, 8], 0),
+        (true, "VideoPredictor", Some(3), vec![2, 5, 8], 1),
+        (true, "ImagePredictor", Some(3), vec![2, 8], 0),
+        (false, "VideoPredictor", Some(3), vec![0, 3, 5, 8, 10], 3),
+        (false, "ImagePredictor", Some(3), vec![0, 10], 0),
+    ] {
+        let fixture = VolumeFixture::start(None, None);
+        let description =
+            metadata.then_some(r#"{"annotation_points": [[2.0, 2.0, 2.0], [6.0, 6.0, 8.0]]}"#);
+        let pages = (0..11)
+            .map(|index| WritableTiffPage {
+                width: 9,
+                height: 9,
+                channels: 1,
+                pixels: vec![index; 81],
+                description: if index == 0 {
+                    description.map(str::to_owned)
+                } else {
+                    None
+                },
+            })
+            .collect::<Vec<_>>();
+        write_tiff_pages(&fixture.host_input, &pages).expect("write annotated stack");
+        let mut request = sample_request(predictor);
+        request.max_prompt_gap = max_gap;
+
+        let prepared = prepare(&fixture.state, &request)
+            .await
+            .expect("prepare prompts");
+        assert!(
+            prepared.volume.annotation_points.is_none(),
+            "prepared annotations have one owner"
+        );
+        let prompts = annotation_samples_for_video(&prepared.annotation_points, 11);
+        assert_eq!(
+            prompts
+                .iter()
+                .map(|prompt| prompt.frame_index)
+                .collect::<Vec<_>>(),
+            expected_frames
+        );
+        assert_eq!(
+            prepared
+                .annotation_points
+                .iter()
+                .filter(|point| point.origin == AnnotationOrigin::GapFill)
+                .count(),
+            expected_added
+        );
+        assert_eq!(
+            prepared.annotation_points[0].origin,
+            if metadata {
+                AnnotationOrigin::Metadata
+            } else {
+                AnnotationOrigin::Fallback
+            }
+        );
+        if metadata {
+            assert_eq!(
+                (
+                    prepared.annotation_points[0].x,
+                    prepared.annotation_points[0].z
+                ),
+                (2.0, 2.0)
+            );
+            assert_eq!(
+                (
+                    prepared.annotation_points[1].y,
+                    prepared.annotation_points[1].z
+                ),
+                (6.0, 8.0)
+            );
+        }
+        if expected_added > 0 {
+            let middle = prompts
+                .iter()
+                .find(|prompt| prompt.frame_index == 5)
+                .unwrap();
+            assert_eq!((middle.points[0].x, middle.points[0].y), (4.0, 4.0));
+        }
+    }
 }
 
 #[tokio::test]
@@ -339,7 +434,7 @@ async fn save_masks_delivers_primary_and_requested_overlay_to_windows_host() {
         let prepared = prepare(&fixture.state, &request)
             .await
             .expect("prepare input");
-        let masks = vec![
+        let mut masks = vec![
             FrameMask {
                 width: 4,
                 height: 2,
@@ -355,7 +450,7 @@ async fn save_masks_delivers_primary_and_requested_overlay_to_windows_host() {
         assert!(!fixture.host_outputs.exists());
         assert!(!prepared.plan.volume_output.exists());
 
-        save_masks(&fixture.state, &prepared, &request, &masks, &progress)
+        save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
             .await
             .expect("write output before requesting host delivery");
 
@@ -419,7 +514,7 @@ async fn save_masks_propagates_host_delivery_failure_and_retains_volume_output()
     let prepared = prepare(&fixture.state, &request)
         .await
         .expect("prepare input");
-    let masks = vec![
+    let mut masks = vec![
         FrameMask {
             width: 4,
             height: 2,
@@ -429,7 +524,7 @@ async fn save_masks_propagates_host_delivery_failure_and_retains_volume_output()
     ];
     let (progress, _receiver) = crate::services::progress::channel();
 
-    let error = save_masks(&fixture.state, &prepared, &request, &masks, &progress)
+    let error = save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
         .await
         .expect_err("saving must fail when host delivery fails");
 
@@ -588,4 +683,62 @@ fn annotation_overlay_path_keeps_primary_output_clean() {
         annotation_overlay_path(Path::new("/tmp/Segmentation/segmented.tif")),
         PathBuf::from("/tmp/Segmentation/segmented_annotation_overlay.tif")
     );
+}
+
+#[test]
+fn cleanup_request_defaults_off_and_accepts_opt_in() {
+    let mut json = json!({
+        "file_path": "input.tif", "output_file": "output.tif",
+        "model_type": "sam3", "predictor_type": "ImagePredictor"
+    });
+    let request: ProcessRequest = serde_json::from_value(json.clone()).unwrap();
+    assert!(!request.keep_centerline_component);
+    json["keep_centerline_component"] = json!(true);
+    let request: ProcessRequest = serde_json::from_value(json).unwrap();
+    assert!(request.keep_centerline_component);
+}
+
+#[tokio::test]
+async fn cleanup_applies_to_both_predictors_before_primary_and_overlay_delivery() {
+    for predictor in ["ImagePredictor", "VideoPredictor"] {
+        for enabled in [false, true] {
+            let fixture = VolumeFixture::start(
+                Some(r#"{"annotation_points": [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]}"#),
+                None,
+            );
+            let mut request = sample_request(predictor);
+            request.keep_centerline_component = enabled;
+            request.overlay_annotation_points = true;
+            let prepared = prepare(&fixture.state, &request).await.unwrap();
+            let mut masks = vec![
+                FrameMask {
+                    width: 4,
+                    height: 2,
+                    pixels: vec![255, 0, 0, 0, 0, 0, 0, 255],
+                };
+                2
+            ];
+            let (progress, _receiver) = crate::services::progress::channel();
+            save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
+                .await
+                .unwrap();
+            let output = read_volume_frames(&fixture.host_outputs.join("segmented.tif"))
+                .await
+                .unwrap();
+            let overlay = read_volume_frames(
+                &fixture
+                    .host_outputs
+                    .join("segmented_annotation_overlay.tif"),
+            )
+            .await
+            .unwrap();
+            for frame in 0..2 {
+                assert_eq!(output[frame].pixels, masks[frame].pixels);
+                assert_eq!(output[frame].pixels[0], 255);
+                assert_eq!(output[frame].pixels[7], if enabled { 0 } else { 255 });
+                assert_eq!(overlay[frame].pixels[0], 127);
+                assert_eq!(overlay[frame].pixels[7], output[frame].pixels[7]);
+            }
+        }
+    }
 }

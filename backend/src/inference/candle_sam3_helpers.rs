@@ -1,4 +1,4 @@
-use candle_core::{Device, IndexOp, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::ops;
 use candle_transformers::models::sam3;
 
@@ -87,9 +87,37 @@ pub fn build_geometry_prompt(
     })
 }
 
-/// Threshold raw mask logits (shape [batch, query, H, W]) to a binary `FrameMask`.
+/// Select one image's highest-scoring query using Candle's grounding argmax rule.
 ///
-/// The best query (index 0) is selected, upsampled via bilinear interpolation to
+/// `mask_logits` is [1, query, H, W] and `scores` is [1, query, 1], as returned by
+/// `Sam3ImageModel::text_detection_scores`. Candle's query selector is private;
+/// this boundary adapter returns only the selected [H, W] logits and its score.
+pub fn select_best_image_mask_logits(
+    mask_logits: &Tensor,
+    scores: &Tensor,
+) -> Result<(Tensor, f32), AppError> {
+    let query_index = scores
+        .argmax(1)
+        .and_then(|indices| indices.i((0, 0)))
+        .and_then(|index| index.to_scalar::<u32>())
+        .map_err(|e| AppError::internal(e.to_string()))? as usize;
+    let selected_logits = mask_logits
+        .i((0, query_index))
+        // Match Candle's gathered mask allocation. The pinned CPU bilinear
+        // identity path ignores view offsets; contiguous() alone keeps them.
+        .and_then(|logits| logits.force_contiguous())
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let selected_score = scores
+        .i((0, query_index, 0))
+        .and_then(|score| score.to_dtype(DType::F32))
+        .and_then(|score| score.to_scalar::<f32>())
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    Ok((selected_logits, selected_score))
+}
+
+/// Threshold an already-selected query's [H, W] mask logits to a binary `FrameMask`.
+///
+/// The selected logits are upsampled via bilinear interpolation to
 /// `model_size`×`model_size`, sigmoid-activated, then resampled to the target output
 /// dimensions. Pixels where probability > 0.5 are set to 255, others to 0.
 pub fn threshold_mask_logits_to_frame(
@@ -98,10 +126,7 @@ pub fn threshold_mask_logits_to_frame(
     out_height: usize,
     model_size: usize,
 ) -> Result<FrameMask, AppError> {
-    let logits_2d = mask_logits
-        .i((0, 0))
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    let probs = logits_2d
+    let probs = mask_logits
         .unsqueeze(0)
         .and_then(|t| t.unsqueeze(0))
         .and_then(|t| t.upsample_bilinear2d(model_size, model_size, false))

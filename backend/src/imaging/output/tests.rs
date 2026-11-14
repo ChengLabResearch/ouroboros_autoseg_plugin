@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::{write_annotation_overlay_stack, write_mask_stack};
 use crate::{
-    imaging::annotations::AnnotationPoint,
+    imaging::annotations::{fill_prompt_gaps, AnnotationOrigin, AnnotationPoint},
     imaging::tiff_io::{inspect_volume, read_volume_frames},
     inference::image::FrameMask,
 };
@@ -91,6 +91,7 @@ async fn write_annotation_overlay_stack_preserves_source_masks_and_marks_points(
         },
     ];
     let annotations = vec![AnnotationPoint {
+        origin: AnnotationOrigin::Metadata,
         x: 2.0,
         y: 2.0,
         z: 0.0,
@@ -107,4 +108,59 @@ async fn write_annotation_overlay_stack_preserves_source_masks_and_marks_points(
     assert_eq!(frames.len(), 2);
     assert_eq!(frames[0].pixels[2 + 2 * 5], 127);
     assert_eq!(frames[1].pixels[2 + 2 * 5], 127);
+}
+
+#[tokio::test]
+async fn write_annotation_overlay_stack_marks_only_added_prompt_frames_with_hollow_diamonds() {
+    let root = tempfile::tempdir().expect("overlay fixture");
+    let output_path = root.path().join("gap-overlay.tif");
+    let masks = vec![
+        FrameMask {
+            width: 9,
+            height: 9,
+            pixels: vec![0; 81]
+        };
+        5
+    ];
+    let mut annotations = vec![
+        AnnotationPoint {
+            x: 4.0,
+            y: 4.0,
+            z: 0.0,
+            origin: AnnotationOrigin::Metadata,
+        },
+        AnnotationPoint {
+            x: 4.0,
+            y: 4.0,
+            z: 4.0,
+            origin: AnnotationOrigin::Metadata,
+        },
+    ];
+    assert_eq!(fill_prompt_gaps(&mut annotations, masks.len(), Some(2)), 1);
+
+    write_annotation_overlay_stack(&output_path, &masks, &annotations, 127)
+        .await
+        .expect("write overlay");
+
+    let frames = read_volume_frames(&output_path)
+        .await
+        .expect("read overlay");
+    for (index, frame) in frames.iter().enumerate() {
+        if index == 2 {
+            assert_eq!(frame.pixels[4 * 9 + 4], 0, "gap marker is hollow");
+            assert_eq!(frame.pixels[9 + 4], 127, "diamond top");
+            assert_eq!(frame.pixels[4 * 9 + 7], 127, "diamond right");
+        } else {
+            assert_eq!(
+                frame.pixels[4 * 9 + 4],
+                127,
+                "existing overlay stars remain"
+            );
+            assert_eq!(frame.pixels[9 + 4], 0);
+            assert_eq!(frame.pixels[4 * 9 + 7], 0);
+        }
+    }
+    assert!(masks
+        .iter()
+        .all(|mask| mask.pixels.iter().all(|pixel| *pixel == 0)));
 }

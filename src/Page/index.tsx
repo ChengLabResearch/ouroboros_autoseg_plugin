@@ -17,6 +17,8 @@ type RunOptions = {
     modelType: string;
     predictor_type: string;
     overlayAnnotationPoints: boolean;
+    keepCenterlineComponent: boolean;
+    maxPromptGap: number | null;
 };
 
 export default function SAM3Page() {
@@ -160,7 +162,9 @@ export default function SAM3Page() {
                     output_file: opts.outputFile,
                     model_type: opts.modelType,
                     predictor_type: opts.predictor_type,
-                    overlay_annotation_points: opts.overlayAnnotationPoints
+                    overlay_annotation_points: opts.overlayAnnotationPoints,
+                    keep_centerline_component: opts.keepCenterlineComponent,
+                    max_prompt_gap: opts.maxPromptGap
                 })
             });
             if (!res.ok) {
