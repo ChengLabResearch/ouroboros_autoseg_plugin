@@ -12,10 +12,10 @@ use crate::{
     inference::{
         candle_sam3_frame_source::StagedJpegFrameSource,
         candle_sam3_helpers::{
-            build_geometry_prompt, frame_to_chw_tensor, normalize_for_sam3,
+            build_geometry_prompt, build_session_prompt, frame_to_chw_tensor, normalize_for_sam3,
             select_best_image_mask_logits, threshold_mask_logits_to_frame, video_frame_to_mask,
         },
-        image::{FrameMask, ImageSegmenter, PositivePointPrompt},
+        image::{FrameMask, ImageSegmenter, PointPrompt},
         video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
     },
 };
@@ -94,7 +94,7 @@ impl ImageSegmenter for CandleSam3ImageSegmenter {
     async fn segment(
         &self,
         frame: &ImageFrame,
-        prompts: &[PositivePointPrompt],
+        prompts: &[PointPrompt],
     ) -> Result<FrameMask, AppError> {
         let handle = self.handle.clone();
         let frame = frame.clone();
@@ -108,7 +108,7 @@ impl ImageSegmenter for CandleSam3ImageSegmenter {
 fn run_image_inference(
     handle: &Sam3ModelHandle,
     frame: &ImageFrame,
-    prompts: &[PositivePointPrompt],
+    prompts: &[PointPrompt],
 ) -> Result<FrameMask, AppError> {
     let model = &*handle.image_model;
     let device = &handle.device;
@@ -220,29 +220,9 @@ fn run_video_inference(
                 .reset_session(&session_id)
                 .map_err(|e| AppError::internal(e.to_string()))?;
 
-            let w = frame_width as f32;
-            let h = frame_height as f32;
             register_single_trajectory_prompts(prompts, |vfp, obj_id| {
-                let session_prompt = sam3::SessionPrompt {
-                    text: None,
-                    points: if vfp.points.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            vfp.points
-                                .iter()
-                                .map(|p| ((p.x / w).clamp(0.0, 1.0), (p.y / h).clamp(0.0, 1.0)))
-                                .collect(),
-                        )
-                    },
-                    point_labels: if vfp.points.is_empty() {
-                        None
-                    } else {
-                        Some(vec![1u32; vfp.points.len()])
-                    },
-                    boxes: None,
-                    box_labels: None,
-                };
+                warn_if_video_prompt_truncated(vfp, tracker_ref.config());
+                let session_prompt = build_session_prompt(&vfp.points, frame_width, frame_height);
                 predictor
                     .add_prompt(
                         &session_id,
@@ -436,6 +416,21 @@ fn with_deterministic_session_close<P, T>(
             warn!(%close_error, "failed to close video session after inference error");
             Err(operation_error)
         }
+    }
+}
+
+fn warn_if_video_prompt_truncated(
+    prompt: &VideoFramePrompt,
+    tracker_config: &sam3::Sam3TrackerConfig,
+) {
+    let configured_point_cap = tracker_config.predictor.max_point_num_in_prompt_enc;
+    if configured_point_cap > 0 && prompt.points.len() > configured_point_cap {
+        warn!(
+            frame_index = prompt.frame_index,
+            supplied_point_count = prompt.points.len(),
+            configured_point_cap,
+            "SAM3 video runtime will truncate prompt points to the configured encoder cap"
+        );
     }
 }
 
@@ -637,7 +632,10 @@ fn low_memory_video_session_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::image::PositivePointPrompt;
+    use crate::{
+        imaging::annotations::AnnotationOrigin,
+        inference::image::{PointPrompt, PointPromptKind},
+    };
     use candle_core::Device;
     use candle_transformers::models::sam3::FrameSource;
     use image::{ImageBuffer, Rgb};
@@ -1031,7 +1029,11 @@ mod tests {
                     47 => annotation_index * 84 - 4,
                     _ => annotation_index * 84,
                 },
-                points: vec![PositivePointPrompt { x: 10.0, y: 20.0 }],
+                points: vec![PointPrompt::positive(
+                    10.0,
+                    20.0,
+                    AnnotationOrigin::Metadata,
+                )],
             })
             .collect::<Vec<_>>();
         let mut requested_ids = Vec::new();
@@ -1054,19 +1056,78 @@ mod tests {
     }
 
     #[test]
+    fn video_prompt_adapter_retains_overflow_and_reports_actual_tracker_cap() {
+        let prompt = VideoFramePrompt {
+            frame_index: 12,
+            points: std::iter::once(PointPrompt::positive(
+                50.0,
+                50.0,
+                AnnotationOrigin::Metadata,
+            ))
+            .chain((0..16).map(|index| PointPrompt::negative(index as f32, 0.0)))
+            .collect(),
+        };
+        let session_prompt = build_session_prompt(&prompt.points, 100, 100);
+        assert_eq!(session_prompt.points.unwrap().len(), 17);
+        let labels = session_prompt.point_labels.unwrap();
+        assert_eq!(labels.len(), 17);
+        assert_eq!(labels[0], 1);
+        assert!(labels[1..].iter().all(|label| *label == 0));
+
+        let mut tracker_config =
+            sam3::Sam3TrackerConfig::from_sam3_config(&sam3::Config::default());
+        assert_eq!(tracker_config.predictor.max_point_num_in_prompt_enc, 16);
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let writer = output.reopen().unwrap();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.try_clone().unwrap())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            warn_if_video_prompt_truncated(&prompt, &tracker_config);
+            tracker_config.predictor.max_point_num_in_prompt_enc = 17;
+            warn_if_video_prompt_truncated(&prompt, &tracker_config);
+            // Candle treats zero as unlimited rather than discarding all points.
+            tracker_config.predictor.max_point_num_in_prompt_enc = 0;
+            warn_if_video_prompt_truncated(&prompt, &tracker_config);
+        });
+        let log = std::fs::read_to_string(output.path()).unwrap();
+        assert_eq!(log.matches("will truncate prompt points").count(), 1);
+        assert!(log.contains("frame_index=12"), "{log}");
+        assert!(log.contains("supplied_point_count=17"), "{log}");
+        assert!(log.contains("configured_point_cap=16"), "{log}");
+    }
+
+    #[test]
     fn video_prompt_registration_preserves_grouped_points() {
         let prompts = vec![VideoFramePrompt {
             frame_index: 12,
             points: vec![
-                PositivePointPrompt { x: 1.0, y: 2.0 },
-                PositivePointPrompt { x: 3.0, y: 4.0 },
+                PointPrompt::positive(1.0, 2.0, AnnotationOrigin::Metadata),
+                PointPrompt::positive(3.0, 4.0, AnnotationOrigin::GapFill),
+                PointPrompt::positive(5.0, 6.0, AnnotationOrigin::Fallback),
+                PointPrompt::negative(7.0, 8.0),
             ],
         }];
 
         register_single_trajectory_prompts(&prompts, |prompt, requested_id| {
             assert_eq!(requested_id, None);
             assert_eq!(prompt.frame_index, 12);
-            assert_eq!(prompt.points.len(), 2);
+            assert!(std::ptr::eq(prompt, &prompts[0]));
+            assert_eq!(
+                prompt
+                    .points
+                    .iter()
+                    .map(|point| point.kind)
+                    .collect::<Vec<_>>(),
+                vec![
+                    PointPromptKind::Positive(AnnotationOrigin::Metadata),
+                    PointPromptKind::Positive(AnnotationOrigin::GapFill),
+                    PointPromptKind::Positive(AnnotationOrigin::Fallback),
+                    PointPromptKind::Negative,
+                ]
+            );
             Ok(3)
         })
         .expect("grouped prompt registers");
@@ -1083,11 +1144,11 @@ mod tests {
         let prompts = vec![
             VideoFramePrompt {
                 frame_index: 0,
-                points: vec![PositivePointPrompt { x: 1.0, y: 2.0 }],
+                points: vec![PointPrompt::positive(1.0, 2.0, AnnotationOrigin::Metadata)],
             },
             VideoFramePrompt {
                 frame_index: 1,
-                points: vec![PositivePointPrompt { x: 2.0, y: 3.0 }],
+                points: vec![PointPrompt::positive(2.0, 3.0, AnnotationOrigin::Metadata)],
             },
         ];
         let mut calls = 0;

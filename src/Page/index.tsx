@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import styles from '../assets/styles.module.css';
 import OptionsPanel from '../components/OptionsPanel';
+import type { SubmitPayload } from '../components/OptionsPanel';
 import ProgressPanel, { BackendStatus, ErrorEntry, VolumeServerState } from '../components/ProgressPanel';
 import ModelsPanel from '../components/ModelsPanel';
 import { BACKEND_URL } from '../config';
@@ -10,16 +11,6 @@ import type { JobObservation, JobStatusRecord } from '../jobStatus';
 const MAX_ERRORS = 5;
 const DEDUP_WINDOW_MS = 5000;
 const VOLUME_SERVER_URL = 'http://localhost:3001';
-
-type RunOptions = {
-    filePath: string;
-    outputFile: string;
-    modelType: string;
-    predictor_type: string;
-    overlayAnnotationPoints: boolean;
-    keepCenterlineComponent: boolean;
-    maxPromptGap: number | null;
-};
 
 export default function SAM3Page() {
     const [jobObservation, setJobObservation] = useState<JobObservation>(null);
@@ -149,7 +140,7 @@ export default function SAM3Page() {
         };
     }, []);
 
-    const handleRun = async (opts: RunOptions) => {
+    const handleRun = async (opts: SubmitPayload) => {
         setRun(true);
         setJobObservation(null);
         clearStoredJobId();
@@ -164,7 +155,8 @@ export default function SAM3Page() {
                     predictor_type: opts.predictor_type,
                     overlay_annotation_points: opts.overlayAnnotationPoints,
                     keep_centerline_component: opts.keepCenterlineComponent,
-                    max_prompt_gap: opts.maxPromptGap
+                    max_prompt_gap: opts.maxPromptGap,
+                    negative_border_points: opts.negativeBorderPoints
                 })
             });
             if (!res.ok) {

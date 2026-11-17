@@ -5,7 +5,7 @@ use candle_transformers::models::sam3;
 use crate::{
     error::AppError,
     imaging::tiff_io::ImageFrame,
-    inference::image::{FrameMask, PositivePointPrompt},
+    inference::image::{FrameMask, PointPrompt},
 };
 
 /// Convert an `ImageFrame` (u8 pixels, HWC layout) to a float CHW tensor in [0, 1].
@@ -57,10 +57,10 @@ pub fn normalize_for_sam3(
         .map_err(|e| AppError::internal(e.to_string()))
 }
 
-/// Build a SAM3 `GeometryPrompt` from a list of positive click prompts.
+/// Build a SAM3 `GeometryPrompt` from labelled click prompts.
 /// Pixel coordinates are normalised to [0, 1] by dividing by frame dimensions.
 pub fn build_geometry_prompt(
-    prompts: &[PositivePointPrompt],
+    prompts: &[PointPrompt],
     frame_width: usize,
     frame_height: usize,
     device: &Device,
@@ -74,17 +74,41 @@ pub fn build_geometry_prompt(
         .iter()
         .flat_map(|p| [(p.x / w).clamp(0.0, 1.0), (p.y / h).clamp(0.0, 1.0)])
         .collect();
-    let labels: Vec<u32> = vec![1; prompts.len()];
+    let labels: Vec<u32> = prompts.iter().map(|p| p.kind.label()).collect();
     let n = prompts.len();
     let points_xy = Tensor::from_vec(coords, (1, n, 2), device)
         .map_err(|e| AppError::internal(e.to_string()))?;
-    let point_labels = Tensor::from_vec(labels, (1, n), device)
-        .map_err(|e| AppError::internal(e.to_string()))?;
+    let point_labels =
+        Tensor::from_vec(labels, (1, n), device).map_err(|e| AppError::internal(e.to_string()))?;
     Ok(sam3::GeometryPrompt {
         points_xy: Some(points_xy),
         point_labels: Some(point_labels),
         ..Default::default()
     })
+}
+
+/// Adapt prepared pixel-space points to SAM3's normalized video prompt boundary.
+/// All points are retained; the video runtime owns its configured encoder cap.
+pub fn build_session_prompt(
+    prompts: &[PointPrompt],
+    frame_width: usize,
+    frame_height: usize,
+) -> sam3::SessionPrompt {
+    let w = frame_width as f32;
+    let h = frame_height as f32;
+    sam3::SessionPrompt {
+        text: None,
+        points: (!prompts.is_empty()).then(|| {
+            prompts
+                .iter()
+                .map(|p| ((p.x / w).clamp(0.0, 1.0), (p.y / h).clamp(0.0, 1.0)))
+                .collect()
+        }),
+        point_labels: (!prompts.is_empty())
+            .then(|| prompts.iter().map(|p| p.kind.label()).collect()),
+        boxes: None,
+        box_labels: None,
+    }
 }
 
 /// Select one image's highest-scoring query using Candle's grounding argmax rule.

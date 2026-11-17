@@ -1,10 +1,10 @@
 use std::{path::PathBuf, sync::Arc};
 
 use ouroboros_autoseg_plugin_backend::{
-    imaging::tiff_io::ImageFrame,
+    imaging::{annotations::AnnotationOrigin, tiff_io::ImageFrame},
     inference::{
         candle_sam3::{load_sam3_handle, CandleSam3ImageSegmenter},
-        image::{ImageSegmenter, PositivePointPrompt},
+        image::{ImageSegmenter, PointPrompt},
     },
 };
 
@@ -30,10 +30,11 @@ async fn sam3_medical_checkpoint_load() {
     let mask = segmenter
         .segment(
             &frame,
-            &[PositivePointPrompt {
-                x: (frame.width / 2) as f32,
-                y: (frame.height / 2) as f32,
-            }],
+            &[PointPrompt::positive(
+                (frame.width / 2) as f32,
+                (frame.height / 2) as f32,
+                AnnotationOrigin::Metadata,
+            )],
         )
         .await
         .expect("image path should produce a mask");

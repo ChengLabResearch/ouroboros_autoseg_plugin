@@ -59,6 +59,38 @@ both use the cleaned masks; a raw stack is not saved. The job log reports
 changed frames, removed pixels, background/missing seed counts (including
 recovered seeds), and frames left unchanged because no seed was found.
 
+### Negative border points
+
+The optional **Negative Border Points** control adds background prompts to both
+predictors and both model choices. It is off by default. When enabled, it
+defaults to **15 points** and a **12-pixel inset**; 15 replaces the earlier
+16-point proposal so one positive plus the default negatives fits SAM3's
+16-point runtime limit. Count must be a positive integer; inset must be finite
+and nonnegative, and may be fractional.
+
+The API setting is `negative_border_points: { "count": 15, "inset_px": 12 }`.
+Omitting the setting or sending `null` disables it; `{}` enables the defaults,
+and omitted object fields use their respective defaults. A frame's border is
+the rectangle `[inset, width - 1 - inset] × [inset, height - 1 - inset]`.
+Points start at the top-left corner and proceed clockwise, equally spaced by
+arc length around its perimeter. An inset that collapses either side of the
+rectangle is rejected after reading the input dimensions.
+
+Video prediction adds negatives on the same frames as its selected positive
+prompts, including extra prompts selected by **Max Prompt Gap**. Image
+prediction adds them on every frame it actually prompts. Negatives are not
+filtered using the previous mask. The job log reports the configured count
+and inset, the number of prompted frames, and calls exceeding the unchanged
+16-point limit; upstream truncation means excess submitted points may not all
+be encoded. Counts above the default remain available for explicit tuning.
+
+With **Draw Prompts**, negative border points appear as small crosses at
+intensity 64 (63 if the API's positive overlay intensity is 64), distinct from
+the default positive intensity of 127. In this version, the positive overlay
+continues to show the existing interpolated annotation path; negative crosses
+appear only on the frames where they were submitted. Overlay markers affect
+the diagnostic output, not inference or centre-line cleanup.
+
 To get started with developing a plugin:
 
 **Option 1:** Clone the main repository and make a folder/repository inside of the plugins folder. Push only that folder to GitHub. 

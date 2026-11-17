@@ -1,4 +1,8 @@
-use crate::inference::video::VideoFramePrompt;
+use crate::{
+    domain::requests::NegativeBorderPoints,
+    error::AppError,
+    inference::{image::PointPrompt, video::VideoFramePrompt},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationOrigin {
@@ -60,22 +64,18 @@ pub fn annotation_samples_for_video(
     points: &[AnnotationPoint],
     frame_count: usize,
 ) -> Vec<VideoFramePrompt> {
-    let mut grouped: std::collections::BTreeMap<
-        usize,
-        Vec<crate::inference::image::PositivePointPrompt>,
-    > = std::collections::BTreeMap::new();
+    let mut grouped: std::collections::BTreeMap<usize, Vec<PointPrompt>> =
+        std::collections::BTreeMap::new();
 
     for point in points {
         let Some(frame_index) = point.video_frame_index(frame_count) else {
             continue;
         };
 
-        grouped.entry(frame_index).or_default().push(
-            crate::inference::image::PositivePointPrompt {
-                x: point.x,
-                y: point.y,
-            },
-        );
+        grouped
+            .entry(frame_index)
+            .or_default()
+            .push(PointPrompt::positive(point.x, point.y, point.origin));
     }
 
     grouped
@@ -129,7 +129,7 @@ pub fn fill_prompt_gaps(
 pub fn interpolated_point_for_frame(
     points: &[AnnotationPoint],
     frame_index: usize,
-) -> Option<crate::inference::image::PositivePointPrompt> {
+) -> Option<PointPrompt> {
     if points.is_empty() {
         return None;
     }
@@ -142,10 +142,11 @@ pub fn interpolated_point_for_frame(
     });
 
     if sorted.len() == 1 {
-        return Some(crate::inference::image::PositivePointPrompt {
-            x: sorted[0].x,
-            y: sorted[0].y,
-        });
+        return Some(PointPrompt::positive(
+            sorted[0].x,
+            sorted[0].y,
+            sorted[0].origin,
+        ));
     }
 
     let frame = frame_index as f32;
@@ -155,34 +156,90 @@ pub fn interpolated_point_for_frame(
     }
 
     if right == 0 {
-        return Some(crate::inference::image::PositivePointPrompt {
-            x: sorted[0].x,
-            y: sorted[0].y,
-        });
+        return Some(PointPrompt::positive(
+            sorted[0].x,
+            sorted[0].y,
+            sorted[0].origin,
+        ));
     }
     if right >= sorted.len() {
         let point = sorted.last()?;
-        return Some(crate::inference::image::PositivePointPrompt {
-            x: point.x,
-            y: point.y,
-        });
+        return Some(PointPrompt::positive(point.x, point.y, point.origin));
     }
 
     let left = sorted[right - 1];
     let right_point = sorted[right];
     let dz = right_point.z - left.z;
     if dz.abs() < f32::EPSILON {
-        return Some(crate::inference::image::PositivePointPrompt {
-            x: right_point.x,
-            y: right_point.y,
-        });
+        return Some(PointPrompt::positive(
+            right_point.x,
+            right_point.y,
+            right_point.origin,
+        ));
     }
 
     let t = (frame - left.z) / dz;
-    Some(crate::inference::image::PositivePointPrompt {
-        x: left.x + t * (right_point.x - left.x),
-        y: left.y + t * (right_point.y - left.y),
-    })
+    Some(PointPrompt::positive(
+        left.x + t * (right_point.x - left.x),
+        left.y + t * (right_point.y - left.y),
+        left.origin,
+    ))
+}
+
+/// Generate the image path's existing interpolated positive prompt on each frame.
+pub fn annotation_samples_for_image(
+    points: &[AnnotationPoint],
+    frame_count: usize,
+) -> Vec<VideoFramePrompt> {
+    (0..frame_count)
+        .filter_map(|frame_index| {
+            interpolated_point_for_frame(points, frame_index).map(|point| VideoFramePrompt {
+                frame_index,
+                points: vec![point],
+            })
+        })
+        .collect()
+}
+
+/// Append fixed negatives to the prepared prompt frames without consulting masks.
+/// Distances are measured clockwise from the inset rectangle's top-left corner.
+pub fn add_negative_border_points(
+    prompts: &mut [VideoFramePrompt],
+    shape: VolumeShape,
+    options: &NegativeBorderPoints,
+) -> Result<(), AppError> {
+    let inset = options.inset_px;
+    let horizontal = shape.width.saturating_sub(1) as f32 - 2.0 * inset;
+    let vertical = shape.height.saturating_sub(1) as f32 - 2.0 * inset;
+    if horizontal <= 0.0 || vertical <= 0.0 {
+        return Err(AppError::bad_request(format!(
+            "negative_border_points.inset_px ({inset}) leaves no border rectangle in a {}x{} frame",
+            shape.width, shape.height
+        )));
+    }
+    let perimeter = 2.0 * (horizontal + vertical);
+    let negatives = (0..options.count)
+        .map(|index| {
+            let distance = perimeter * (index as f32 / options.count as f32);
+            let (x, y) = if distance < horizontal {
+                (inset + distance, inset)
+            } else if distance < horizontal + vertical {
+                (inset + horizontal, inset + distance - horizontal)
+            } else if distance < 2.0 * horizontal + vertical {
+                (
+                    inset + 2.0 * horizontal + vertical - distance,
+                    inset + vertical,
+                )
+            } else {
+                (inset, inset + perimeter - distance)
+            };
+            PointPrompt::negative(x, y)
+        })
+        .collect::<Vec<_>>();
+    for prompt in prompts {
+        prompt.points.extend_from_slice(&negatives);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

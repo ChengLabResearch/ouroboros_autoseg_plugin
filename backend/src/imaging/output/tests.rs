@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use super::{write_annotation_overlay_stack, write_mask_stack};
 use crate::{
-    imaging::annotations::{fill_prompt_gaps, AnnotationOrigin, AnnotationPoint},
+    imaging::annotations::{
+        annotation_samples_for_video, fill_prompt_gaps, AnnotationOrigin, AnnotationPoint,
+    },
     imaging::tiff_io::{inspect_volume, read_volume_frames},
     inference::image::FrameMask,
 };
@@ -97,9 +99,15 @@ async fn write_annotation_overlay_stack_preserves_source_masks_and_marks_points(
         z: 0.0,
     }];
 
-    write_annotation_overlay_stack(&output_path, &masks, &annotations, 127)
-        .await
-        .expect("write overlay stack");
+    write_annotation_overlay_stack(
+        &output_path,
+        &masks,
+        &annotations,
+        &annotation_samples_for_video(&annotations, masks.len()),
+        127,
+    )
+    .await
+    .expect("write overlay stack");
 
     assert!(masks[0].pixels.iter().all(|pixel| *pixel == 0));
     let frames = read_volume_frames(&output_path)
@@ -138,9 +146,15 @@ async fn write_annotation_overlay_stack_marks_only_added_prompt_frames_with_holl
     ];
     assert_eq!(fill_prompt_gaps(&mut annotations, masks.len(), Some(2)), 1);
 
-    write_annotation_overlay_stack(&output_path, &masks, &annotations, 127)
-        .await
-        .expect("write overlay");
+    write_annotation_overlay_stack(
+        &output_path,
+        &masks,
+        &annotations,
+        &annotation_samples_for_video(&annotations, masks.len()),
+        127,
+    )
+    .await
+    .expect("write overlay");
 
     let frames = read_volume_frames(&output_path)
         .await

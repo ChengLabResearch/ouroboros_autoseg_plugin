@@ -269,3 +269,135 @@ fn fill_prompt_gaps_does_not_add_endpoints_without_two_prompted_frames() {
         assert_eq!(points, original);
     }
 }
+
+#[test]
+fn border_points_follow_rectangle_perimeter_and_preserve_positive_provenance() {
+    use crate::{domain::requests::NegativeBorderPoints, inference::image::PointPromptKind};
+
+    let annotations = [AnnotationPoint {
+        x: 4.0,
+        y: 3.0,
+        z: 2.0,
+        origin: AnnotationOrigin::GapFill,
+    }];
+    let mut prompts = annotation_samples_for_video(&annotations, 5);
+    super::add_negative_border_points(
+        &mut prompts,
+        VolumeShape {
+            frames: 5,
+            width: 9,
+            height: 7,
+        },
+        &NegativeBorderPoints {
+            count: 10,
+            inset_px: 1.0,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(prompts.len(), 1, "negatives must not add prompted frames");
+    assert_eq!(prompts[0].frame_index, 2);
+    assert_eq!(
+        prompts[0].points[0].kind,
+        PointPromptKind::Positive(AnnotationOrigin::GapFill)
+    );
+    let negatives = &prompts[0].points[1..];
+    // Rectangle perimeter is 20 px: each negative advances exactly 2 px.
+    let expected = [
+        (1.0, 1.0),
+        (3.0, 1.0),
+        (5.0, 1.0),
+        (7.0, 1.0),
+        (7.0, 3.0),
+        (7.0, 5.0),
+        (5.0, 5.0),
+        (3.0, 5.0),
+        (1.0, 5.0),
+        (1.0, 3.0),
+    ];
+    assert_eq!(negatives.len(), expected.len());
+    for (point, (x, y)) in negatives.iter().zip(expected) {
+        assert_eq!(point.kind, PointPromptKind::Negative);
+        assert_close(point.x, x);
+        assert_close(point.y, y);
+    }
+}
+
+#[test]
+fn image_and_video_prompts_share_border_points_without_changing_positive_selection() {
+    use crate::domain::requests::NegativeBorderPoints;
+
+    let annotations = [
+        AnnotationPoint {
+            x: 70.0,
+            y: 80.0,
+            z: 1.0,
+            origin: AnnotationOrigin::Metadata,
+        },
+        AnnotationPoint {
+            x: 90.0,
+            y: 80.0,
+            z: 3.0,
+            origin: AnnotationOrigin::Metadata,
+        },
+    ];
+    let shape = VolumeShape {
+        frames: 5,
+        width: 160,
+        height: 160,
+    };
+    let mut video = annotation_samples_for_video(&annotations, shape.frames);
+    let mut image = super::annotation_samples_for_image(&annotations, shape.frames);
+    let original_video = video.clone();
+    let original_image = image.clone();
+    for prompts in [&mut video, &mut image] {
+        super::add_negative_border_points(prompts, shape, &NegativeBorderPoints::default())
+            .unwrap();
+        assert!(prompts.iter().all(|prompt| prompt.points.len() == 16));
+    }
+    assert_eq!(
+        video.iter().map(|p| p.frame_index).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert_eq!(
+        image.iter().map(|p| p.frame_index).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3, 4]
+    );
+    assert_eq!(image[2].points[0].x, 80.0);
+    for (actual, original) in video
+        .iter()
+        .chain(&image)
+        .zip(original_video.iter().chain(&original_image))
+    {
+        assert_eq!(actual.points[0], original.points[0]);
+        assert_eq!(&actual.points[1..], &video[0].points[1..]);
+        for negative in &actual.points[1..] {
+            assert!((12.0..=147.0).contains(&negative.x));
+            assert!((12.0..=147.0).contains(&negative.y));
+            assert!(
+                negative.x == 12.0
+                    || negative.x == 147.0
+                    || negative.y == 12.0
+                    || negative.y == 147.0
+            );
+        }
+    }
+}
+
+#[test]
+fn border_points_reject_an_inset_that_collapses_the_rectangle() {
+    let mut prompts = Vec::new();
+    let error = super::add_negative_border_points(
+        &mut prompts,
+        VolumeShape {
+            frames: 1,
+            width: 25,
+            height: 80,
+        },
+        &crate::domain::requests::NegativeBorderPoints::default(),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("inset_px (12) leaves no border rectangle in a 25x80 frame"));
+}

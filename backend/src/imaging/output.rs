@@ -7,7 +7,10 @@ use crate::{
         overlay::draw_annotation_marker,
         tiff_io::{write_tiff_pages, WritableTiffPage},
     },
-    inference::image::FrameMask,
+    inference::{
+        image::{FrameMask, PointPromptKind},
+        video::VideoFramePrompt,
+    },
 };
 
 pub async fn write_mask_stack(target: &Path, masks: &[FrameMask]) -> Result<(), AppError> {
@@ -64,18 +67,38 @@ pub async fn write_annotation_overlay_stack(
     target: &Path,
     masks: &[FrameMask],
     annotation_points: &[AnnotationPoint],
+    prompts: &[VideoFramePrompt],
     intensity: u8,
 ) -> Result<(), AppError> {
     let mut overlay_masks = masks.to_vec();
+    let mut prompts = prompts.iter().peekable();
     for (frame_index, mask) in overlay_masks.iter_mut().enumerate() {
-        if let Some(point) = interpolated_point_for_frame(annotation_points, frame_index) {
-            let origin = annotation_points
-                .iter()
-                .find(|annotation| {
-                    annotation.origin == AnnotationOrigin::GapFill
-                        && annotation.video_frame_index(masks.len()) == Some(frame_index)
-                })
-                .map_or(AnnotationOrigin::Metadata, |annotation| annotation.origin);
+        if prompts
+            .peek()
+            .is_some_and(|prompt| prompt.frame_index == frame_index)
+        {
+            for point in &prompts.next().expect("matching prepared prompt").points {
+                let marker_intensity = if point.kind == PointPromptKind::Negative {
+                    if intensity == 64 {
+                        63
+                    } else {
+                        64
+                    }
+                } else {
+                    intensity
+                };
+                draw_annotation_marker(
+                    &mut mask.pixels,
+                    mask.width,
+                    mask.height,
+                    point.x,
+                    point.y,
+                    marker_intensity,
+                    point.kind,
+                );
+            }
+        } else if let Some(point) = interpolated_point_for_frame(annotation_points, frame_index) {
+            // Retain the legacy trace visualization between prompted frames.
             draw_annotation_marker(
                 &mut mask.pixels,
                 mask.width,
@@ -83,7 +106,7 @@ pub async fn write_annotation_overlay_stack(
                 point.x,
                 point.y,
                 intensity,
-                origin,
+                PointPromptKind::Positive(AnnotationOrigin::Metadata),
             );
         }
     }

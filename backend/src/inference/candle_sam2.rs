@@ -6,7 +6,7 @@ use crate::{
     error::AppError,
     imaging::tiff_io::ImageFrame,
     inference::{
-        image::{FrameMask, ImageSegmenter, PositivePointPrompt},
+        image::{FrameMask, ImageSegmenter, PointPrompt},
         video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
     },
 };
@@ -26,7 +26,7 @@ impl ImageSegmenter for CandleSam2ImageSegmenter {
     async fn segment(
         &self,
         _frame: &ImageFrame,
-        _prompts: &[PositivePointPrompt],
+        _prompts: &[PointPrompt],
     ) -> Result<FrameMask, AppError> {
         Err(AppError::not_implemented(format!(
             "Candle SAM2 image inference is not implemented yet for {}",

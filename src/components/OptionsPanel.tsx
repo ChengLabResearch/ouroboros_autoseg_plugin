@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import styles from '../assets/styles.module.css';
 
-type SubmitPayload = {
+export type SubmitPayload = {
     filePath: string;
     outputFile: string;
     modelType: string;
@@ -9,6 +9,7 @@ type SubmitPayload = {
     overlayAnnotationPoints: boolean;
     keepCenterlineComponent: boolean;
     maxPromptGap: number | null;
+    negativeBorderPoints: { count: number; inset_px: number } | null;
 };
 
 type Props = {
@@ -25,6 +26,11 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const [keepCenterlineComponent, setKeepCenterlineComponent] = useState(false);
     const [maxPromptGap, setMaxPromptGap] = useState('');
     const [promptGapBadInput, setPromptGapBadInput] = useState(false);
+    const [negativeBorderEnabled, setNegativeBorderEnabled] = useState(false);
+    const [negativeBorderCount, setNegativeBorderCount] = useState('15');
+    const [negativeBorderInset, setNegativeBorderInset] = useState('12');
+    const [negativeCountBadInput, setNegativeCountBadInput] = useState(false);
+    const [negativeInsetBadInput, setNegativeInsetBadInput] = useState(false);
     const inputFileRef = useRef<HTMLInputElement | null>(null);
     const outputFileRef = useRef<HTMLInputElement | null>(null);
 
@@ -277,7 +283,14 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const gapValue = Number(maxPromptGap);
     const validPromptGap = !promptGapBadInput && (maxPromptGap === '' ||
         (Number.isSafeInteger(gapValue) && gapValue > 0));
-    const canRun = !isRunning && fp && outFp && (!videoPredictor || validPromptGap);
+    const borderCount = Number(negativeBorderCount);
+    const borderInset = Number(negativeBorderInset);
+    const validBorderCount = !negativeCountBadInput && negativeBorderCount !== '' &&
+        Number.isSafeInteger(borderCount) && borderCount > 0;
+    const validBorderInset = !negativeInsetBadInput && negativeBorderInset !== '' &&
+        Number.isFinite(borderInset) && borderInset >= 0;
+    const canRun = !isRunning && fp && outFp && (!videoPredictor || validPromptGap) &&
+        (!negativeBorderEnabled || (validBorderCount && validBorderInset));
 
     return (
         <div className={styles.container}>
@@ -295,7 +308,11 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             predictor_type: predictor,
                             overlayAnnotationPoints,
                             keepCenterlineComponent,
-                            maxPromptGap: videoPredictor && maxPromptGap !== '' ? gapValue : null
+                            maxPromptGap: videoPredictor && maxPromptGap !== '' ? gapValue : null,
+                            negativeBorderPoints: negativeBorderEnabled ? {
+                                count: borderCount,
+                                inset_px: borderInset
+                            } : null
                         })} 
                         disabled={!canRun}
                         title="Run Segmentation"
@@ -392,6 +409,64 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                     </>}
 
                     <div className={styles.row}>
+                        <label className={styles.label} htmlFor="negative-border-points">Negative Border Points</label>
+                        <div className={styles.inputContainer}>
+                            <input
+                                id="negative-border-points"
+                                type="checkbox"
+                                checked={negativeBorderEnabled}
+                                onChange={(e) => setNegativeBorderEnabled(e.target.checked)}
+                                aria-describedby="negative-border-help"
+                            />
+                        </div>
+                    </div>
+                    <p id="negative-border-help">
+                        Adds background prompts evenly around an inset border on each prompted frame.
+                        These points discourage segmentation near the edges. The default 15 negatives
+                        leave room for one positive in SAM3's 16-point runtime limit.
+                    </p>
+                    {negativeBorderEnabled && <>
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="negative-border-count">Border Point Count</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="negative-border-count"
+                                    className={styles.input}
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    value={negativeBorderCount}
+                                    onChange={(e) => {
+                                        setNegativeBorderCount(e.target.value);
+                                        setNegativeCountBadInput(e.target.validity.badInput);
+                                    }}
+                                    aria-invalid={!validBorderCount}
+                                />
+                            </div>
+                        </div>
+                        {!validBorderCount && <p role="alert">Enter a positive whole number of border points.</p>}
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="negative-border-inset">Border Inset (pixels)</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="negative-border-inset"
+                                    className={styles.input}
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={negativeBorderInset}
+                                    onChange={(e) => {
+                                        setNegativeBorderInset(e.target.value);
+                                        setNegativeInsetBadInput(e.target.validity.badInput);
+                                    }}
+                                    aria-invalid={!validBorderInset}
+                                />
+                            </div>
+                        </div>
+                        {!validBorderInset && <p role="alert">Enter a finite, nonnegative inset in pixels.</p>}
+                    </>}
+
+                    <div className={styles.row}>
                         <label className={styles.label} htmlFor="keep-centerline-component">Keep Centre-line Component</label>
                         <div className={styles.inputContainer}>
                             <input
@@ -415,7 +490,7 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                                 type="checkbox"
                                 checked={overlayAnnotationPoints}
                                 onChange={(e) => setOverlayAnnotationPoints(e.target.checked)}
-                                title="Overlay annotation prompt points with intensity 127"
+                                title="Overlay positive points at intensity 127 and negative border crosses at intensity 64"
                             />
                         </div>
                     </div>
