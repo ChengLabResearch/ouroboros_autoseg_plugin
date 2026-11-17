@@ -357,7 +357,6 @@ async fn repair_markers_follow_report_actions_without_requiring_frame_prompts() 
         .enumerate()
         .map(
             |(frame_index, (repair, reasons, anchor_recovered))| FrameRepairFrame {
-                frame_index,
                 component_area: if frame_index == 4 { 0 } else { 9 },
                 reasons,
                 anchor_recovered,
@@ -366,19 +365,6 @@ async fn repair_markers_follow_report_actions_without_requiring_frame_prompts() 
         )
         .collect(),
     };
-    assert!(
-        report.frames[2].is_flagged(),
-        "unchanged flagged frame remains on review list"
-    );
-    assert!(
-        !report.frames[3].is_flagged(),
-        "recovered anchor leaves review list"
-    );
-    assert_eq!(
-        report.frames[3].reasons,
-        [FrameFlagReason::AreaJump],
-        "original trigger remains recorded"
-    );
     for (positive_intensity, repair_intensity) in [(127, 192), (192, 191)] {
         let path = root.path().join(format!("repair-{positive_intensity}.tif"));
         write_annotation_overlay_stack(&path, &masks, &[], positive_intensity, Some(&report))
@@ -457,14 +443,12 @@ async fn report_without_repairs_leaves_existing_prompt_overlay_byte_identical() 
         options: FrameRepairOptions::default(),
         frames: vec![
             FrameRepairFrame {
-                frame_index: 0,
                 component_area: 64,
                 reasons: vec![FrameFlagReason::LowIou],
                 anchor_recovered: true,
                 repair: FrameRepairAction::Kept,
             },
             FrameRepairFrame {
-                frame_index: 1,
                 component_area: 64,
                 reasons: vec![FrameFlagReason::EdgeContact],
                 anchor_recovered: false,

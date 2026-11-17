@@ -16,6 +16,7 @@ use crate::{
     domain::requests::{FrameRepairOptions, ProcessRequest},
     imaging::{
         annotations::{annotation_samples_for_video, AnnotationOrigin},
+        cleanup::{keep_centerline_components, repair_inconsistent_frames},
         preprocess::PreparedFrameEncoding,
         tiff_io::{read_volume_frames, write_tiff_pages, WritableTiffPage},
     },
@@ -917,6 +918,23 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 // Separate foreground is removed by either cleanup, but the optional
                 // unrepaired snapshot must reflect only the earlier centre-line step.
                 masks[0].pixels[0] = 255;
+                let mut expected_unrepaired = masks.clone();
+                if cleanup {
+                    keep_centerline_components(
+                        &mut expected_unrepaired,
+                        &prepared.annotation_points,
+                    )
+                    .unwrap();
+                }
+                // Algorithm tests own the independent geometry/classification oracle;
+                // this test checks that the pipeline delivers the cleanup results.
+                let mut expected_masks = expected_unrepaired.clone();
+                let expected_report = repair_inconsistent_frames(
+                    &mut expected_masks,
+                    &prepared.annotation_points,
+                    request.repair_inconsistent_frames.as_ref().unwrap(),
+                )
+                .unwrap();
                 let (progress, _receiver) = crate::services::progress::channel();
                 // Reuse the file-backed tracing capture used by the prompt-adapter
                 // tests, scoped to this future so concurrent jobs cannot leak in.
@@ -935,66 +953,26 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 let output = read_volume_frames(&fixture.host_outputs.join("segmented.tif"))
                     .await
                     .unwrap();
-                for index in [0, 2, 3, 4, 5] {
-                    assert_eq!(output[index].pixels, accepted.pixels);
-                }
-                // The requested clipping preserves the flood's pixels inside the
-                // 10px dilation instead of replacing every suspect mask wholesale.
-                let clipped: Vec<_> = (0usize..41 * 41)
-                    .map(|index| {
-                        let x = index % 41;
-                        let y = index / 41;
-                        let distance_squared =
-                            x.abs_diff(x.clamp(18, 22)).pow(2) + y.abs_diff(y.clamp(18, 22)).pow(2);
-                        if distance_squared <= 100 {
-                            255
-                        } else {
-                            0
-                        }
-                    })
-                    .collect();
-                for index in [1, 6] {
-                    assert_eq!(output[index].pixels, clipped);
-                    assert_ne!(output[index].pixels, accepted.pixels);
+                assert_eq!(output.len(), expected_masks.len());
+                for (actual, expected) in output.iter().zip(&expected_masks) {
+                    assert_eq!(actual.pixels, expected.pixels);
                 }
                 let report_path = fixture.host_outputs.join("segmented_frame_repair.json");
                 let report: Value =
                     serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
                 assert_eq!(report["schema_version"], 2);
                 assert_eq!(report["options"]["keep_unrepaired"], keep_unrepaired);
-                let frames = report["frames"].as_array().unwrap();
-                assert_eq!(frames.len(), 7);
-                let flagged: Vec<_> = frames
-                    .iter()
-                    .filter(|frame| {
-                        !frame["reasons"].as_array().unwrap().is_empty()
-                            && !frame["anchor_recovered"].as_bool().unwrap()
-                    })
-                    .map(|frame| frame["frame_index"].as_u64().unwrap())
-                    .collect();
-                assert_eq!(flagged, [1, 3, 6]);
-                assert_eq!(frames[1]["repair"], "clipped");
-                assert_eq!(frames[3]["repair"], "replaced");
-                assert_eq!(frames[6]["repair"], "clipped");
-                for index in [2, 4] {
-                    assert_eq!(frames[index]["anchor_recovered"], true);
-                    assert_eq!(frames[index]["repair"], "kept");
-                    assert_eq!(frames[index]["component_area"], 25);
-                    assert!(frames[index]["reasons"]
-                        .as_array()
-                        .unwrap()
-                        .contains(&json!("area_jump")));
-                }
-                assert_eq!(report["summary"]["initially_flagged_frames"], 5);
-                assert_eq!(report["summary"]["recovered_anchor_frames"], 2);
-                assert_eq!(report["summary"]["flagged_frames"], 3);
-                assert_eq!(report["summary"]["repaired_frames"], 3);
+                let expected_json = serde_json::to_value(&expected_report).unwrap();
+                assert_eq!(report["options"], expected_json["options"]);
+                assert_eq!(report["frames"], expected_json["frames"]);
+                assert_eq!(
+                    report["summary"],
+                    serde_json::to_value(expected_report.summary()).unwrap()
+                );
                 assert_eq!(report["summary"]["kept_frames"], 4);
                 assert_eq!(report["summary"]["clipped_frames"], 2);
                 assert_eq!(report["summary"]["replaced_frames"], 1);
-                assert_eq!(report["summary"]["runs"].as_array().unwrap().len(), 3);
-                assert_eq!(report["summary"]["runs"][0]["start_frame"], 1);
-                assert_eq!(report["summary"]["runs"][0]["end_frame"], 1);
+                let frames = report["frames"].as_array().unwrap();
 
                 let log = std::fs::read_to_string(log_file.path()).unwrap();
                 let line = log
@@ -1028,12 +1006,19 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 .await
                 .unwrap();
                 for (index, frame) in overlay.iter().enumerate() {
-                    assert_eq!(frame.pixels[2 * 41 + 2] == 192, [1, 3, 6].contains(&index));
+                    assert_eq!(
+                        frame.pixels[2 * 41 + 2] == 192,
+                        expected_report.is_repaired(index)
+                    );
                 }
                 let raw_path = fixture.host_outputs.join("segmented_unrepaired.tif");
                 assert_eq!(raw_path.exists(), keep_unrepaired);
                 if keep_unrepaired {
                     let raw = read_volume_frames(&raw_path).await.unwrap();
+                    assert_eq!(raw.len(), expected_unrepaired.len());
+                    for (actual, expected) in raw.iter().zip(&expected_unrepaired) {
+                        assert_eq!(actual.pixels, expected.pixels);
+                    }
                     assert_eq!(raw[0].pixels[0], if cleanup { 0 } else { 255 });
                     assert!(raw[1].pixels.iter().all(|pixel| *pixel == 255));
                 }

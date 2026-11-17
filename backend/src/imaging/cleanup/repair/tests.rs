@@ -1,17 +1,6 @@
+use super::super::tests::mask as frame;
 use super::*;
 use crate::imaging::annotations::AnnotationOrigin;
-
-fn frame(width: usize, height: usize, foreground: &[(usize, usize)]) -> FrameMask {
-    let mut pixels = vec![0; width * height];
-    for &(x, y) in foreground {
-        pixels[y * width + x] = 255;
-    }
-    FrameMask {
-        width,
-        height,
-        pixels,
-    }
-}
 
 fn trace(x: f32, y: f32) -> [AnnotationPoint; 1] {
     [AnnotationPoint {
@@ -28,13 +17,8 @@ fn rectangle(left: usize, top: usize, width: usize, height: usize) -> Vec<(usize
         .collect()
 }
 
-fn record(
-    frame_index: usize,
-    component_area: usize,
-    reasons: Vec<FrameFlagReason>,
-) -> FrameRepairFrame {
+fn record(component_area: usize, reasons: Vec<FrameFlagReason>) -> FrameRepairFrame {
     FrameRepairFrame {
-        frame_index,
         component_area,
         reasons,
         anchor_recovered: false,
@@ -42,9 +26,8 @@ fn record(
     }
 }
 
-fn accepted_record(frame_index: usize, mask: &FrameMask) -> FrameRepairFrame {
+fn accepted_record(mask: &FrameMask) -> FrameRepairFrame {
     record(
-        frame_index,
         mask.pixels.iter().filter(|&&pixel| pixel != 0).count(),
         vec![],
     )
@@ -153,15 +136,15 @@ fn anchor_recovery_uses_inclusive_area_bounds_and_even_local_median() {
     let mut report = FrameRepairReport {
         options: FrameRepairOptions::default(),
         frames: vec![
-            record(0, 8, vec![]),
-            record(1, 12, vec![]),
-            record(2, 7, vec![FrameFlagReason::LowIou]),
-            record(3, 14, vec![FrameFlagReason::AreaJump]),
-            record(4, 6, vec![FrameFlagReason::AreaJump]),
-            record(5, 15, vec![FrameFlagReason::AreaJump]),
-            record(6, 10, vec![FrameFlagReason::EdgeContact]),
-            record(7, 0, vec![FrameFlagReason::EmptyComponent]),
-            record(8, 10, vec![FrameFlagReason::MissingTrace]),
+            record(8, vec![]),
+            record(12, vec![]),
+            record(7, vec![FrameFlagReason::LowIou]),
+            record(14, vec![FrameFlagReason::AreaJump]),
+            record(6, vec![FrameFlagReason::AreaJump]),
+            record(15, vec![FrameFlagReason::AreaJump]),
+            record(10, vec![FrameFlagReason::EdgeContact]),
+            record(0, vec![FrameFlagReason::EmptyComponent]),
+            record(10, vec![FrameFlagReason::MissingTrace]),
         ],
     };
     recover_anchors(&mut report);
@@ -185,13 +168,13 @@ fn recovery_uses_initial_accepted_snapshot_and_inclusive_150_frame_window() {
     let mut report = FrameRepairReport {
         options: FrameRepairOptions::default(),
         frames: (0..302)
-            .map(|index| record(index, 30, vec![FrameFlagReason::EdgeContact]))
+            .map(|_| record(30, vec![FrameFlagReason::EdgeContact]))
             .collect(),
     };
-    report.frames[0] = record(0, 8, vec![]);
-    report.frames[300] = record(300, 12, vec![]);
-    report.frames[301] = record(301, 1000, vec![]);
-    report.frames[150] = record(150, 7, vec![FrameFlagReason::LowIou]);
+    report.frames[0] = record(8, vec![]);
+    report.frames[300] = record(12, vec![]);
+    report.frames[301] = record(1000, vec![]);
+    report.frames[150] = record(7, vec![FrameFlagReason::LowIou]);
     recover_anchors(&mut report);
     assert!(
         report.frames[150].anchor_recovered,
@@ -201,12 +184,12 @@ fn recovery_uses_initial_accepted_snapshot_and_inclusive_150_frame_window() {
     let mut report = FrameRepairReport {
         options: FrameRepairOptions::default(),
         frames: (0..152)
-            .map(|index| record(index, 30, vec![FrameFlagReason::EdgeContact]))
+            .map(|_| record(30, vec![FrameFlagReason::EdgeContact]))
             .collect(),
     };
-    report.frames[0] = record(0, 10, vec![]);
-    report.frames[150] = record(150, 14, vec![FrameFlagReason::LowIou]);
-    report.frames[151] = record(151, 14, vec![FrameFlagReason::LowIou]);
+    report.frames[0] = record(10, vec![]);
+    report.frames[150] = record(14, vec![FrameFlagReason::LowIou]);
+    report.frames[151] = record(14, vec![FrameFlagReason::LowIou]);
     recover_anchors(&mut report);
     assert!(report.frames[150].anchor_recovered);
     assert!(
@@ -327,9 +310,9 @@ fn aligned_sdf_estimates_follow_integer_centroid_motion_and_fractional_sampling(
     let right = frame(40, 15, &rectangle(26, 7, 3, 3));
     let anchors = AlignedAnchors::new(
         &left,
-        &accepted_record(0, &left),
+        &accepted_record(&left),
         &right,
-        &accepted_record(4, &right),
+        &accepted_record(&right),
     );
     for (fraction, x, y) in [
         (0.0, 2, 3),
@@ -352,9 +335,9 @@ fn aligned_sdf_estimates_follow_integer_centroid_motion_and_fractional_sampling(
     let right = frame(8, 7, &rectangle(3, 2, 3, 3));
     let anchors = AlignedAnchors::new(
         &left,
-        &accepted_record(0, &left),
+        &accepted_record(&left),
         &right,
-        &accepted_record(2, &right),
+        &accepted_record(&right),
     );
     let expected = frame(8, 7, &rectangle(3, 2, 2, 3));
     assert_eq!(
@@ -522,6 +505,25 @@ fn leading_internal_three_frame_and_trailing_runs_clip_using_accepted_estimates(
     assert_eq!(
         serialized["frames"][0]["reasons"],
         serde_json::json!(["edge_contact"])
+    );
+
+    // Moving records changes identity everywhere; no stored index can go stale.
+    let mut reordered = report;
+    reordered.frames.rotate_left(2);
+    let serialized = serde_json::to_value(&reordered).unwrap();
+    for (index, frame) in serialized["frames"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(frame["frame_index"], index);
+        assert_eq!(frame["repair"] != "kept", reordered.is_repaired(index));
+    }
+    assert_eq!(serialized["frames"][0]["component_area"], 9);
+    assert_eq!(
+        reordered
+            .summary()
+            .runs
+            .iter()
+            .map(|run| (run.start_frame, run.end_frame))
+            .collect::<Vec<_>>(),
+        [(1, 3), (5, 8)]
     );
 }
 

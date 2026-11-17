@@ -39,7 +39,6 @@ impl FrameRepairAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FrameRepairFrame {
-    pub frame_index: usize,
     /// Area of the selected raw component before recovery or repair. This one
     /// measurement supplies both predecessor comparisons and anchor recovery.
     pub component_area: usize,
@@ -59,7 +58,27 @@ impl FrameRepairFrame {
 pub struct FrameRepairReport {
     pub options: FrameRepairOptions,
     /// One authoritative classification and outcome per input frame, in stack order.
+    #[serde(serialize_with = "serialize_frames")]
     pub frames: Vec<FrameRepairFrame>,
+}
+
+fn serialize_frames<S: serde::Serializer>(
+    frames: &[FrameRepairFrame],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    // Frame identity is vector position. The explicit index exists only at output.
+    #[derive(Serialize)]
+    struct IndexedFrame<'a> {
+        frame_index: usize,
+        #[serde(flatten)]
+        frame: &'a FrameRepairFrame,
+    }
+    serializer.collect_seq(
+        frames
+            .iter()
+            .enumerate()
+            .map(|(frame_index, frame)| IndexedFrame { frame_index, frame }),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -98,7 +117,7 @@ impl FrameRepairReport {
             total_frames: self.frames.len(),
             ..FrameRepairSummary::default()
         };
-        for frame in &self.frames {
+        for (frame_index, frame) in self.frames.iter().enumerate() {
             summary.initially_flagged_frames += usize::from(!frame.reasons.is_empty());
             summary.recovered_anchor_frames += usize::from(frame.anchor_recovered);
             let repaired = usize::from(frame.repair.is_repaired());
@@ -117,15 +136,15 @@ impl FrameRepairReport {
             if let Some(run) = summary
                 .runs
                 .last_mut()
-                .filter(|run| run.end_frame.checked_add(1) == Some(frame.frame_index))
+                .filter(|run| run.end_frame.checked_add(1) == Some(frame_index))
             {
-                run.end_frame = frame.frame_index;
+                run.end_frame = frame_index;
                 run.flagged_frames += 1;
                 run.repaired_frames += repaired;
             } else {
                 summary.runs.push(FrameRepairRun {
-                    start_frame: frame.frame_index,
-                    end_frame: frame.frame_index,
+                    start_frame: frame_index,
+                    end_frame: frame_index,
                     flagged_frames: 1,
                     repaired_frames: repaired,
                 });
@@ -221,7 +240,6 @@ pub fn repair_inconsistent_frames(
             }
         }
         report.frames.push(FrameRepairFrame {
-            frame_index,
             component_area,
             reasons,
             anchor_recovered: false,

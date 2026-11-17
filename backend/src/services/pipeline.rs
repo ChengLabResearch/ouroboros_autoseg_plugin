@@ -257,33 +257,33 @@ async fn save_masks(
             write_mask_stack(&unrepaired_mask_path(&prepared.plan.volume_output), masks).await?;
         }
         let report = repair_inconsistent_frames(masks, &prepared.annotation_points, options)?;
-        let summary = report.summary();
-        // Runs/counts and the log are boundary views of the same per-frame decisions
-        // consumed by the overlay; neither computes a second set of flags.
+        let mut document = serde_json::to_value(&report)?;
+        document["schema_version"] = 2.into();
+        document["summary"] = serde_json::to_value(report.summary())?;
+        // Filter using runtime decisions, then log the same indexed output records
+        // as the sidecar. Serialized values never drive repair or overlay behavior.
         let flagged_frames: Vec<_> = report
             .frames
             .iter()
-            .filter(|frame| frame.is_flagged())
+            .enumerate()
+            .filter(|(_, frame)| frame.is_flagged())
+            .map(|(index, _)| &document["frames"][index])
             .collect();
         let recovered_anchors: Vec<_> = report
             .frames
             .iter()
-            .filter(|frame| frame.anchor_recovered)
+            .enumerate()
+            .filter(|(_, frame)| frame.anchor_recovered)
+            .map(|(index, _)| &document["frames"][index])
             .collect();
         tracing::info!(
             output = %request.output_file,
             options = ?report.options,
-            summary = %serde_json::to_string(&summary)?,
+            summary = %document["summary"],
             flagged_frames = %serde_json::to_string(&flagged_frames)?,
             recovered_anchors = %serde_json::to_string(&recovered_anchors)?,
             "inconsistent-frame repair complete"
         );
-        let document = serde_json::json!({
-            "schema_version": 2,
-            "options": report.options,
-            "frames": report.frames,
-            "summary": summary,
-        });
         tokio::fs::write(
             frame_repair_report_path(&prepared.plan.volume_output),
             serde_json::to_vec_pretty(&document)?,
