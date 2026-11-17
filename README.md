@@ -65,7 +65,11 @@ recovered seeds), and frames left unchanged because no seed was found.
 predictors. It runs after centre-line cleanup, if that is enabled. It uses the
 same interpolated trace, nearest-foreground search and 8-connected component
 selector on every frame, including video frames without inference prompts.
-Repair starts with these selected components.
+Enabling repair removes off-trace components from every frame, including
+accepted frames, even when **Keep Centre-line Component** is off. If a trace
+point exists but no foreground lies within 10 pixels of it, centre-line
+cleanup leaves the frame unchanged; repair empties it, flags it
+`empty_component`, and may fill it from an accepted-frame estimate.
 
 The selected component is flagged if it touches an image edge, its area changes
 by more than **Max Area Ratio** (default 1.5) in either direction, or its IoU
@@ -95,9 +99,10 @@ The frame keeps its own component intersected with the estimate dilated by a
 10-pixel Euclidean radius. Only when the surviving area is **less than 30% of
 the undilated estimate's area** is the estimate substituted. There is no extra
 overlap/agreement gate. This preserves observed detail while filling dropouts.
-Actions are `kept` when the repair pass changes no pixels, `clipped` when it
-removes foreground, and `replaced` when it substitutes the estimate. Clipping
-retains original foreground values; substituted estimates use 0/255.
+Actions are `kept` when there is no pixel change beyond component selection,
+`clipped` when repair removes foreground, and `replaced` when it substitutes
+the estimate. Clipping retains original foreground values; substituted
+estimates use 0/255.
 
 Frames without any trace remain empty and flagged. If every frame is flagged,
 there is no accepted anchor: selected components remain unchanged with action
