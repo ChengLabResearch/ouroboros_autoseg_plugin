@@ -275,7 +275,7 @@ async fn prepare_uses_metadata_annotations_and_video_jpeg_targets() {
 }
 
 #[tokio::test]
-async fn prepared_border_prompts_feed_both_adapters_and_overlay_without_changing_masks() {
+async fn prepared_prompts_feed_both_adapters_and_exact_overlay_without_changing_masks() {
     use crate::{
         domain::requests::NegativeBorderPoints,
         inference::{
@@ -284,7 +284,12 @@ async fn prepared_border_prompts_feed_both_adapters_and_overlay_without_changing
         },
     };
 
-    for predictor in ["VideoPredictor", "ImagePredictor"] {
+    for (predictor, border_points) in [
+        ("VideoPredictor", None),
+        ("VideoPredictor", Some(NegativeBorderPoints::default())),
+        ("ImagePredictor", None),
+        ("ImagePredictor", Some(NegativeBorderPoints::default())),
+    ] {
         let fixture = VolumeFixture::start(None, None);
         let pages = (0..11)
             .map(|index| WritableTiffPage {
@@ -300,7 +305,7 @@ async fn prepared_border_prompts_feed_both_adapters_and_overlay_without_changing
         write_tiff_pages(&fixture.host_input, &pages).unwrap();
         let mut request = sample_request(predictor);
         request.max_prompt_gap = Some(3);
-        request.negative_border_points = Some(NegativeBorderPoints::default());
+        request.negative_border_points = border_points;
         request.overlay_annotation_points = true;
         let prepared = prepare(&fixture.state, &request).await.unwrap();
         let expected_frames = if predictor == "VideoPredictor" {
@@ -317,7 +322,10 @@ async fn prepared_border_prompts_feed_both_adapters_and_overlay_without_changing
             expected_frames
         );
         for prompt in &prepared.prompts {
-            assert_eq!(prompt.points.len(), 16);
+            assert_eq!(
+                prompt.points.len(),
+                if border_points.is_some() { 16 } else { 1 }
+            );
             assert!(matches!(
                 prompt.points[0].kind,
                 PointPromptKind::Positive(_)
@@ -328,7 +336,7 @@ async fn prepared_border_prompts_feed_both_adapters_and_overlay_without_changing
             let session = build_session_prompt(&prompt.points, 64, 64);
             let geometry =
                 build_geometry_prompt(&prompt.points, 64, 64, &candle_core::Device::Cpu).unwrap();
-            let mut labels = vec![0; 16];
+            let mut labels = vec![0; prompt.points.len()];
             labels[0] = 1;
             assert_eq!(session.point_labels.unwrap(), labels);
             assert_eq!(
@@ -358,9 +366,23 @@ async fn prepared_border_prompts_feed_both_adapters_and_overlay_without_changing
         for (index, frame) in overlay.iter().enumerate() {
             assert!(primary[index].pixels.iter().all(|&pixel| pixel == 255));
             assert!(masks[index].pixels.iter().all(|&pixel| pixel == 255));
-            assert_eq!(frame.pixels.contains(&64), expected_frames.contains(&index));
+            assert_eq!(
+                frame.pixels.contains(&64),
+                border_points.is_some() && expected_frames.contains(&index)
+            );
             if expected_frames.contains(&index) {
-                assert_eq!(frame.pixels[12 * 64 + 12], 64, "first negative location");
+                assert!(
+                    frame.pixels.contains(&127),
+                    "positive marker on prompted frame"
+                );
+                if border_points.is_some() {
+                    assert_eq!(frame.pixels[12 * 64 + 12], 64, "first negative location");
+                }
+            } else {
+                assert_eq!(
+                    frame.pixels, primary[index].pixels,
+                    "unprompted frame {index}"
+                );
             }
         }
     }

@@ -6,7 +6,7 @@ use crate::{
         annotation_samples_for_video, fill_prompt_gaps, AnnotationOrigin, AnnotationPoint,
     },
     imaging::tiff_io::{inspect_volume, read_volume_frames},
-    inference::image::FrameMask,
+    inference::image::{FrameMask, PointPrompt},
 };
 use uuid::Uuid;
 
@@ -102,7 +102,6 @@ async fn write_annotation_overlay_stack_preserves_source_masks_and_marks_points(
     write_annotation_overlay_stack(
         &output_path,
         &masks,
-        &annotations,
         &annotation_samples_for_video(&annotations, masks.len()),
         127,
     )
@@ -115,7 +114,7 @@ async fn write_annotation_overlay_stack_preserves_source_masks_and_marks_points(
         .expect("read overlay stack");
     assert_eq!(frames.len(), 2);
     assert_eq!(frames[0].pixels[2 + 2 * 5], 127);
-    assert_eq!(frames[1].pixels[2 + 2 * 5], 127);
+    assert_eq!(frames[1].pixels, masks[1].pixels);
 }
 
 #[tokio::test]
@@ -149,7 +148,6 @@ async fn write_annotation_overlay_stack_marks_only_added_prompt_frames_with_holl
     write_annotation_overlay_stack(
         &output_path,
         &masks,
-        &annotations,
         &annotation_samples_for_video(&annotations, masks.len()),
         127,
     )
@@ -164,7 +162,7 @@ async fn write_annotation_overlay_stack_marks_only_added_prompt_frames_with_holl
             assert_eq!(frame.pixels[4 * 9 + 4], 0, "gap marker is hollow");
             assert_eq!(frame.pixels[9 + 4], 127, "diamond top");
             assert_eq!(frame.pixels[4 * 9 + 7], 127, "diamond right");
-        } else {
+        } else if index == 0 || index == 4 {
             assert_eq!(
                 frame.pixels[4 * 9 + 4],
                 127,
@@ -172,9 +170,142 @@ async fn write_annotation_overlay_stack_marks_only_added_prompt_frames_with_holl
             );
             assert_eq!(frame.pixels[9 + 4], 0);
             assert_eq!(frame.pixels[4 * 9 + 7], 0);
+        } else {
+            assert_eq!(frame.pixels, masks[index].pixels, "unprompted frame");
         }
     }
     assert!(masks
         .iter()
         .all(|mask| mask.pixels.iter().all(|pixel| *pixel == 0)));
+}
+
+#[tokio::test]
+async fn overlay_uses_every_prepared_point_with_its_original_kind_and_frame() {
+    let root = tempfile::tempdir().expect("overlay fixture");
+    let masks = vec![
+        FrameMask {
+            width: 24,
+            height: 24,
+            pixels: vec![255; 24 * 24],
+        };
+        11
+    ];
+    let mut annotations = vec![
+        AnnotationPoint {
+            x: 4.2,
+            y: 5.6,
+            z: 3.2,
+            origin: AnnotationOrigin::Metadata,
+        },
+        AnnotationPoint {
+            x: 12.6,
+            y: 5.2,
+            z: 3.4,
+            origin: AnnotationOrigin::Metadata,
+        },
+        AnnotationPoint {
+            x: 5.2,
+            y: 14.8,
+            z: 7.0,
+            origin: AnnotationOrigin::Fallback,
+        },
+    ];
+    assert_eq!(fill_prompt_gaps(&mut annotations, masks.len(), Some(2)), 1);
+    let mut prompts = annotation_samples_for_video(&annotations, masks.len());
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|prompt| prompt.frame_index)
+            .collect::<Vec<_>>(),
+        [3, 5, 7]
+    );
+    assert_eq!(
+        prompts[0].points.len(),
+        2,
+        "same-frame positives are retained"
+    );
+    for prompt in &mut prompts {
+        prompt.points.push(PointPrompt::negative(18.6, 18.4));
+    }
+
+    for (positive_intensity, negative_intensity) in [(127, 64), (64, 63)] {
+        let output_path = root
+            .path()
+            .join(format!("overlay-{positive_intensity}.tif"));
+        write_annotation_overlay_stack(&output_path, &masks, &prompts, positive_intensity)
+            .await
+            .expect("write overlay");
+        let frames = read_volume_frames(&output_path)
+            .await
+            .expect("read overlay");
+        for (index, frame) in frames.iter().enumerate() {
+            let positive_pixels = frame
+                .pixels
+                .iter()
+                .filter(|&&p| p == positive_intensity)
+                .count();
+            let negative_pixels = frame
+                .pixels
+                .iter()
+                .filter(|&&p| p == negative_intensity)
+                .count();
+            match index {
+                3 => {
+                    assert_eq!(positive_pixels, 26, "two metadata stars, 13 pixels each");
+                    assert_eq!(frame.pixels[6 * 24 + 4], positive_intensity);
+                    assert_eq!(frame.pixels[5 * 24 + 13], positive_intensity);
+                }
+                5 => {
+                    assert_eq!(positive_pixels, 12, "gap-fill hollow diamond");
+                    assert_eq!(frame.pixels[9 * 24 + 9], 255, "diamond centre is untouched");
+                    assert_eq!(frame.pixels[6 * 24 + 9], positive_intensity, "diamond top");
+                }
+                7 => {
+                    assert_eq!(positive_pixels, 13, "fallback star");
+                    assert_eq!(frame.pixels[15 * 24 + 5], positive_intensity);
+                }
+                _ => {
+                    assert_eq!(
+                        frame.pixels, masks[index].pixels,
+                        "unprompted frame {index}"
+                    );
+                    continue;
+                }
+            }
+            assert_eq!(negative_pixels, 5, "negative cross");
+            assert_eq!(frame.pixels[18 * 24 + 19], negative_intensity);
+        }
+    }
+    assert!(masks
+        .iter()
+        .all(|mask| mask.pixels.iter().all(|&pixel| pixel == 255)));
+}
+
+#[tokio::test]
+async fn overlay_without_prepared_prompts_is_byte_identical_to_primary_stack() {
+    let root = tempfile::tempdir().expect("overlay fixture");
+    let primary_path = root.path().join("primary.tif");
+    let overlay_path = root.path().join("overlay.tif");
+    let masks = vec![
+        FrameMask {
+            width: 2,
+            height: 2,
+            pixels: vec![0, 255, 255, 0],
+        },
+        FrameMask {
+            width: 2,
+            height: 2,
+            pixels: vec![255, 0, 0, 255],
+        },
+    ];
+    write_mask_stack(&primary_path, &masks)
+        .await
+        .expect("write primary");
+    write_annotation_overlay_stack(&overlay_path, &masks, &[], 127)
+        .await
+        .expect("write overlay without points");
+    assert_eq!(
+        std::fs::read(primary_path).unwrap(),
+        std::fs::read(overlay_path).unwrap()
+    );
 }

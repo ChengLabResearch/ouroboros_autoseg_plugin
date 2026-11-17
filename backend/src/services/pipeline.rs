@@ -249,7 +249,6 @@ async fn save_masks(
         write_annotation_overlay_stack(
             &annotation_overlay_path(&prepared.plan.volume_output),
             masks,
-            &prepared.annotation_points,
             &prepared.prompts,
             request.annotation_overlay_intensity,
         )

@@ -3,7 +3,6 @@ use std::path::Path;
 use crate::{
     error::AppError,
     imaging::{
-        annotations::{interpolated_point_for_frame, AnnotationOrigin, AnnotationPoint},
         overlay::draw_annotation_marker,
         tiff_io::{write_tiff_pages, WritableTiffPage},
     },
@@ -66,7 +65,6 @@ where
 pub async fn write_annotation_overlay_stack(
     target: &Path,
     masks: &[FrameMask],
-    annotation_points: &[AnnotationPoint],
     prompts: &[VideoFramePrompt],
     intensity: u8,
 ) -> Result<(), AppError> {
@@ -97,17 +95,6 @@ pub async fn write_annotation_overlay_stack(
                     point.kind,
                 );
             }
-        } else if let Some(point) = interpolated_point_for_frame(annotation_points, frame_index) {
-            // Retain the legacy trace visualization between prompted frames.
-            draw_annotation_marker(
-                &mut mask.pixels,
-                mask.width,
-                mask.height,
-                point.x,
-                point.y,
-                intensity,
-                PointPromptKind::Positive(AnnotationOrigin::Metadata),
-            );
         }
     }
 

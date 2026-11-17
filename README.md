@@ -86,10 +86,19 @@ be encoded. Counts above the default remain available for explicit tuning.
 
 With **Draw Prompts**, negative border points appear as small crosses at
 intensity 64 (63 if the API's positive overlay intensity is 64), distinct from
-the default positive intensity of 127. In this version, the positive overlay
-continues to show the existing interpolated annotation path; negative crosses
-appear only on the frames where they were submitted. Overlay markers affect
-the diagnostic output, not inference or centre-line cleanup.
+the default positive intensity of 127. Original metadata and fallback positives
+use stars; positives added by **Max Prompt Gap** use hollow diamonds.
+
+The diagnostic overlay uses the same prepared prompt list submitted to
+inference. Video frames without prompts, including frames before the first and
+after the last prompt, remain identical to the primary mask. Every positive
+on a prompted frame is drawn, including multiple annotations whose fractional
+z coordinates round to that frame, along with any negative border points.
+Image prediction still marks every frame it prompts. Coordinates are rounded
+to pixels and glyphs are clipped at image edges. The overlay records submitted
+prompts; it does not imply that over-cap points were encoded by the runtime.
+Drawing prompts changes neither inference nor centre-line cleanup, which keeps
+its existing interpolated annotation seeds.
 
 To get started with developing a plugin:
 

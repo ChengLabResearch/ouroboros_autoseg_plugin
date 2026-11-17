@@ -40,8 +40,34 @@ center prompts. It has no effect on ImagePredictor.
 Only internal gaps are filled: no prompts are added before the first or after the
 last prompted frame. Video propagation remains forward-only. The job log reports
 the added count. With **Draw Prompts** enabled, added prompt frames have hollow
-diamond markers; other frames retain the existing star markers.
+diamond markers; original metadata and fallback positives have star markers.
 
 Smaller gaps retain more conditioning states and use more memory. Added positive
 points force their interpolated location into the mask, including off-target
 tissue if the trace misses the lumen.
+
+## Prompt overlay
+
+**Draw Prompts** writes a separate annotation-overlay TIFF using the same
+prepared point list passed to inference. It does not interpolate additional
+display points. In video mode, frames without prepared prompts, including
+leading and trailing frames, remain pixel-identical to the primary mask.
+Multiple annotations that round to the same frame all appear; they are not
+collapsed into one point. Image mode continues to mark every actually prompted
+frame using its prepared points.
+
+The marker key is:
+
+| Prompt kind | Marker | Default intensity |
+| --- | --- | --- |
+| Metadata or fallback positive | Star | 127 |
+| Gap-fill positive | Hollow diamond | 127 |
+| Negative border point | Small cross | 64 |
+
+Negative border points, when enabled through `negative_border_points`, are
+included in those same frame prompt lists. If the API's positive overlay
+intensity is 64, negative crosses use 63 to remain distinct. Point coordinates
+are rounded to pixels and glyphs are clipped at image edges. The diagnostic
+represents submitted prompts; the runtime's 16-point limit may omit excess
+points during encoding. The primary mask and the centre-line cleanup's
+interpolated seeds are unchanged by drawing prompts.
