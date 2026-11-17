@@ -515,8 +515,8 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                         </div>
                     </div>
                     <p id="frame-repair-help">
-                        Keeps the trace component per frame, flags edge contact, area change, or low
-                        overlap, and interpolates between accepted neighbours. A flags JSON file
+                        Keeps trace components, preserves plausible frames, and uses neighbouring
+                        accepted frames to clip suspect masks or replace dropouts. A flags JSON file
                         lists frames for review.
                     </p>
                     {repairFramesEnabled && <>

@@ -14,6 +14,75 @@ pub(super) fn signed_distances(component: &[bool], width: usize, height: usize) 
     signed
 }
 
+/// A signed field extended with actual background pixels. The padding covers
+/// the active anchor pair's centroid displacement, including bilinear neighbours.
+pub(super) struct PaddedSignedDistanceField {
+    values: Vec<f64>,
+    width: usize,
+    height: usize,
+    padding_x: usize,
+    padding_y: usize,
+}
+
+impl PaddedSignedDistanceField {
+    pub(super) fn new(
+        component: &[bool],
+        width: usize,
+        height: usize,
+        padding_x: usize,
+        padding_y: usize,
+    ) -> Self {
+        let padded_width = width + 2 * padding_x;
+        let padded_height = height + 2 * padding_y;
+        let mut padded = vec![false; padded_width * padded_height];
+        for (y, row) in component.chunks_exact(width).enumerate() {
+            let start = (y + padding_y) * padded_width + padding_x;
+            padded[start..start + width].copy_from_slice(row);
+        }
+        Self {
+            values: signed_distances(&padded, padded_width, padded_height),
+            width: padded_width,
+            height: padded_height,
+            padding_x,
+            padding_y,
+        }
+    }
+
+    /// Sample in the original image's floating-point pixel-centre coordinates.
+    /// The caller's centroid-derived padding must cover the requested location.
+    pub(super) fn sample(&self, x: f64, y: f64) -> f64 {
+        let x = x + self.padding_x as f64;
+        let y = y + self.padding_y as f64;
+        debug_assert!((0.0..=(self.width - 1) as f64).contains(&x));
+        debug_assert!((0.0..=(self.height - 1) as f64).contains(&y));
+        let x0 = x.floor() as usize;
+        let y0 = y.floor() as usize;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+        let fx = x - x0 as f64;
+        let fy = y - y0 as f64;
+        let top =
+            (1.0 - fx) * self.values[y0 * self.width + x0] + fx * self.values[y0 * self.width + x1];
+        let bottom =
+            (1.0 - fx) * self.values[y1 * self.width + x0] + fx * self.values[y1 * self.width + x1];
+        (1.0 - fy) * top + fy * bottom
+    }
+}
+
+/// Euclidean disk dilation, using the same exact transform as signed distances.
+pub(super) fn dilated_by_radius(
+    component: &[bool],
+    width: usize,
+    height: usize,
+    radius: usize,
+) -> Vec<bool> {
+    let limit = (radius as f64).powi(2);
+    squared_distances(component, width, height, true)
+        .into_iter()
+        .map(|distance| distance <= limit)
+        .collect()
+}
+
 fn squared_distances(
     component: &[bool],
     width: usize,
@@ -139,5 +208,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn padded_fields_sample_fractional_native_and_off_image_coordinates() {
+        let mut component = vec![false; 5 * 3];
+        component[5 + 2] = true;
+        let field = PaddedSignedDistanceField::new(&component, 5, 3, 4, 2);
+        assert_eq!(field.sample(2.0, 1.0), 1.0);
+        assert_eq!(field.sample(1.5, 1.0), 0.0);
+        assert_eq!(field.sample(3.5, 1.0), -1.5);
+        assert_eq!(field.sample(-0.5, 1.0), -2.5);
+        let expected = (-2.0f64.sqrt() - 5.0f64.sqrt() - 5.0f64.sqrt() - 8.0f64.sqrt()) / 4.0;
+        // The independently expanded four-sample mean has a different addition order.
+        assert!((field.sample(3.5, 2.5) - expected).abs() <= f64::EPSILON * expected.abs());
+    }
+
+    #[test]
+    fn ten_pixel_dilation_is_an_inclusive_euclidean_disk() {
+        let mut component = vec![false; 25 * 25];
+        component[12 * 25 + 12] = true;
+        let dilated = dilated_by_radius(&component, 25, 25, 10);
+        assert!(dilated[12 * 25 + 22]);
+        assert!(dilated[20 * 25 + 18]);
+        assert!(!dilated[13 * 25 + 22]);
+        assert!(
+            !dilated[20 * 25 + 20],
+            "diagonal Chebyshev neighbours are outside the disk"
+        );
+        assert!(dilated_by_radius(&vec![false; 25 * 25], 25, 25, 10)
+            .iter()
+            .all(|&inside| !inside));
     }
 }

@@ -76,8 +76,10 @@ interpolated seeds are unchanged by drawing prompts.
 
 Repair markers derive from the same per-frame report saved in the JSON sidecar;
 they are drawn after prompt markers, including on unprompted video frames.
-They use intensity 191 if the positive intensity is 192. Flagged frames that
-cannot be repaired remain in the report without an X. Repair uses the existing
-interpolated trace for component selection, independently of the sparse list
+They use intensity 191 if the positive intensity is 192. Actions `clipped` and
+`replaced` receive an X; `kept` frames do not. Recovered anchors retain their
+original detector reasons in the report but leave the final flag list, while
+unchanged flagged frames remain in that list without an X. Repair uses the
+existing interpolated trace for component selection, independently of the sparse list
 of inference prompts. See [inconsistent-frame repair](../../README.md#inconsistent-frame-repair)
 for the request options, rule, and output files.

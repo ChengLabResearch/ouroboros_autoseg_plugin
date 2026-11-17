@@ -331,25 +331,54 @@ async fn repair_markers_follow_report_actions_without_requiring_frame_prompts() 
     let report = FrameRepairReport {
         options: FrameRepairOptions::default(),
         frames: [
-            FrameRepairAction::Accepted,
-            FrameRepairAction::Interpolated,
-            FrameRepairAction::Unrepaired,
-            FrameRepairAction::CopiedPrevious,
-            FrameRepairAction::CopiedNext,
+            (FrameRepairAction::Kept, vec![], false),
+            (
+                FrameRepairAction::Clipped,
+                vec![FrameFlagReason::EdgeContact],
+                false,
+            ),
+            (
+                FrameRepairAction::Kept,
+                vec![FrameFlagReason::EdgeContact],
+                false,
+            ),
+            (
+                FrameRepairAction::Kept,
+                vec![FrameFlagReason::AreaJump],
+                true,
+            ),
+            (
+                FrameRepairAction::Replaced,
+                vec![FrameFlagReason::EmptyComponent],
+                false,
+            ),
         ]
         .into_iter()
         .enumerate()
-        .map(|(frame_index, repair)| FrameRepairFrame {
-            frame_index,
-            reasons: if frame_index == 0 {
-                vec![]
-            } else {
-                vec![FrameFlagReason::EdgeContact]
+        .map(
+            |(frame_index, (repair, reasons, anchor_recovered))| FrameRepairFrame {
+                frame_index,
+                component_area: if frame_index == 4 { 0 } else { 9 },
+                reasons,
+                anchor_recovered,
+                repair,
             },
-            repair,
-        })
+        )
         .collect(),
     };
+    assert!(
+        report.frames[2].is_flagged(),
+        "unchanged flagged frame remains on review list"
+    );
+    assert!(
+        !report.frames[3].is_flagged(),
+        "recovered anchor leaves review list"
+    );
+    assert_eq!(
+        report.frames[3].reasons,
+        [FrameFlagReason::AreaJump],
+        "original trigger remains recorded"
+    );
     for (positive_intensity, repair_intensity) in [(127, 192), (192, 191)] {
         let path = root.path().join(format!("repair-{positive_intensity}.tif"));
         write_annotation_overlay_stack(&path, &masks, &[], positive_intensity, Some(&report))
@@ -357,7 +386,7 @@ async fn repair_markers_follow_report_actions_without_requiring_frame_prompts() 
             .expect("repair overlay without prompts");
         let frames = read_volume_frames(&path).await.unwrap();
         for (index, frame) in frames.iter().enumerate() {
-            if [1, 3, 4].contains(&index) {
+            if [1, 4].contains(&index) {
                 assert_eq!(
                     frame
                         .pixels
@@ -376,7 +405,7 @@ async fn repair_markers_follow_report_actions_without_requiring_frame_prompts() 
             } else {
                 assert_eq!(
                     frame.pixels, masks[index].pixels,
-                    "accepted or unrepaired frame"
+                    "kept frame is unmarked, including recovered and still-flagged frames"
                 );
             }
         }
@@ -429,13 +458,17 @@ async fn report_without_repairs_leaves_existing_prompt_overlay_byte_identical() 
         frames: vec![
             FrameRepairFrame {
                 frame_index: 0,
-                reasons: vec![],
-                repair: FrameRepairAction::Accepted,
+                component_area: 64,
+                reasons: vec![FrameFlagReason::LowIou],
+                anchor_recovered: true,
+                repair: FrameRepairAction::Kept,
             },
             FrameRepairFrame {
                 frame_index: 1,
+                component_area: 64,
                 reasons: vec![FrameFlagReason::EdgeContact],
-                repair: FrameRepairAction::Unrepaired,
+                anchor_recovered: false,
+                repair: FrameRepairAction::Kept,
             },
         ],
     };

@@ -263,17 +263,23 @@ async fn save_masks(
         let flagged_frames: Vec<_> = report
             .frames
             .iter()
-            .filter(|frame| !frame.reasons.is_empty())
+            .filter(|frame| frame.is_flagged())
+            .collect();
+        let recovered_anchors: Vec<_> = report
+            .frames
+            .iter()
+            .filter(|frame| frame.anchor_recovered)
             .collect();
         tracing::info!(
             output = %request.output_file,
             options = ?report.options,
             summary = %serde_json::to_string(&summary)?,
             flagged_frames = %serde_json::to_string(&flagged_frames)?,
+            recovered_anchors = %serde_json::to_string(&recovered_anchors)?,
             "inconsistent-frame repair complete"
         );
         let document = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "options": report.options,
             "frames": report.frames,
             "summary": summary,
