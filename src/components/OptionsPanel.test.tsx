@@ -65,7 +65,7 @@ function form() {
         return visit(tree);
     };
     const control = (id: string) => {
-        const result = find((props) => props.id === id || props.placeholder === id || props.title === id);
+        const result = find((props) => props.id === id || props.placeholder === id || props.title === id || props.value === id);
         if (!result) throw new Error(`Missing control: ${id}`);
         return result;
     };
@@ -143,6 +143,88 @@ describe('negative border point options', () => {
         expect(panel.control('Run Segmentation').disabled).toBe(true);
         panel.change('negative-border-count', '15');
         panel.change('negative-border-inset', '12', true);
+        expect(panel.control('Run Segmentation').disabled).toBe(true);
+    });
+});
+
+describe('inconsistent frame repair options', () => {
+    it('starts disabled and submits null without displaying repair settings', () => {
+        const panel = form();
+        expect(panel.control('repair-inconsistent-frames').checked).toBe(false);
+        expect(panel.find((props) => props.id === 'repair-max-area-ratio')).toBeUndefined();
+        expect(panel.find((props) => props.id === 'repair-min-iou')).toBeUndefined();
+        expect(panel.find((props) => props.id === 'repair-keep-unrepaired')).toBeUndefined();
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenCalledWith(expect.objectContaining({ repairInconsistentFrames: null }));
+    });
+
+    it.each(['ImagePredictor', 'VideoPredictor'])('submits defaults and edited settings for %s', (predictor) => {
+        const panel = form();
+        panel.change('ImagePredictor', predictor);
+        panel.change('repair-inconsistent-frames', true);
+        expect(panel.control('repair-max-area-ratio').value).toBe('1.5');
+        expect(panel.control('repair-min-iou').value).toBe('0.5');
+        expect(panel.control('repair-keep-unrepaired').checked).toBe(false);
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            predictor_type: predictor,
+            repairInconsistentFrames: { max_area_ratio: 1.5, min_iou: 0.5, keep_unrepaired: false },
+        }));
+        panel.change('repair-max-area-ratio', '2.25');
+        panel.change('repair-min-iou', '0.75');
+        panel.change('repair-keep-unrepaired', true);
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            repairInconsistentFrames: { max_area_ratio: 2.25, min_iou: 0.75, keep_unrepaired: true },
+        }));
+    });
+
+    it.each(['0', '1'])('accepts an area ratio of 1 and inclusive IoU boundary %s', (iou) => {
+        const panel = form();
+        panel.change('repair-inconsistent-frames', true);
+        panel.change('repair-max-area-ratio', '1');
+        panel.change('repair-min-iou', iou);
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            repairInconsistentFrames: { max_area_ratio: 1, min_iou: Number(iou), keep_unrepaired: false },
+        }));
+    });
+
+    it.each(['', '0', '0.99', 'Infinity', 'NaN'])('blocks invalid area ratio %s only while enabled', (ratio) => {
+        const panel = form();
+        panel.change('repair-inconsistent-frames', true);
+        panel.change('repair-max-area-ratio', ratio);
+        expect(panel.control('repair-max-area-ratio')['aria-invalid']).toBe(true);
+        expect(panel.control('Run Segmentation').disabled).toBe(true);
+        expect(panel.html()).toContain('Enter a finite area ratio of at least 1.');
+        panel.change('repair-inconsistent-frames', false);
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ repairInconsistentFrames: null }));
+    });
+
+    it.each(['', '-0.01', '1.01', 'Infinity', 'NaN'])('blocks invalid IoU %s', (iou) => {
+        const panel = form();
+        panel.change('repair-inconsistent-frames', true);
+        panel.change('repair-min-iou', iou);
+        expect(panel.control('repair-min-iou')['aria-invalid']).toBe(true);
+        expect(panel.control('Run Segmentation').disabled).toBe(true);
+        expect(panel.html()).toContain('Enter a finite IoU between 0 and 1.');
+        panel.change('repair-min-iou', '0.5');
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+    });
+
+    it('blocks browser bad-input thresholds even when their strings look valid', () => {
+        const panel = form();
+        panel.change('repair-inconsistent-frames', true);
+        panel.change('repair-max-area-ratio', '1.5', true);
+        expect(panel.control('Run Segmentation').disabled).toBe(true);
+        panel.change('repair-max-area-ratio', '1.5');
+        panel.change('repair-min-iou', '0.5', true);
         expect(panel.control('Run Segmentation').disabled).toBe(true);
     });
 });

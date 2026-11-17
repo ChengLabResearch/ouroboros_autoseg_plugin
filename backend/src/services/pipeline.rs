@@ -16,8 +16,10 @@ use crate::{
             add_negative_border_points, annotation_samples_for_image, annotation_samples_for_video,
             default_annotations, fill_prompt_gaps, AnnotationPoint, VolumeShape,
         },
-        cleanup::keep_centerline_components,
-        output::{write_annotation_overlay_stack, write_mask_stack_with_progress},
+        cleanup::{keep_centerline_components, repair_inconsistent_frames},
+        output::{
+            write_annotation_overlay_stack, write_mask_stack, write_mask_stack_with_progress,
+        },
         preprocess::{stage_input_frames_with_progress, PreparedFrame, PreparedFrameEncoding},
         tiff_io::{inspect_volume, read_volume_frames, VolumeInput},
     },
@@ -45,7 +47,7 @@ pub struct PipelinePlan {
 pub struct PreparedPipelineInput {
     pub plan: PipelinePlan,
     pub volume: VolumeInput,
-    /// Trace geometry retained for optional centre-line cleanup.
+    /// Sole trace geometry for per-frame component selection in both cleanup steps.
     pub annotation_points: Vec<AnnotationPoint>,
     /// The sole prepared prompt list consumed by inference and prompt overlays.
     pub prompts: Vec<VideoFramePrompt>,
@@ -57,17 +59,26 @@ impl PipelinePlan {
         vec![VolumeFileMapping::new(self.host_source.clone(), "")]
     }
 
-    pub fn copy_to_host_mappings(&self, include_overlay: bool) -> Vec<VolumeFileMapping> {
+    pub fn copy_to_host_mappings(&self, request: &ProcessRequest) -> Vec<VolumeFileMapping> {
         let mut files = vec![VolumeFileMapping::new(
             self.host_output.raw.clone(),
             "Segmentation",
         )];
-        if include_overlay {
-            let overlay = annotation_overlay_path(&self.volume_output);
-            let file_name = overlay
+        let mut artifacts = Vec::new();
+        if request.overlay_annotation_points {
+            artifacts.push(annotation_overlay_path(&self.volume_output));
+        }
+        if let Some(options) = &request.repair_inconsistent_frames {
+            artifacts.push(frame_repair_report_path(&self.volume_output));
+            if options.keep_unrepaired {
+                artifacts.push(unrepaired_mask_path(&self.volume_output));
+            }
+        }
+        for artifact in artifacts {
+            let file_name = artifact
                 .file_name()
                 .and_then(|name| name.to_str())
-                .expect("overlay filename derives from a UTF-8 request path");
+                .expect("artifact filename derives from a UTF-8 request path");
             files.push(VolumeFileMapping::new(
                 self.host_output.with_file_name(file_name),
                 "Segmentation",
@@ -241,6 +252,41 @@ async fn save_masks(
     if let Some(parent) = prepared.plan.volume_output.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
+    let repair_report = if let Some(options) = &request.repair_inconsistent_frames {
+        if options.keep_unrepaired {
+            write_mask_stack(&unrepaired_mask_path(&prepared.plan.volume_output), masks).await?;
+        }
+        let report = repair_inconsistent_frames(masks, &prepared.annotation_points, options)?;
+        let summary = report.summary();
+        // Runs/counts and the log are boundary views of the same per-frame decisions
+        // consumed by the overlay; neither computes a second set of flags.
+        let flagged_frames: Vec<_> = report
+            .frames
+            .iter()
+            .filter(|frame| !frame.reasons.is_empty())
+            .collect();
+        tracing::info!(
+            output = %request.output_file,
+            options = ?report.options,
+            summary = %serde_json::to_string(&summary)?,
+            flagged_frames = %serde_json::to_string(&flagged_frames)?,
+            "inconsistent-frame repair complete"
+        );
+        let document = serde_json::json!({
+            "schema_version": 1,
+            "options": report.options,
+            "frames": report.frames,
+            "summary": summary,
+        });
+        tokio::fs::write(
+            frame_repair_report_path(&prepared.plan.volume_output),
+            serde_json::to_vec_pretty(&document)?,
+        )
+        .await?;
+        Some(report)
+    } else {
+        None
+    };
     write_mask_stack_with_progress(&prepared.plan.volume_output, masks, |frame, total| {
         report_frame(progress, JobPhase::Saving, frame, total)
     })
@@ -251,15 +297,14 @@ async fn save_masks(
             masks,
             &prepared.prompts,
             request.annotation_overlay_intensity,
+            repair_report.as_ref(),
         )
         .await?;
     }
     volume::copy_to_host(
         state.http_client(),
         state.config(),
-        &prepared
-            .plan
-            .copy_to_host_mappings(request.overlay_annotation_points),
+        &prepared.plan.copy_to_host_mappings(request),
     )
     .await?;
     Ok(())
@@ -421,15 +466,26 @@ fn stage_encoding(predictor_type: &str) -> Result<PreparedFrameEncoding, AppErro
 }
 
 fn annotation_overlay_path(output_path: &Path) -> PathBuf {
-    let extension = output_path
-        .extension()
-        .and_then(|value| value.to_str())
+    output_artifact_path(output_path, "annotation_overlay", None)
+}
+
+fn frame_repair_report_path(output_path: &Path) -> PathBuf {
+    output_artifact_path(output_path, "frame_repair", Some("json"))
+}
+
+fn unrepaired_mask_path(output_path: &Path) -> PathBuf {
+    output_artifact_path(output_path, "unrepaired", None)
+}
+
+fn output_artifact_path(output_path: &Path, suffix: &str, extension: Option<&str>) -> PathBuf {
+    let extension = extension
+        .or_else(|| output_path.extension().and_then(|value| value.to_str()))
         .unwrap_or("tif");
     let stem = output_path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("segmentation");
-    output_path.with_file_name(format!("{stem}_annotation_overlay.{extension}"))
+    output_path.with_file_name(format!("{stem}_{suffix}.{extension}"))
 }
 
 #[cfg(test)]

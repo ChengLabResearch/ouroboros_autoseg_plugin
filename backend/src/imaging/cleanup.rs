@@ -4,6 +4,14 @@ use crate::{
     inference::image::FrameMask,
 };
 
+mod distance;
+mod repair;
+
+pub use repair::{
+    repair_inconsistent_frames, FrameFlagReason, FrameRepairAction, FrameRepairFrame,
+    FrameRepairReport, FrameRepairRun, FrameRepairSummary,
+};
+
 const SEED_SEARCH_RADIUS: usize = 10;
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -25,29 +33,82 @@ pub fn keep_centerline_components(
     annotation_points: &[AnnotationPoint],
 ) -> Result<CleanupStats, AppError> {
     let mut stats = CleanupStats::default();
-    let mut reached = Vec::new();
-    let mut queue = Vec::new();
+    let mut selector = TraceComponentSelector::default();
 
     for (frame_index, mask) in masks.iter_mut().enumerate() {
-        // Cleanup indexes pixels before the TIFF writer can validate them.
-        if mask.width == 0
-            || mask.height == 0
-            || mask.width.checked_mul(mask.height) != Some(mask.pixels.len())
-        {
-            return Err(AppError::bad_request(
-                "Mask pixels do not match the declared frame geometry",
-            ));
-        }
-        let Some(point) = interpolated_point_for_frame(annotation_points, frame_index) else {
-            stats.seed_misses += 1;
+        let selection = selector.select(mask, annotation_points, frame_index)?;
+        stats.seed_misses += usize::from(selection.seed_status != TraceSeedStatus::Direct);
+        let Some(reached) = selection.component else {
             stats.frames_without_seed += 1;
             continue;
+        };
+
+        let mut removed = 0;
+        for (pixel, reached) in mask.pixels.iter_mut().zip(reached) {
+            if *pixel != 0 && !reached {
+                *pixel = 0;
+                removed += 1;
+            }
+        }
+        stats.frames_changed += usize::from(removed > 0);
+        stats.pixels_removed += removed;
+    }
+    Ok(stats)
+}
+
+/// The single owner of trace interpolation, seed recovery, and component selection.
+/// Its buffers are reused across frames; callers decide how to handle a missing seed.
+#[derive(Default)]
+struct TraceComponentSelector {
+    reached: Vec<bool>,
+    queue: Vec<usize>,
+}
+
+struct TraceComponentSelection<'a> {
+    component: Option<&'a [bool]>,
+    seed_status: TraceSeedStatus,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TraceSeedStatus {
+    MissingTrace,
+    MissingForeground,
+    Direct,
+    Recovered,
+}
+
+fn validate_mask_geometry(mask: &FrameMask) -> Result<(), AppError> {
+    // Selection indexes pixels before the TIFF writer can validate them.
+    if mask.width == 0
+        || mask.height == 0
+        || mask.width.checked_mul(mask.height) != Some(mask.pixels.len())
+    {
+        return Err(AppError::bad_request(
+            "Mask pixels do not match the declared frame geometry",
+        ));
+    }
+    Ok(())
+}
+
+impl TraceComponentSelector {
+    fn select(
+        &mut self,
+        mask: &FrameMask,
+        annotation_points: &[AnnotationPoint],
+        frame_index: usize,
+    ) -> Result<TraceComponentSelection<'_>, AppError> {
+        validate_mask_geometry(mask)?;
+        let Some(point) = interpolated_point_for_frame(annotation_points, frame_index) else {
+            return Ok(TraceComponentSelection {
+                component: None,
+                seed_status: TraceSeedStatus::MissingTrace,
+            });
         };
         let x = point.x.round().clamp(0.0, (mask.width - 1) as f32) as usize;
         let y = point.y.round().clamp(0.0, (mask.height - 1) as f32) as usize;
         let mut seed = Some(y * mask.width + x);
-        if mask.pixels[seed.unwrap()] == 0 {
-            stats.seed_misses += 1;
+        let seed_missed = mask.pixels[seed.unwrap()] == 0;
+        if seed_missed {
             seed = None;
             let mut nearest_distance = SEED_SEARCH_RADIUS * SEED_SEARCH_RADIUS + 1;
             for yy in y.saturating_sub(SEED_SEARCH_RADIUS)
@@ -66,42 +127,42 @@ pub fn keep_centerline_components(
             }
         }
         let Some(seed) = seed else {
-            stats.frames_without_seed += 1;
-            continue;
+            return Ok(TraceComponentSelection {
+                component: None,
+                seed_status: TraceSeedStatus::MissingForeground,
+            });
         };
 
-        reached.clear();
-        reached.resize(mask.pixels.len(), false);
-        queue.clear();
-        queue.push(seed);
-        reached[seed] = true;
+        self.reached.clear();
+        self.reached.resize(mask.pixels.len(), false);
+        self.queue.clear();
+        self.queue.push(seed);
+        self.reached[seed] = true;
         let mut next = 0;
-        while next < queue.len() {
-            let index = queue[next];
+        while next < self.queue.len() {
+            let index = self.queue[next];
             next += 1;
             let x = index % mask.width;
             let y = index / mask.width;
             for yy in y.saturating_sub(1)..=(y + 1).min(mask.height - 1) {
                 for xx in x.saturating_sub(1)..=(x + 1).min(mask.width - 1) {
                     let neighbor = yy * mask.width + xx;
-                    if !reached[neighbor] && mask.pixels[neighbor] != 0 {
-                        reached[neighbor] = true;
-                        queue.push(neighbor);
+                    if !self.reached[neighbor] && mask.pixels[neighbor] != 0 {
+                        self.reached[neighbor] = true;
+                        self.queue.push(neighbor);
                     }
                 }
             }
         }
-        let mut removed = 0;
-        for (pixel, reached) in mask.pixels.iter_mut().zip(&reached) {
-            if *pixel != 0 && !reached {
-                *pixel = 0;
-                removed += 1;
-            }
-        }
-        stats.frames_changed += usize::from(removed > 0);
-        stats.pixels_removed += removed;
+        Ok(TraceComponentSelection {
+            component: Some(&self.reached),
+            seed_status: if seed_missed {
+                TraceSeedStatus::Recovered
+            } else {
+                TraceSeedStatus::Direct
+            },
+        })
     }
-    Ok(stats)
 }
 
 #[cfg(test)]

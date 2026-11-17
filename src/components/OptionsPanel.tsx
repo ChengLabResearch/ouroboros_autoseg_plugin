@@ -10,6 +10,7 @@ export type SubmitPayload = {
     keepCenterlineComponent: boolean;
     maxPromptGap: number | null;
     negativeBorderPoints: { count: number; inset_px: number } | null;
+    repairInconsistentFrames: { max_area_ratio: number; min_iou: number; keep_unrepaired: boolean } | null;
 };
 
 type Props = {
@@ -31,6 +32,12 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const [negativeBorderInset, setNegativeBorderInset] = useState('12');
     const [negativeCountBadInput, setNegativeCountBadInput] = useState(false);
     const [negativeInsetBadInput, setNegativeInsetBadInput] = useState(false);
+    const [repairFramesEnabled, setRepairFramesEnabled] = useState(false);
+    const [maxAreaRatio, setMaxAreaRatio] = useState('1.5');
+    const [minIou, setMinIou] = useState('0.5');
+    const [keepUnrepaired, setKeepUnrepaired] = useState(false);
+    const [areaRatioBadInput, setAreaRatioBadInput] = useState(false);
+    const [iouBadInput, setIouBadInput] = useState(false);
     const inputFileRef = useRef<HTMLInputElement | null>(null);
     const outputFileRef = useRef<HTMLInputElement | null>(null);
 
@@ -289,8 +296,15 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
         Number.isSafeInteger(borderCount) && borderCount > 0;
     const validBorderInset = !negativeInsetBadInput && negativeBorderInset !== '' &&
         Number.isFinite(borderInset) && borderInset >= 0;
+    const areaRatio = Number(maxAreaRatio);
+    const iou = Number(minIou);
+    const validAreaRatio = !areaRatioBadInput && maxAreaRatio !== '' &&
+        Number.isFinite(areaRatio) && areaRatio >= 1;
+    const validIou = !iouBadInput && minIou !== '' &&
+        Number.isFinite(iou) && iou >= 0 && iou <= 1;
     const canRun = !isRunning && fp && outFp && (!videoPredictor || validPromptGap) &&
-        (!negativeBorderEnabled || (validBorderCount && validBorderInset));
+        (!negativeBorderEnabled || (validBorderCount && validBorderInset)) &&
+        (!repairFramesEnabled || (validAreaRatio && validIou));
 
     return (
         <div className={styles.container}>
@@ -312,6 +326,11 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             negativeBorderPoints: negativeBorderEnabled ? {
                                 count: borderCount,
                                 inset_px: borderInset
+                            } : null,
+                            repairInconsistentFrames: repairFramesEnabled ? {
+                                max_area_ratio: areaRatio,
+                                min_iou: iou,
+                                keep_unrepaired: keepUnrepaired
                             } : null
                         })} 
                         disabled={!canRun}
@@ -482,6 +501,76 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                         Keeps one connected region per slice. Separate branches or folds may be removed.
                         If no foreground is within 10 pixels of the centre line, the slice is unchanged.
                     </p>
+
+                    <div className={styles.row}>
+                        <label className={styles.label} htmlFor="repair-inconsistent-frames">Repair Inconsistent Frames</label>
+                        <div className={styles.inputContainer}>
+                            <input
+                                id="repair-inconsistent-frames"
+                                type="checkbox"
+                                checked={repairFramesEnabled}
+                                onChange={(e) => setRepairFramesEnabled(e.target.checked)}
+                                aria-describedby="frame-repair-help"
+                            />
+                        </div>
+                    </div>
+                    <p id="frame-repair-help">
+                        Keeps the trace component per frame, flags edge contact, area change, or low
+                        overlap, and interpolates between accepted neighbours. A flags JSON file
+                        lists frames for review.
+                    </p>
+                    {repairFramesEnabled && <>
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="repair-max-area-ratio">Max Area Ratio</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="repair-max-area-ratio"
+                                    className={styles.input}
+                                    type="number"
+                                    min="1"
+                                    step="any"
+                                    value={maxAreaRatio}
+                                    onChange={(e) => {
+                                        setMaxAreaRatio(e.target.value);
+                                        setAreaRatioBadInput(e.target.validity.badInput);
+                                    }}
+                                    aria-invalid={!validAreaRatio}
+                                />
+                            </div>
+                        </div>
+                        {!validAreaRatio && <p role="alert">Enter a finite area ratio of at least 1.</p>}
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="repair-min-iou">Minimum IoU</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="repair-min-iou"
+                                    className={styles.input}
+                                    type="number"
+                                    min="0"
+                                    max="1"
+                                    step="any"
+                                    value={minIou}
+                                    onChange={(e) => {
+                                        setMinIou(e.target.value);
+                                        setIouBadInput(e.target.validity.badInput);
+                                    }}
+                                    aria-invalid={!validIou}
+                                />
+                            </div>
+                        </div>
+                        {!validIou && <p role="alert">Enter a finite IoU between 0 and 1.</p>}
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="repair-keep-unrepaired">Keep Unrepaired Stack</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="repair-keep-unrepaired"
+                                    type="checkbox"
+                                    checked={keepUnrepaired}
+                                    onChange={(e) => setKeepUnrepaired(e.target.checked)}
+                                />
+                            </div>
+                        </div>
+                    </>}
 
                     <div className={styles.row}>
                         <span className={styles.label}>Draw Prompts</span>

@@ -51,18 +51,20 @@ tissue if the trace misses the lumen.
 **Draw Prompts** writes a separate annotation-overlay TIFF using the same
 prepared point list passed to inference. It does not interpolate additional
 display points. In video mode, frames without prepared prompts, including
-leading and trailing frames, remain pixel-identical to the primary mask.
+leading and trailing frames, remain pixel-identical to the primary mask unless
+marked as repaired by the optional inconsistent-frame repair step.
 Multiple annotations that round to the same frame all appear; they are not
 collapsed into one point. Image mode continues to mark every actually prompted
 frame using its prepared points.
 
 The marker key is:
 
-| Prompt kind | Marker | Default intensity |
+| Kind | Marker | Default intensity |
 | --- | --- | --- |
 | Metadata or fallback positive | Star | 127 |
 | Gap-fill positive | Hollow diamond | 127 |
 | Negative border point | Small cross | 64 |
+| Repaired frame | X centred at (2, 2) | 192 |
 
 Negative border points, when enabled through `negative_border_points`, are
 included in those same frame prompt lists. If the API's positive overlay
@@ -71,3 +73,11 @@ are rounded to pixels and glyphs are clipped at image edges. The diagnostic
 represents submitted prompts; the runtime's 16-point limit may omit excess
 points during encoding. The primary mask and the centre-line cleanup's
 interpolated seeds are unchanged by drawing prompts.
+
+Repair markers derive from the same per-frame report saved in the JSON sidecar;
+they are drawn after prompt markers, including on unprompted video frames.
+They use intensity 191 if the positive intensity is 192. Flagged frames that
+cannot be repaired remain in the report without an X. Repair uses the existing
+interpolated trace for component selection, independently of the sparse list
+of inference prompts. See [inconsistent-frame repair](../../README.md#inconsistent-frame-repair)
+for the request options, rule, and output files.

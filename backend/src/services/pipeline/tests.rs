@@ -12,7 +12,7 @@ use super::{
 use crate::{
     app_state::AppState,
     config::AppConfig,
-    domain::requests::ProcessRequest,
+    domain::requests::{FrameRepairOptions, ProcessRequest},
     imaging::{
         annotations::{annotation_samples_for_video, AnnotationOrigin},
         preprocess::PreparedFrameEncoding,
@@ -57,6 +57,7 @@ fn sample_request(predictor_type: &str) -> ProcessRequest {
         negative_border_points: None,
         overlay_annotation_points: false,
         keep_centerline_component: false,
+        repair_inconsistent_frames: None,
         annotation_overlay_intensity: 127,
     }
 }
@@ -231,11 +232,11 @@ async fn plan_matches_python_volume_mapping_semantics() {
     );
     assert_eq!(plan.copy_to_volume_mappings()[0].target_path, "");
     assert_eq!(
-        plan.copy_to_host_mappings(false)[0].source_path,
+        plan.copy_to_host_mappings(&request)[0].source_path,
         "/host/output/segmented.tif"
     );
     assert_eq!(
-        plan.copy_to_host_mappings(false)[0].target_path,
+        plan.copy_to_host_mappings(&request)[0].target_path,
         "Segmentation"
     );
 }
@@ -855,5 +856,165 @@ async fn cleanup_applies_to_both_predictors_before_primary_and_overlay_delivery(
                 assert_eq!(overlay[frame].pixels[7], output[frame].pixels[7]);
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_both_predictors() {
+    for predictor in ["ImagePredictor", "VideoPredictor"] {
+        for cleanup in [false, true] {
+            for keep_unrepaired in [false, true] {
+                let fixture = VolumeFixture::start(None, None);
+                let pages: Vec<_> = (0..5)
+                    .map(|index| WritableTiffPage {
+                        width: 9,
+                        height: 9,
+                        channels: 1,
+                        pixels: vec![0; 81],
+                        description: (index == 0)
+                            .then(|| r#"{"annotation_points": [[4, 4, 0], [4, 4, 4]]}"#.into()),
+                    })
+                    .collect();
+                write_tiff_pages(&fixture.host_input, &pages).unwrap();
+                let mut request = sample_request(predictor);
+                request.output_file = r"C:\Data Set\output\segmented.tif".into();
+                request.keep_centerline_component = cleanup;
+                request.overlay_annotation_points = true;
+                request.repair_inconsistent_frames = Some(FrameRepairOptions {
+                    keep_unrepaired,
+                    ..Default::default()
+                });
+                let prepared = prepare(&fixture.state, &request).await.unwrap();
+                let mut accepted = FrameMask {
+                    width: 9,
+                    height: 9,
+                    pixels: vec![0; 81],
+                };
+                for y in 3..=5 {
+                    for x in 3..=5 {
+                        accepted.pixels[y * 9 + x] = 255;
+                    }
+                }
+                let flooded = FrameMask {
+                    width: 9,
+                    height: 9,
+                    pixels: vec![255; 81],
+                };
+                let mut masks = vec![
+                    accepted.clone(),
+                    flooded.clone(),
+                    accepted.clone(),
+                    accepted.clone(),
+                    flooded,
+                ];
+                // Separate foreground is removed by either cleanup, but the optional
+                // unrepaired snapshot must reflect only the earlier centre-line step.
+                masks[0].pixels[0] = 255;
+                let (progress, _receiver) = crate::services::progress::channel();
+                save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
+                    .await
+                    .unwrap();
+
+                let output = read_volume_frames(&fixture.host_outputs.join("segmented.tif"))
+                    .await
+                    .unwrap();
+                assert!(output.iter().all(|frame| frame.pixels == accepted.pixels));
+                let report_path = fixture.host_outputs.join("segmented_frame_repair.json");
+                let report: Value =
+                    serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+                assert_eq!(report["schema_version"], 1);
+                assert_eq!(report["options"]["keep_unrepaired"], keep_unrepaired);
+                let frames = report["frames"].as_array().unwrap();
+                assert_eq!(frames.len(), 5);
+                let flagged: Vec<_> = frames
+                    .iter()
+                    .filter(|frame| !frame["reasons"].as_array().unwrap().is_empty())
+                    .map(|frame| frame["frame_index"].as_u64().unwrap())
+                    .collect();
+                assert_eq!(flagged, [1, 2, 4]);
+                assert_eq!(frames[1]["repair"], "interpolated");
+                assert_eq!(frames[2]["repair"], "interpolated");
+                assert_eq!(frames[4]["repair"], "copied_previous");
+                assert_eq!(report["summary"]["flagged_frames"], 3);
+                assert_eq!(report["summary"]["repaired_frames"], 3);
+                assert_eq!(report["summary"]["runs"].as_array().unwrap().len(), 2);
+                assert_eq!(report["summary"]["runs"][0]["start_frame"], 1);
+                assert_eq!(report["summary"]["runs"][0]["end_frame"], 2);
+
+                let overlay = read_volume_frames(
+                    &fixture
+                        .host_outputs
+                        .join("segmented_annotation_overlay.tif"),
+                )
+                .await
+                .unwrap();
+                for (index, frame) in overlay.iter().enumerate() {
+                    assert_eq!(frame.pixels[2 * 9 + 2] == 192, [1, 2, 4].contains(&index));
+                }
+                let raw_path = fixture.host_outputs.join("segmented_unrepaired.tif");
+                assert_eq!(raw_path.exists(), keep_unrepaired);
+                if keep_unrepaired {
+                    let raw = read_volume_frames(&raw_path).await.unwrap();
+                    assert_eq!(raw[0].pixels[0], if cleanup { 0 } else { 255 });
+                    assert!(raw[1].pixels.iter().all(|pixel| *pixel == 255));
+                }
+                let delivery = fixture.requests().pop().unwrap();
+                let files = delivery.1["files"].as_array().unwrap();
+                assert_eq!(files.len(), if keep_unrepaired { 4 } else { 3 });
+                assert!(files
+                    .iter()
+                    .any(|file| file["sourcePath"]
+                        == r"C:\Data Set\output\segmented_frame_repair.json"));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn disabled_repair_preserves_existing_tiff_bytes_and_artifact_set() {
+    for cleanup in [false, true] {
+        let fixture = VolumeFixture::start(
+            Some(r#"{"annotation_points": [[0, 0, 0], [0, 0, 1]]}"#),
+            None,
+        );
+        let mut request = sample_request("VideoPredictor");
+        request.keep_centerline_component = cleanup;
+        let prepared = prepare(&fixture.state, &request).await.unwrap();
+        let mut masks = vec![
+            FrameMask {
+                width: 4,
+                height: 2,
+                pixels: vec![255, 0, 0, 0, 0, 0, 0, 255]
+            };
+            2
+        ];
+        let mut expected = masks.clone();
+        if cleanup {
+            crate::imaging::cleanup::keep_centerline_components(
+                &mut expected,
+                &prepared.annotation_points,
+            )
+            .unwrap();
+        }
+        let expected_path = fixture.host_outputs.with_file_name("expected.tif");
+        crate::imaging::output::write_mask_stack(&expected_path, &expected)
+            .await
+            .unwrap();
+        let (progress, _receiver) = crate::services::progress::channel();
+        save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(fixture.host_outputs.join("segmented.tif")).unwrap(),
+            std::fs::read(expected_path).unwrap()
+        );
+        assert_eq!(std::fs::read_dir(&fixture.host_outputs).unwrap().count(), 1);
+        assert_eq!(
+            fixture.requests().pop().unwrap().1["files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

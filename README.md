@@ -55,9 +55,50 @@ left unchanged. Missing metadata uses the existing centre-point annotations.
 
 Separate branches or folds without the seed are removed; connected leakage
 into neighbouring tissue remains. The output and optional annotation overlay
-both use the cleaned masks; a raw stack is not saved. The job log reports
+both use the cleaned masks. The job log reports
 changed frames, removed pixels, background/missing seed counts (including
 recovered seeds), and frames left unchanged because no seed was found.
+
+### Inconsistent-frame repair
+
+**Repair Inconsistent Frames** is optional and off by default for both
+predictors. It runs after centre-line cleanup, if that is enabled. It uses the
+same interpolated trace, nearest-foreground search and 8-connected component
+selector on every frame, including video frames without inference prompts.
+Enabling repair keeps only these selected components in the output.
+
+The selected component is flagged if it touches an image edge, its area changes
+by more than **Max Area Ratio** (default 1.5) in either direction, or its IoU
+falls below **Minimum IoU** (default 0.5). Area and IoU compare against the
+previous selected component **before any repair**, including previously flagged
+frames. The first frame has no previous-frame comparison. Missing trace points
+and empty selections are also flagged. Empty/nonempty area transitions count
+as an infinite ratio; two empty components have ratio 1 and IoU 0.
+
+Consecutive flagged frames are repaired by linearly interpolating the exact
+Euclidean signed distance fields of the surrounding accepted components,
+keeping pixels with a strictly positive distance. A leading or trailing run
+copies its only accepted neighbour. Empty selections can be filled this way;
+frames without any trace remain empty. If every frame is flagged, there is no
+accepted anchor: selected components remain unchanged and the report marks
+them as unrepaired. Repair does not add inference prompts or rerun the model.
+
+The API option is
+`repair_inconsistent_frames: { "max_area_ratio": 1.5, "min_iou": 0.5, "keep_unrepaired": false }`.
+Omitting it or sending `null` disables repair; `{}` enables the defaults.
+The ratio must be finite and at least 1; IoU must be finite and between 0 and 1.
+Disabled repair leaves the existing output unchanged.
+
+For `segmented.tif`, the repaired primary output is accompanied by
+`segmented_frame_repair.json`. This report contains the options, every frame's
+flag reasons and repair action, and counts and inclusive run boundaries;
+frame indices start at zero. The same decisions supply the job-log summary
+and flag list. **Keep Unrepaired Stack** additionally writes
+`segmented_unrepaired.tif`, captured after optional centre-line cleanup and
+before component selection and repair. With **Draw Prompts**, each actually
+repaired frame gets a small X centred at pixel (2, 2), at intensity 192 (191 if
+the positive prompt intensity is 192). Unrepaired flagged frames remain listed
+in the report. All requested artifacts are copied beside the primary output.
 
 ### Negative border points
 
@@ -91,7 +132,8 @@ use stars; positives added by **Max Prompt Gap** use hollow diamonds.
 
 The diagnostic overlay uses the same prepared prompt list submitted to
 inference. Video frames without prompts, including frames before the first and
-after the last prompt, remain identical to the primary mask. Every positive
+after the last prompt, remain identical to the primary mask unless marked as
+repaired by the optional repair step. Every positive
 on a prompted frame is drawn, including multiple annotations whose fractional
 z coordinates round to that frame, along with any negative border points.
 Image prediction still marks every frame it prompts. Coordinates are rounded
