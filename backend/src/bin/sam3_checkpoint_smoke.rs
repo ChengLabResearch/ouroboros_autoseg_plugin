@@ -6,10 +6,10 @@ use std::{
 };
 
 use ouroboros_autoseg_plugin_backend::{
-    imaging::{output::write_mask_stack, tiff_io::ImageFrame},
+    imaging::{annotations::AnnotationOrigin, output::write_mask_stack, tiff_io::ImageFrame},
     inference::{
         candle_sam3::{load_sam3_handle, CandleSam3ImageSegmenter},
-        image::{ImageSegmenter, PositivePointPrompt},
+        image::{ImageSegmenter, PointPrompt},
     },
 };
 
@@ -29,10 +29,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let segmenter = CandleSam3ImageSegmenter {
         handle: Arc::new(handle),
     };
-    let prompt = PositivePointPrompt {
-        x: (frame.width / 2) as f32,
-        y: (frame.height / 2) as f32,
-    };
+    let prompt = PointPrompt::positive(
+        (frame.width / 2) as f32,
+        (frame.height / 2) as f32,
+        AnnotationOrigin::Metadata,
+    );
     let mask = segmenter.segment(&frame, &[prompt]).await?;
 
     if mask.width != frame.width || mask.height != frame.height {

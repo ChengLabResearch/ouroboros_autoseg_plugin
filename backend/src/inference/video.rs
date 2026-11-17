@@ -4,13 +4,13 @@ use async_trait::async_trait;
 
 use crate::{
     error::AppError,
-    inference::image::{FrameMask, PositivePointPrompt},
+    inference::image::{FrameMask, PointPrompt},
 };
 
 #[derive(Debug, Clone)]
 pub struct VideoFramePrompt {
     pub frame_index: usize,
-    pub points: Vec<PositivePointPrompt>,
+    pub points: Vec<PointPrompt>,
 }
 
 pub type FrameProgressCallback = Arc<dyn Fn(usize, usize) + Send + Sync>;

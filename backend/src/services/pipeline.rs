@@ -13,8 +13,8 @@ use crate::{
     error::AppError,
     imaging::{
         annotations::{
-            annotation_samples_for_video, default_annotations, fill_prompt_gaps,
-            interpolated_point_for_frame, AnnotationPoint, VolumeShape,
+            add_negative_border_points, annotation_samples_for_image, annotation_samples_for_video,
+            default_annotations, fill_prompt_gaps, AnnotationPoint, VolumeShape,
         },
         cleanup::keep_centerline_components,
         output::{write_annotation_overlay_stack, write_mask_stack_with_progress},
@@ -24,7 +24,7 @@ use crate::{
     inference::{
         candle_sam3::{load_sam3_handle, CandleSam3ImageSegmenter, CandleSam3VideoSegmenter},
         image::{FrameMask, ImageSegmenter},
-        video::{FrameProgressCallback, VideoSegmenter},
+        video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
     },
     services::{
         progress::{report_frame, report_phase, ProgressSender},
@@ -45,7 +45,10 @@ pub struct PipelinePlan {
 pub struct PreparedPipelineInput {
     pub plan: PipelinePlan,
     pub volume: VolumeInput,
+    /// Trace geometry retained for optional centre-line cleanup.
     pub annotation_points: Vec<AnnotationPoint>,
+    /// The sole prepared prompt list consumed by inference and prompt overlays.
+    pub prompts: Vec<VideoFramePrompt>,
     pub staged_frames: Vec<PreparedFrame>,
 }
 
@@ -126,6 +129,28 @@ pub async fn prepare(
             "Prepared video annotation prompts"
         );
     }
+    let mut prompts = match request.predictor_type.as_str() {
+        "ImagePredictor" => annotation_samples_for_image(&annotation_points, frames.len()),
+        "VideoPredictor" => annotation_samples_for_video(&annotation_points, frames.len()),
+        _ => unreachable!("validated by ProcessRequest::validate"),
+    };
+    if let Some(options) = &request.negative_border_points {
+        add_negative_border_points(
+            &mut prompts,
+            VolumeShape {
+                frames: volume.geometry.frames,
+                height: volume.geometry.height,
+                width: volume.geometry.width,
+            },
+            options,
+        )?;
+        tracing::info!(
+            count = options.count,
+            inset_px = options.inset_px,
+            prompted_frames = prompts.len(),
+            "Prepared negative border points"
+        );
+    }
     let frame_name_width = frame_name_width(frames.len());
     let encoding = stage_encoding(&request.predictor_type)?;
     let staged_frames = frames
@@ -144,6 +169,7 @@ pub async fn prepare(
         plan,
         volume,
         annotation_points,
+        prompts,
         staged_frames,
     })
 }
@@ -224,6 +250,7 @@ async fn save_masks(
             &annotation_overlay_path(&prepared.plan.volume_output),
             masks,
             &prepared.annotation_points,
+            &prepared.prompts,
             request.annotation_overlay_intensity,
         )
         .await?;
@@ -301,11 +328,18 @@ async fn run_image_predictor(
         handle: handle.clone(),
     };
     let mut masks = Vec::with_capacity(prepared.staged_frames.len());
+    let mut prompts = prepared.prompts.iter().peekable();
     for (i, staged) in prepared.staged_frames.iter().enumerate() {
-        let prompts = interpolated_point_for_frame(&prepared.annotation_points, i)
-            .map(|p| vec![p])
-            .unwrap_or_default();
-        let mask = segmenter.segment(&staged.frame, &prompts).await?;
+        let points = if prompts.peek().is_some_and(|prompt| prompt.frame_index == i) {
+            prompts
+                .next()
+                .expect("matching prepared prompt")
+                .points
+                .as_slice()
+        } else {
+            &[]
+        };
+        let mask = segmenter.segment(&staged.frame, points).await?;
         masks.push(mask);
         report_frame(
             progress,
@@ -325,8 +359,6 @@ async fn run_video_predictor(
     let segmenter = CandleSam3VideoSegmenter {
         handle: handle.clone(),
     };
-    let video_prompts =
-        annotation_samples_for_video(&prepared.annotation_points, prepared.staged_frames.len());
     let sender = progress.clone();
     let callback: FrameProgressCallback = Arc::new(move |frame, total| {
         report_frame(&sender, JobPhase::Inference, frame, total);
@@ -334,7 +366,7 @@ async fn run_video_predictor(
     let masks = segmenter
         .segment_video(
             &prepared.plan.temp_volume_dir,
-            &video_prompts,
+            &prepared.prompts,
             Some(callback),
         )
         .await?;

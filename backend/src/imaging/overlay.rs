@@ -1,4 +1,4 @@
-use crate::imaging::annotations::AnnotationOrigin;
+use crate::{imaging::annotations::AnnotationOrigin, inference::image::PointPromptKind};
 
 pub fn draw_annotation_marker(
     mask_slice: &mut [u8],
@@ -7,11 +7,13 @@ pub fn draw_annotation_marker(
     x: f32,
     y: f32,
     intensity: u8,
-    origin: AnnotationOrigin,
+    kind: PointPromptKind,
 ) {
     let x = x.round() as isize;
     let y = y.round() as isize;
-    let offsets: &[(isize, isize)] = if origin == AnnotationOrigin::GapFill {
+    let offsets: &[(isize, isize)] = if kind == PointPromptKind::Negative {
+        &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+    } else if kind == PointPromptKind::Positive(AnnotationOrigin::GapFill) {
         &[
             (0, -3),
             (1, -2),

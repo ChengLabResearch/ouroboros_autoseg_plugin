@@ -1,10 +1,14 @@
 use candle_core::{Device, Tensor};
 
-use crate::{imaging::tiff_io::ImageFrame, inference::image::PositivePointPrompt};
+use crate::{
+    imaging::{annotations::AnnotationOrigin, tiff_io::ImageFrame},
+    inference::image::PointPrompt,
+};
 
 use super::{
-    build_geometry_prompt, first_frame_dimensions, frame_to_chw_tensor, normalize_for_sam3,
-    select_best_image_mask_logits, threshold_mask_logits_to_frame, video_frame_to_mask,
+    build_geometry_prompt, build_session_prompt, first_frame_dimensions, frame_to_chw_tensor,
+    normalize_for_sam3, select_best_image_mask_logits, threshold_mask_logits_to_frame,
+    video_frame_to_mask,
 };
 
 #[test]
@@ -68,8 +72,8 @@ fn normalize_for_sam3_subtracts_mean() {
 #[test]
 fn build_geometry_prompt_normalises_pixel_coords() {
     let prompts = vec![
-        PositivePointPrompt { x: 100.0, y: 50.0 },
-        PositivePointPrompt { x: 200.0, y: 150.0 },
+        PointPrompt::positive(100.0, 50.0, AnnotationOrigin::Metadata),
+        PointPrompt::positive(200.0, 150.0, AnnotationOrigin::Metadata),
     ];
     let prompt = build_geometry_prompt(&prompts, 400, 200, &Device::Cpu).unwrap();
     let coords = prompt.points_xy.unwrap().to_vec3::<f32>().unwrap();
@@ -83,7 +87,11 @@ fn build_geometry_prompt_normalises_pixel_coords() {
 
 #[test]
 fn build_geometry_prompt_clamps_out_of_range_coords() {
-    let prompts = vec![PositivePointPrompt { x: -50.0, y: 9999.0 }];
+    let prompts = vec![PointPrompt::positive(
+        -50.0,
+        9999.0,
+        AnnotationOrigin::Metadata,
+    )];
     let prompt = build_geometry_prompt(&prompts, 100, 100, &Device::Cpu).unwrap();
     let coords = prompt.points_xy.unwrap().to_vec3::<f32>().unwrap();
     assert!(coords[0][0][0].abs() < 1e-5);
@@ -94,6 +102,40 @@ fn build_geometry_prompt_clamps_out_of_range_coords() {
 fn build_geometry_prompt_empty_prompts_returns_default() {
     let prompt = build_geometry_prompt(&[], 100, 100, &Device::Cpu).unwrap();
     assert!(prompt.is_empty());
+}
+
+#[test]
+fn image_and_video_adapters_preserve_mixed_point_labels_and_order() {
+    let points = vec![
+        PointPrompt::positive(100.0, 50.0, AnnotationOrigin::Metadata),
+        PointPrompt::negative(200.0, 150.0),
+        PointPrompt::positive(-50.0, 9999.0, AnnotationOrigin::GapFill),
+        PointPrompt::positive(300.0, 100.0, AnnotationOrigin::Fallback),
+    ];
+    let image = build_geometry_prompt(&points, 400, 200, &Device::Cpu).unwrap();
+    let video = build_session_prompt(&points, 400, 200);
+    let expected_coords = vec![(0.25, 0.25), (0.5, 0.75), (0.0, 1.0), (0.75, 0.5)];
+    assert_eq!(video.points.unwrap(), expected_coords);
+    assert_eq!(video.point_labels.unwrap(), vec![1, 0, 1, 1]);
+    assert_eq!(
+        image.points_xy.unwrap().to_vec3::<f32>().unwrap()[0],
+        expected_coords
+            .iter()
+            .map(|&(x, y)| vec![x, y])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        image.point_labels.unwrap().to_vec2::<u32>().unwrap()[0],
+        vec![1, 0, 1, 1]
+    );
+}
+
+#[test]
+fn build_session_prompt_empty_points_preserves_empty_boundary() {
+    let prompt = build_session_prompt(&[], 100, 100);
+    assert!(prompt.is_empty());
+    assert!(prompt.points.is_none());
+    assert!(prompt.point_labels.is_none());
 }
 
 #[test]

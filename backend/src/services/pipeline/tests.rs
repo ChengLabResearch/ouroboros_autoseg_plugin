@@ -54,6 +54,7 @@ fn sample_request(predictor_type: &str) -> ProcessRequest {
         model_type: "sam3".to_string(),
         predictor_type: predictor_type.to_string(),
         max_prompt_gap: None,
+        negative_border_points: None,
         overlay_annotation_points: false,
         keep_centerline_component: false,
         annotation_overlay_intensity: 127,
@@ -271,6 +272,98 @@ async fn prepare_uses_metadata_annotations_and_video_jpeg_targets() {
         prepared.staged_frames[0].target,
         plugin_root.join("input-stack_temp").join("0")
     );
+}
+
+#[tokio::test]
+async fn prepared_border_prompts_feed_both_adapters_and_overlay_without_changing_masks() {
+    use crate::{
+        domain::requests::NegativeBorderPoints,
+        inference::{
+            candle_sam3_helpers::{build_geometry_prompt, build_session_prompt},
+            image::PointPromptKind,
+        },
+    };
+
+    for predictor in ["VideoPredictor", "ImagePredictor"] {
+        let fixture = VolumeFixture::start(None, None);
+        let pages = (0..11)
+            .map(|index| WritableTiffPage {
+                width: 64,
+                height: 64,
+                channels: 1,
+                pixels: vec![index; 64 * 64],
+                description: (index == 0).then(|| {
+                    r#"{"annotation_points": [[30.0, 32.0, 2.0], [34.0, 32.0, 8.0]]}"#.to_owned()
+                }),
+            })
+            .collect::<Vec<_>>();
+        write_tiff_pages(&fixture.host_input, &pages).unwrap();
+        let mut request = sample_request(predictor);
+        request.max_prompt_gap = Some(3);
+        request.negative_border_points = Some(NegativeBorderPoints::default());
+        request.overlay_annotation_points = true;
+        let prepared = prepare(&fixture.state, &request).await.unwrap();
+        let expected_frames = if predictor == "VideoPredictor" {
+            vec![2, 5, 8]
+        } else {
+            (0..11).collect()
+        };
+        assert_eq!(
+            prepared
+                .prompts
+                .iter()
+                .map(|p| p.frame_index)
+                .collect::<Vec<_>>(),
+            expected_frames
+        );
+        for prompt in &prepared.prompts {
+            assert_eq!(prompt.points.len(), 16);
+            assert!(matches!(
+                prompt.points[0].kind,
+                PointPromptKind::Positive(_)
+            ));
+            assert!(prompt.points[1..]
+                .iter()
+                .all(|point| point.kind == PointPromptKind::Negative));
+            let session = build_session_prompt(&prompt.points, 64, 64);
+            let geometry =
+                build_geometry_prompt(&prompt.points, 64, 64, &candle_core::Device::Cpu).unwrap();
+            let mut labels = vec![0; 16];
+            labels[0] = 1;
+            assert_eq!(session.point_labels.unwrap(), labels);
+            assert_eq!(
+                geometry.point_labels.unwrap().to_vec2::<u32>().unwrap()[0],
+                labels
+            );
+        }
+
+        let mut masks = vec![
+            FrameMask {
+                width: 64,
+                height: 64,
+                pixels: vec![255; 64 * 64]
+            };
+            11
+        ];
+        let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
+            .await
+            .unwrap();
+        let primary = read_volume_frames(&prepared.plan.volume_output)
+            .await
+            .unwrap();
+        let overlay = read_volume_frames(&annotation_overlay_path(&prepared.plan.volume_output))
+            .await
+            .unwrap();
+        for (index, frame) in overlay.iter().enumerate() {
+            assert!(primary[index].pixels.iter().all(|&pixel| pixel == 255));
+            assert!(masks[index].pixels.iter().all(|&pixel| pixel == 255));
+            assert_eq!(frame.pixels.contains(&64), expected_frames.contains(&index));
+            if expected_frames.contains(&index) {
+                assert_eq!(frame.pixels[12 * 64 + 12], 64, "first negative location");
+            }
+        }
+    }
 }
 
 #[tokio::test]
