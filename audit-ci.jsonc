@@ -1,3 +1,21 @@
 {
-  "moderate": true
+  "moderate": true,
+  "allowlist": [
+    // Reviewed 2026-11-17: GHSA-fc5q-39xc-vjpf has no patched release.
+    // These build/test/lint dependencies use repository-controlled or built-in
+    // glob patterns; segmentation inputs cannot supply patterns to picomatch.
+    // Reassess when a patch is available or the glob-input boundary changes.
+    // Match audit-ci's reported paths exactly, including trailing separators;
+    // other advisories and unlisted paths still fail the audit.
+    "GHSA-fc5q-39xc-vjpf|@typescript-eslint/eslint-plugin>@typescript-eslint/parser>@typescript-eslint/typescript-estree>tinyglobby>fdir>picomatch",
+    "GHSA-fc5q-39xc-vjpf|@typescript-eslint/type-utils>@typescript-eslint/typescript-estree>tinyglobby>fdir>picomatch>",
+    "GHSA-fc5q-39xc-vjpf|@typescript-eslint/utils>@typescript-eslint/typescript-estree>tinyglobby>fdir>picomatch>",
+    "GHSA-fc5q-39xc-vjpf|fdir>picomatch>",
+    "GHSA-fc5q-39xc-vjpf|picomatch>",
+    "GHSA-fc5q-39xc-vjpf|readdirp>picomatch>",
+    "GHSA-fc5q-39xc-vjpf|tinyglobby>fdir>picomatch>",
+    "GHSA-fc5q-39xc-vjpf|vite-plugin-static-copy>chokidar>anymatch>picomatch",
+    "GHSA-fc5q-39xc-vjpf|vite>tinyglobby>fdir>picomatch",
+    "GHSA-fc5q-39xc-vjpf|vitest>tinyglobby>fdir>picomatch"
+  ]
 }
