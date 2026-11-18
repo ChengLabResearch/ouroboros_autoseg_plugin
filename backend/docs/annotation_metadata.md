@@ -87,5 +87,5 @@ same sidecar. They appear on every frame when windowing is enabled, including
 unprompted video frames and the full-frame automatic bootstrap. Rectangles
 are drawn before point and repair markers, at intensity 95 when the positive
 intensity is 96. They affect only the diagnostic TIFF. See
-[input window](../../README.md#input-window) for automatic sizing, raw-mask
-feedback, and the schema-version-3 sidecar fields.
+[input window](../../README.md#input-window) for accepted-component feedback,
+startup constraints, flag holds, and the schema-version-3 sidecar fields.

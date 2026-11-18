@@ -128,7 +128,9 @@ pub struct InputWindowController {
     frames: Vec<InputWindowFrame>,
     previous_mask: Option<Arc<FrameMask>>,
     classifier: TraceFrameClassifier,
-    automatic_size: Option<usize>,
+    /// Proposal from the latest accepted component, distinct from the recorded
+    /// input that produced it. Flags hold it; prompts only translate its use.
+    accepted_window: Option<PixelBounds>,
     retain_components: bool,
 }
 
@@ -147,7 +149,7 @@ impl InputWindowController {
             frames: Vec::new(),
             previous_mask: None,
             classifier: TraceFrameClassifier::default(),
-            automatic_size: None,
+            accepted_window: None,
             retain_components,
         })
     }
@@ -200,71 +202,53 @@ impl InputWindowController {
                 .is_ok();
             let reset = if frame_index == 0 {
                 Some(WindowReset::Initial)
-            } else if flagged {
-                Some(WindowReset::Flag)
             } else if prompted {
                 Some(WindowReset::Prompt)
+            } else if flagged {
+                Some(WindowReset::Flag)
             } else {
                 None
             };
-            let size = self.options.window_size.or(self.automatic_size);
-            let bounds = if size.is_none() {
-                // Automatic mode needs an unrestricted first observation. Empty
-                // masks cannot establish a size, so keep the full frame until one can.
-                PixelBounds {
-                    left: 0,
-                    top: 0,
-                    right: frame.width,
-                    bottom: frame.height,
-                }
-            } else if reset.is_some() {
+            let (mut bounds, recenter) = if let Some(bounds) = self.accepted_window {
+                (bounds, prompted)
+            } else {
+                // Before acceptance, use unrestricted input or an explicit
+                // startup square. Rejected observations cannot establish a window.
+                (
+                    PixelBounds {
+                        left: 0,
+                        top: 0,
+                        right: self
+                            .options
+                            .window_size
+                            .unwrap_or(frame.width)
+                            .min(frame.width),
+                        bottom: self
+                            .options
+                            .window_size
+                            .unwrap_or(frame.height)
+                            .min(frame.height),
+                    },
+                    self.options.window_size.is_some(),
+                )
+            };
+            if recenter {
                 let point = interpolated_point_for_frame(&self.annotations, frame_index)
                     .ok_or_else(|| {
                         AppError::bad_request(format!(
                             "Input window needs a trace point for frame {frame_index}"
                         ))
                     })?;
-                let size = size.expect("automatic size established or explicit size supplied");
                 let x = point.x.round().clamp(0.0, (frame.width - 1) as f32) as usize;
                 let y = point.y.round().clamp(0.0, (frame.height - 1) as f32) as usize;
-                PixelBounds {
-                    left: x.saturating_sub(size / 2),
-                    top: y.saturating_sub(size / 2),
-                    right: x.saturating_add(size - size / 2).min(frame.width),
-                    bottom: y.saturating_add(size - size / 2).min(frame.height),
-                }
-            } else {
-                let mask = self
-                    .previous_mask
-                    .as_ref()
-                    .expect("previous frame observed");
-                let bounds = PixelBounds::of_mask(mask).expect("empty component triggers a reset");
-                let previous = self.frames.last().expect("previous window").bounds;
-                PixelBounds {
-                    left: bounds
-                        .left
-                        .saturating_sub(self.options.margin)
-                        .max(previous.left.saturating_sub(self.options.max_growth)),
-                    top: bounds
-                        .top
-                        .saturating_sub(self.options.margin)
-                        .max(previous.top.saturating_sub(self.options.max_growth)),
-                    right: bounds
-                        .right
-                        .saturating_add(self.options.margin)
-                        .min(previous.right.saturating_add(self.options.max_growth))
-                        .min(frame.width),
-                    bottom: bounds
-                        .bottom
-                        .saturating_add(self.options.margin)
-                        .min(previous.bottom.saturating_add(self.options.max_growth))
-                        .min(frame.height),
-                }
-            };
-            if bounds.left >= bounds.right || bounds.top >= bounds.bottom {
-                return Err(AppError::bad_request(
-                    "Previous mask lies outside the input window's permitted growth",
-                ));
+                let width = bounds.right - bounds.left;
+                let height = bounds.bottom - bounds.top;
+                // Translate within the image rather than clipping the rectangle:
+                // a near-border prompt must not shrink its accepted dimensions.
+                bounds.left = x.saturating_sub(width / 2).min(frame.width - width);
+                bounds.top = y.saturating_sub(height / 2).min(frame.height - height);
+                bounds.right = bounds.left + width;
+                bounds.bottom = bounds.top + height;
             }
             self.frames.push(InputWindowFrame {
                 bounds,
@@ -295,7 +279,7 @@ impl InputWindowController {
             ));
         }
         // The detector selects a component in its own working mask; the shared
-        // raw output remains untouched for scoring, background, and following.
+        // raw output remains untouched for scoring and background estimation.
         let previous = frame_index
             .checked_sub(1)
             .and_then(|i| self.frames[i].raw_detection.as_ref())
@@ -303,15 +287,36 @@ impl InputWindowController {
         let detection =
             self.classifier
                 .prepare((*mask).clone(), &self.annotations, frame_index, previous)?;
-        if self.automatic_size.is_none() || detection.record.reasons.is_empty() {
-            if let Some(bounds) = PixelBounds::of_mask(&mask) {
-                self.automatic_size = Some(
-                    (bounds.right - bounds.left)
-                        .max(bounds.bottom - bounds.top)
-                        .saturating_mul(2)
-                        .max(64),
-                );
+        if detection.record.reasons.is_empty() {
+            let bounds = PixelBounds::of_mask(&detection.component)
+                .expect("an accepted trace component is nonempty");
+            let previous = self.frames[frame_index].bounds;
+            let next = PixelBounds {
+                left: bounds
+                    .left
+                    .saturating_sub(self.options.margin)
+                    .max(previous.left.saturating_sub(self.options.max_growth)),
+                top: bounds
+                    .top
+                    .saturating_sub(self.options.margin)
+                    .max(previous.top.saturating_sub(self.options.max_growth)),
+                right: bounds
+                    .right
+                    .saturating_add(self.options.margin)
+                    .min(previous.right.saturating_add(self.options.max_growth))
+                    .min(mask.width),
+                bottom: bounds
+                    .bottom
+                    .saturating_add(self.options.margin)
+                    .min(previous.bottom.saturating_add(self.options.max_growth))
+                    .min(mask.height),
+            };
+            if next.left >= next.right || next.top >= next.bottom {
+                return Err(AppError::bad_request(
+                    "Accepted component lies outside the input window's permitted growth",
+                ));
             }
+            self.accepted_window = Some(next);
         }
         if !self.retain_components && frame_index > 0 {
             // Only the preceding selection is needed for online detection.
@@ -339,6 +344,7 @@ impl InputWindowController {
             ));
         }
         self.previous_mask = None;
+        self.accepted_window = None;
         if !self.retain_components {
             if let Some(last) = self
                 .frames

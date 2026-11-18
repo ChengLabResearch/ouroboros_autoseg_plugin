@@ -1364,7 +1364,7 @@ async fn image_loop_windows_before_encoding_and_preserves_raw_masks_and_prepared
     assert_eq!(calls.len(), 2);
     assert_eq!(
         calls[0].0, prepared.staged_frames[0].frame,
-        "automatic sizing starts from an unrestricted observation"
+        "automatic startup waits for an accepted component without restricting input"
     );
     let window = &output.input_window.as_ref().unwrap().frames[1];
     assert_eq!(
@@ -1374,11 +1374,12 @@ async fn image_loop_windows_before_encoding_and_preserves_raw_masks_and_prepared
             window.bounds.right,
             window.bounds.bottom
         ),
-        (16, 16, 80, 80)
+        (38, 38, 59, 59),
+        "the accepted 5×5 component plus margin determines the prompted window; the detached raw region does not"
     );
     for y in 0..96 {
         for x in 0..96 {
-            let inside = (16..80).contains(&x) && (16..80).contains(&y);
+            let inside = (38..59).contains(&x) && (38..59).contains(&y);
             let expected = if inside {
                 prepared.staged_frames[1].frame.pixels[y * 96 + x]
             } else {

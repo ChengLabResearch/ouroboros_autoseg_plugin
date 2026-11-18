@@ -910,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn video_input_window_uses_previous_raw_output_and_replays_historical_pixels() {
+    fn video_input_window_uses_accepted_component_and_replays_historical_pixels() {
         use std::collections::BTreeSet;
         use std::sync::Mutex;
 
@@ -1027,7 +1027,7 @@ mod tests {
                     source.evict_except(&BTreeSet::new());
                     let next = source
                         .get_frame(1, &Device::Cpu)
-                        .expect("previous raw output determines next input")
+                        .expect("accepted component determines next input")
                         .flatten_all()
                         .unwrap()
                         .to_vec1::<f32>()

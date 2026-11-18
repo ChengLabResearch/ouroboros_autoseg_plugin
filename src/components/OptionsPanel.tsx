@@ -438,9 +438,9 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                         </div>
                     </div>
                     <p id="input-window-help">
-                        Blanks the background outside a window following the previous mask, without
-                        cropping or changing frame geometry. Prompted frames use a square centred on
-                        the trace; a flagged mask resets the next frame to that square.
+                        Blanks the background outside a window following the accepted component
+                        around the trace, without cropping or changing frame geometry. Flagged masks
+                        hold the last accepted window; prompted frames recenter it at the same size.
                     </p>
                     {inputWindowEnabled && <>
                         <div className={styles.row}>
@@ -480,7 +480,7 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             </div>
                         </div>
                         <div className={styles.row}>
-                            <label className={styles.label} htmlFor="input-window-size">Reset Window Size (px)</label>
+                            <label className={styles.label} htmlFor="input-window-size">Initial Window Size (px)</label>
                             <div className={styles.inputContainer}>
                                 <input
                                     id="input-window-size"
@@ -488,7 +488,7 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                                     type="number"
                                     min="1"
                                     step="1"
-                                    placeholder="Auto"
+                                    placeholder="Unrestricted"
                                     value={windowSize}
                                     onChange={(e) => {
                                         setWindowSize(e.target.value);
@@ -500,14 +500,13 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             </div>
                         </div>
                         <p id="input-window-size-help">
-                            Auto leaves the first frame unwindowed to measure the object. Later resets
-                            use twice the last unflagged mask&apos;s larger bounding-box dimension,
-                            with a minimum of 64 px. Enter a positive whole number to apply a fixed
-                            size from the first frame.
+                            Leave blank for unrestricted input until a component is accepted. Enter a
+                            positive whole number to use a trace-centred square during startup.
+                            After startup, the window follows accepted components and can change size.
                         </p>
                         {!validInputWindow && <p role="alert">
                             Margin and growth must be nonnegative whole numbers. Window size must be
-                            a positive whole number, or blank for Auto.
+                            a positive whole number, or blank for unrestricted startup.
                         </p>}
                     </>}
 

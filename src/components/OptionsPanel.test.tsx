@@ -196,7 +196,7 @@ describe('input window options', () => {
         },
     );
 
-    it('requires margin and growth but allows a blank automatic size', () => {
+    it('requires margin and growth but allows unrestricted startup', () => {
         const panel = form();
         panel.change('input-window', true);
         for (const id of ['input-window-margin', 'input-window-growth']) {

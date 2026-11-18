@@ -55,23 +55,28 @@ The API accepts `input_window: { "margin": 8, "max_growth": 5,
 Margin and maximum outward growth are nonnegative integers. A supplied window
 size is a positive integer, in pixels.
 
-Automatic sizing leaves the first frame unwindowed to measure the object. If
-its mask is empty, subsequent frames remain unwindowed until a nonempty mask is
-available. That first measurement initializes the reset-square side to twice
-the mask's larger bounding-box dimension, with a minimum of 64 pixels; later
-unflagged masks update it. There is no 64-pixel upper limit. An explicit size
-instead applies from frame zero.
+By default, startup frames remain unwindowed until the classifier accepts a
+trace-selected component. A supplied `window_size` instead limits those startup
+frames to a trace-centred square. It is a startup constraint, not a fixed size
+for later frames. There is no automatic doubling or minimum-size rule.
 
-On each prompted frame, the window resets to that square, centred on the
-interpolated trace and clipped to the image edges. Image prediction prompts
-every frame, so every frame after the automatic bootstrap uses this rule.
-Other video frames follow the previous **raw** output's bounding box plus the
-margin. Each edge can move outward by at most `max_growth` pixels relative to
-the previous window; inward movement is unrestricted. An initial detector flag
-from [inconsistent-frame repair](#inconsistent-frame-repair) resets the **next**
-frame to the square. Later flagged masks do not enlarge the automatic reset
-size. Windowing uses these initial flags, before the repair pass's recovery of
-anchors using future frames, even when repair is disabled.
+An accepted frame supplies its **trace-selected component's** bounding box plus
+the margin for the next window. Each edge can move outward by at most
+`max_growth` pixels relative to the previous input window; inward movement is
+unrestricted. Detached regions in the raw output do not enlarge this box.
+An initial detector flag from [inconsistent-frame repair](#inconsistent-frame-repair)
+holds the most recent window derived from an accepted component unchanged for
+the next frame. Consecutive flags cannot enlarge or reopen that window.
+Windowing uses the classifier's initial acceptance decision, before the repair
+pass's recovery of anchors using future frames, even when repair is disabled.
+
+On each prompted frame, the latest accepted window is translated towards the
+interpolated trace point without changing its dimensions, including after a
+flag. Translation is limited at image edges to keep the same-sized window
+inside the image. Image prediction prompts every frame, so every frame after
+startup uses this recentering rule. The component-derived window, rather than
+the unrestricted input that produced the first accepted component, is the
+basis for subsequent holds and recentering.
 
 The background is the current frame's median outside the previous raw mask,
 calculated independently for each colour channel. Even-sized samples use the
@@ -89,7 +94,8 @@ indices, `bounds` (`left`, `top`, exclusive `right`, exclusive `bottom`),
 these entries when no mask postpass is requested. When cleanup or repair is
 enabled, those records move into the existing root `frames` list; repair then
 adds its anchor decisions and actions there. They are never duplicated.
-The window summary and job log report prompt/flag resets and the fraction of
+The window summary and job log report prompt recenters and flag holds under
+the existing prompt/flag reset counters, and the fraction of
 frames touching an image edge, including an unwindowed bootstrap frame. The
 initial window is excluded from reset counts. With **Draw Prompts**, the same
 bounds are drawn as a rectangle in the diagnostic overlay at intensity 96
