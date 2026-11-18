@@ -10,6 +10,8 @@ export type SubmitPayload = {
     keepCenterlineComponent: boolean;
     maxPromptGap: number | null;
     negativeBorderPoints: { count: number; inset_px: number } | null;
+    repairInconsistentFrames: boolean;
+    keepUnrepaired: boolean;
 };
 
 type Props = {
@@ -31,6 +33,8 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const [negativeBorderInset, setNegativeBorderInset] = useState('12');
     const [negativeCountBadInput, setNegativeCountBadInput] = useState(false);
     const [negativeInsetBadInput, setNegativeInsetBadInput] = useState(false);
+    const [repairFramesEnabled, setRepairFramesEnabled] = useState(false);
+    const [keepUnrepaired, setKeepUnrepaired] = useState(false);
     const inputFileRef = useRef<HTMLInputElement | null>(null);
     const outputFileRef = useRef<HTMLInputElement | null>(null);
 
@@ -312,7 +316,9 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             negativeBorderPoints: negativeBorderEnabled ? {
                                 count: borderCount,
                                 inset_px: borderInset
-                            } : null
+                            } : null,
+                            repairInconsistentFrames: repairFramesEnabled,
+                            keepUnrepaired
                         })} 
                         disabled={!canRun}
                         title="Run Segmentation"
@@ -482,6 +488,40 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                         Keeps one connected region per slice. Separate branches or folds may be removed.
                         If no foreground is within 10 pixels of the centre line, the slice is unchanged.
                     </p>
+
+                    <div className={styles.row}>
+                        <label className={styles.label} htmlFor="repair-inconsistent-frames">Repair Inconsistent Frames</label>
+                        <div className={styles.inputContainer}>
+                            <input
+                                id="repair-inconsistent-frames"
+                                type="checkbox"
+                                checked={repairFramesEnabled}
+                                onChange={(e) => {
+                                    setRepairFramesEnabled(e.target.checked);
+                                    if (!e.target.checked) setKeepUnrepaired(false);
+                                }}
+                                aria-describedby="frame-repair-help"
+                            />
+                        </div>
+                    </div>
+                    <p id="frame-repair-help">
+                        Keeps trace components, preserves plausible frames, and uses neighbouring
+                        accepted frames to clip suspect masks or replace dropouts. A flags JSON file
+                        lists frames for review.
+                    </p>
+                    {repairFramesEnabled &&
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="repair-keep-unrepaired">Keep Unrepaired Stack</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="repair-keep-unrepaired"
+                                    type="checkbox"
+                                    checked={keepUnrepaired}
+                                    onChange={(e) => setKeepUnrepaired(e.target.checked)}
+                                />
+                            </div>
+                        </div>
+                    }
 
                     <div className={styles.row}>
                         <span className={styles.label}>Draw Prompts</span>

@@ -55,9 +55,83 @@ left unchanged. Missing metadata uses the existing centre-point annotations.
 
 Separate branches or folds without the seed are removed; connected leakage
 into neighbouring tissue remains. The output and optional annotation overlay
-both use the cleaned masks; a raw stack is not saved. The job log reports
+both use the cleaned masks. The job log reports
 changed frames, removed pixels, background/missing seed counts (including
 recovered seeds), and frames left unchanged because no seed was found.
+
+### Inconsistent-frame repair
+
+**Repair Inconsistent Frames** is optional and off by default for both
+predictors. It runs after centre-line cleanup, if that is enabled. It uses the
+same interpolated trace, nearest-foreground search and 8-connected component
+selector on every frame, including video frames without inference prompts.
+Enabling repair removes off-trace components from every frame, including
+accepted frames, even when **Keep Centre-line Component** is off. If a trace
+point exists but no foreground lies within 10 pixels of it, centre-line
+cleanup leaves the frame unchanged; repair empties it, flags it
+`empty_component`, and may fill it from an accepted-frame estimate.
+
+The selected component is flagged if it touches an image edge, its area changes
+by more than a factor of **1.5** in either direction, or its IoU
+falls below **0.5**. These thresholds are fixed. Area and IoU compare against the
+previous selected component **before any repair**, including previously flagged
+frames. The first frame has no previous-frame comparison. Missing trace points
+and empty selections are also flagged. Empty/nonempty area transitions count
+as an infinite ratio; two empty components have ratio 1 and IoU 0.
+
+A flagged, nonempty component that does not touch an edge is recovered as an
+anchor when its original area is within 0.7–1.4 times the median area of
+initially accepted frames within ±150 frames, including both endpoints. The
+median averages the middle two values for an even count. Recovery uses this
+fixed initial set, so one recovered anchor cannot cause another recovery.
+Without an accepted frame in the window, the frame remains flagged. Recovered
+anchors keep their own selected masks unchanged.
+
+Remaining flagged frames are grouped into runs. Each frame's expected mask
+comes from the two surrounding accepted components. Their chessboard
+(Chebyshev) signed distance fields are interpolated in place by frame position,
+without alignment, and thresholded strictly above zero. A
+leading or trailing run uses its only accepted neighbour as the estimate.
+
+The frame keeps its own component intersected with the estimate dilated by a
+fixed 21 × 21 Euclidean disc of radius 10 pixels. Only when the surviving area is **less than 30% of
+the undilated estimate's area** is the estimate substituted. There is no extra
+overlap/agreement gate. This preserves observed detail while filling dropouts.
+Actions are `kept` when there is no pixel change beyond component selection,
+`clipped` when repair removes foreground, and `replaced` when it substitutes
+the estimate. Clipping retains original foreground values; substituted
+estimates use 0/255.
+
+Frames without any trace remain empty and flagged. If every frame is flagged,
+there is no accepted anchor: selected components remain unchanged with action
+`kept`, and remain in the review list. An empty estimate yields an empty
+intersection; if both the selected component and estimate are empty, the frame
+stays empty and flagged. Repair does not add inference prompts or rerun the
+model. Estimated frames remain review
+targets, particularly where the source image has lost contrast.
+
+The API options are two booleans: `repair_inconsistent_frames` and
+`keep_unrepaired`, both defaulting to `false`. Set the first to `true` to enable
+repair, and optionally the second to retain its input stack. `keep_unrepaired`
+has no effect when repair is off. Disabled repair leaves the existing output
+unchanged.
+
+For `segmented.tif`, the repaired primary output is accompanied by
+`segmented_frame_repair.json` (schema version 2). Each record contains the
+original `component_area`, detector `reasons`, `anchor_recovered`, and `repair`
+action. A frame remains flagged when its reasons are nonempty and it was not
+recovered as an anchor. Original reasons are retained for recovered anchors;
+they are excluded from the final runs and review list. The summary counts
+initial flags, recovered anchors, final flags, and kept/clipped/replaced
+actions. Run boundaries are inclusive and frame indices start at zero.
+The same records supply the job-log summary, final flag list, recovered-anchor
+list, and overlay markers. **Keep Unrepaired Stack** additionally writes
+`segmented_unrepaired.tif`, captured after optional centre-line cleanup and
+before component selection and repair. With **Draw Prompts**, each actually
+repaired frame gets a small X centred at pixel (2, 2), at intensity 192 (191 if
+the positive prompt intensity is 192). Kept frames, including recovered anchors
+and unchanged flagged frames, have no repair marker. All requested artifacts
+are copied beside the primary output.
 
 ### Negative border points
 
@@ -91,7 +165,8 @@ use stars; positives added by **Max Prompt Gap** use hollow diamonds.
 
 The diagnostic overlay uses the same prepared prompt list submitted to
 inference. Video frames without prompts, including frames before the first and
-after the last prompt, remain identical to the primary mask. Every positive
+after the last prompt, remain identical to the primary mask unless marked as
+repaired by the optional repair step. Every positive
 on a prompted frame is drawn, including multiple annotations whose fractional
 z coordinates round to that frame, along with any negative border points.
 Image prediction still marks every frame it prompts. Coordinates are rounded

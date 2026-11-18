@@ -1,7 +1,7 @@
 use super::*;
 use crate::imaging::annotations::AnnotationOrigin;
 
-fn mask(width: usize, height: usize, foreground: &[(usize, usize)]) -> FrameMask {
+pub(super) fn mask(width: usize, height: usize, foreground: &[(usize, usize)]) -> FrameMask {
     let mut pixels = vec![0; width * height];
     for &(x, y) in foreground {
         pixels[y * width + x] = 255;

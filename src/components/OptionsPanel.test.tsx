@@ -65,7 +65,7 @@ function form() {
         return visit(tree);
     };
     const control = (id: string) => {
-        const result = find((props) => props.id === id || props.placeholder === id || props.title === id);
+        const result = find((props) => props.id === id || props.placeholder === id || props.title === id || props.value === id);
         if (!result) throw new Error(`Missing control: ${id}`);
         return result;
     };
@@ -144,5 +144,60 @@ describe('negative border point options', () => {
         panel.change('negative-border-count', '15');
         panel.change('negative-border-inset', '12', true);
         expect(panel.control('Run Segmentation').disabled).toBe(true);
+    });
+});
+
+describe('inconsistent frame repair options', () => {
+    it('starts disabled and submits both options as false', () => {
+        const panel = form();
+        expect(panel.control('repair-inconsistent-frames').checked).toBe(false);
+        expect(panel.find((props) => props.id === 'repair-keep-unrepaired')).toBeUndefined();
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+            repairInconsistentFrames: false,
+            keepUnrepaired: false,
+        }));
+    });
+
+    it.each(['ImagePredictor', 'VideoPredictor'])('submits repair and optional raw output for %s', (predictor) => {
+        const panel = form();
+        panel.change('ImagePredictor', predictor);
+        panel.change('repair-inconsistent-frames', true);
+        expect(panel.control('repair-keep-unrepaired').checked).toBe(false);
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            predictor_type: predictor,
+            repairInconsistentFrames: true,
+            keepUnrepaired: false,
+        }));
+        panel.change('repair-keep-unrepaired', true);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            repairInconsistentFrames: true,
+            keepUnrepaired: true,
+        }));
+        panel.change('repair-keep-unrepaired', false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            repairInconsistentFrames: true,
+            keepUnrepaired: false,
+        }));
+    });
+
+    it('clears the raw output option when repair is disabled', () => {
+        const panel = form();
+        panel.change('repair-inconsistent-frames', true);
+        panel.change('repair-keep-unrepaired', true);
+        panel.change('repair-inconsistent-frames', false);
+        expect(panel.find((props) => props.id === 'repair-keep-unrepaired')).toBeUndefined();
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            repairInconsistentFrames: false,
+            keepUnrepaired: false,
+        }));
+        panel.change('repair-inconsistent-frames', true);
+        expect(panel.control('repair-keep-unrepaired').checked).toBe(false);
     });
 });

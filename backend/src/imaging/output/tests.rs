@@ -5,8 +5,12 @@ use crate::{
     imaging::annotations::{
         annotation_samples_for_video, fill_prompt_gaps, AnnotationOrigin, AnnotationPoint,
     },
+    imaging::cleanup::{FrameFlagReason, FrameRepairAction, FrameRepairFrame, FrameRepairReport},
     imaging::tiff_io::{inspect_volume, read_volume_frames},
-    inference::image::{FrameMask, PointPrompt},
+    inference::{
+        image::{FrameMask, PointPrompt},
+        video::VideoFramePrompt,
+    },
 };
 use uuid::Uuid;
 
@@ -104,6 +108,7 @@ async fn write_annotation_overlay_stack_preserves_source_masks_and_marks_points(
         &masks,
         &annotation_samples_for_video(&annotations, masks.len()),
         127,
+        None,
     )
     .await
     .expect("write overlay stack");
@@ -150,6 +155,7 @@ async fn write_annotation_overlay_stack_marks_only_added_prompt_frames_with_holl
         &masks,
         &annotation_samples_for_video(&annotations, masks.len()),
         127,
+        None,
     )
     .await
     .expect("write overlay");
@@ -232,7 +238,7 @@ async fn overlay_uses_every_prepared_point_with_its_original_kind_and_frame() {
         let output_path = root
             .path()
             .join(format!("overlay-{positive_intensity}.tif"));
-        write_annotation_overlay_stack(&output_path, &masks, &prompts, positive_intensity)
+        write_annotation_overlay_stack(&output_path, &masks, &prompts, positive_intensity, None)
             .await
             .expect("write overlay");
         let frames = read_volume_frames(&output_path)
@@ -301,11 +307,160 @@ async fn overlay_without_prepared_prompts_is_byte_identical_to_primary_stack() {
     write_mask_stack(&primary_path, &masks)
         .await
         .expect("write primary");
-    write_annotation_overlay_stack(&overlay_path, &masks, &[], 127)
+    write_annotation_overlay_stack(&overlay_path, &masks, &[], 127, None)
         .await
         .expect("write overlay without points");
     assert_eq!(
         std::fs::read(primary_path).unwrap(),
         std::fs::read(overlay_path).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn repair_markers_follow_report_actions_without_requiring_frame_prompts() {
+    let root = tempfile::tempdir().expect("overlay fixture");
+    let masks = vec![
+        FrameMask {
+            width: 8,
+            height: 8,
+            pixels: vec![0; 64]
+        };
+        5
+    ];
+    let report = FrameRepairReport {
+        frames: [
+            (FrameRepairAction::Kept, vec![], false),
+            (
+                FrameRepairAction::Clipped,
+                vec![FrameFlagReason::EdgeContact],
+                false,
+            ),
+            (
+                FrameRepairAction::Kept,
+                vec![FrameFlagReason::EdgeContact],
+                false,
+            ),
+            (
+                FrameRepairAction::Kept,
+                vec![FrameFlagReason::AreaJump],
+                true,
+            ),
+            (
+                FrameRepairAction::Replaced,
+                vec![FrameFlagReason::EmptyComponent],
+                false,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(
+            |(frame_index, (repair, reasons, anchor_recovered))| FrameRepairFrame {
+                component_area: if frame_index == 4 { 0 } else { 9 },
+                reasons,
+                anchor_recovered,
+                repair,
+            },
+        )
+        .collect(),
+    };
+    for (positive_intensity, repair_intensity) in [(127, 192), (192, 191)] {
+        let path = root.path().join(format!("repair-{positive_intensity}.tif"));
+        write_annotation_overlay_stack(&path, &masks, &[], positive_intensity, Some(&report))
+            .await
+            .expect("repair overlay without prompts");
+        let frames = read_volume_frames(&path).await.unwrap();
+        for (index, frame) in frames.iter().enumerate() {
+            if [1, 4].contains(&index) {
+                assert_eq!(
+                    frame
+                        .pixels
+                        .iter()
+                        .filter(|&&pixel| pixel == repair_intensity)
+                        .count(),
+                    9
+                );
+                for coordinate in [0, 1, 2, 3, 4] {
+                    assert_eq!(frame.pixels[coordinate * 8 + coordinate], repair_intensity);
+                    assert_eq!(
+                        frame.pixels[coordinate * 8 + (4 - coordinate)],
+                        repair_intensity
+                    );
+                }
+            } else {
+                assert_eq!(
+                    frame.pixels, masks[index].pixels,
+                    "kept frame is unmarked, including recovered and still-flagged frames"
+                );
+            }
+        }
+
+        let prompts = vec![VideoFramePrompt {
+            frame_index: 1,
+            points: vec![PointPrompt::positive(2.0, 2.0, AnnotationOrigin::Metadata)],
+        }];
+        write_annotation_overlay_stack(&path, &masks, &prompts, positive_intensity, Some(&report))
+            .await
+            .expect("repair glyph over prompt");
+        let frames = read_volume_frames(&path).await.unwrap();
+        assert_eq!(
+            frames[1].pixels[2 * 8 + 2],
+            repair_intensity,
+            "repair draws after prompt"
+        );
+        assert_eq!(
+            frames[1].pixels[2], positive_intensity,
+            "remaining positive star pixels"
+        );
+    }
+    assert!(masks
+        .iter()
+        .all(|mask| mask.pixels.iter().all(|&pixel| pixel == 0)));
+}
+
+#[tokio::test]
+async fn report_without_repairs_leaves_existing_prompt_overlay_byte_identical() {
+    let root = tempfile::tempdir().expect("overlay fixture");
+    let baseline_path = root.path().join("baseline.tif");
+    let report_path = root.path().join("report.tif");
+    let masks = vec![
+        FrameMask {
+            width: 8,
+            height: 8,
+            pixels: vec![255; 64]
+        };
+        2
+    ];
+    let prompts = vec![VideoFramePrompt {
+        frame_index: 1,
+        points: vec![
+            PointPrompt::positive(4.0, 4.0, AnnotationOrigin::Metadata),
+            PointPrompt::negative(1.0, 1.0),
+        ],
+    }];
+    let report = FrameRepairReport {
+        frames: vec![
+            FrameRepairFrame {
+                component_area: 64,
+                reasons: vec![FrameFlagReason::LowIou],
+                anchor_recovered: true,
+                repair: FrameRepairAction::Kept,
+            },
+            FrameRepairFrame {
+                component_area: 64,
+                reasons: vec![FrameFlagReason::EdgeContact],
+                anchor_recovered: false,
+                repair: FrameRepairAction::Kept,
+            },
+        ],
+    };
+    write_annotation_overlay_stack(&baseline_path, &masks, &prompts, 127, None)
+        .await
+        .unwrap();
+    write_annotation_overlay_stack(&report_path, &masks, &prompts, 127, Some(&report))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(baseline_path).unwrap(),
+        std::fs::read(report_path).unwrap()
     );
 }

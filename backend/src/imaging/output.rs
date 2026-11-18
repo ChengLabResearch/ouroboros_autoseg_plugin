@@ -3,7 +3,8 @@ use std::path::Path;
 use crate::{
     error::AppError,
     imaging::{
-        overlay::draw_annotation_marker,
+        cleanup::FrameRepairReport,
+        overlay::{draw_overlay_marker, OverlayMarker},
         tiff_io::{write_tiff_pages, WritableTiffPage},
     },
     inference::{
@@ -67,6 +68,7 @@ pub async fn write_annotation_overlay_stack(
     masks: &[FrameMask],
     prompts: &[VideoFramePrompt],
     intensity: u8,
+    repair_report: Option<&FrameRepairReport>,
 ) -> Result<(), AppError> {
     let mut overlay_masks = masks.to_vec();
     let mut prompts = prompts.iter().peekable();
@@ -85,16 +87,29 @@ pub async fn write_annotation_overlay_stack(
                 } else {
                     intensity
                 };
-                draw_annotation_marker(
+                draw_overlay_marker(
                     &mut mask.pixels,
                     mask.width,
                     mask.height,
                     point.x,
                     point.y,
                     marker_intensity,
-                    point.kind,
+                    OverlayMarker::Prompt(point.kind),
                 );
             }
+        }
+        if repair_report.is_some_and(|report| report.is_repaired(frame_index)) {
+            // A fixed top-left X marks repaired frames even without prompts.
+            // Draw it last so a prompt at this location cannot conceal repair.
+            draw_overlay_marker(
+                &mut mask.pixels,
+                mask.width,
+                mask.height,
+                2.0,
+                2.0,
+                if intensity == 192 { 191 } else { 192 },
+                OverlayMarker::RepairedFrame,
+            );
         }
     }
 

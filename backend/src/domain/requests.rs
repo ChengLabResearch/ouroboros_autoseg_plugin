@@ -33,6 +33,10 @@ pub struct ProcessRequest {
     #[serde(default)]
     pub keep_centerline_component: bool,
     #[serde(default)]
+    pub repair_inconsistent_frames: bool,
+    #[serde(default)]
+    pub keep_unrepaired: bool,
+    #[serde(default)]
     pub max_prompt_gap: Option<usize>,
     #[serde(default)]
     pub negative_border_points: Option<NegativeBorderPoints>,
@@ -195,6 +199,49 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("inset_px must be finite and nonnegative"));
+        }
+    }
+
+    #[test]
+    fn frame_repair_booleans_default_off_and_accept_all_combinations() {
+        for predictor in ["ImagePredictor", "VideoPredictor"] {
+            let original = json!({
+                "file_path": "/input.tif",
+                "output_file": "/output.tif",
+                "model_type": "sam3",
+                "predictor_type": predictor
+            });
+            let request: ProcessRequest = serde_json::from_value(original.clone()).unwrap();
+            assert!(!request.repair_inconsistent_frames);
+            assert!(!request.keep_unrepaired);
+            for repair in [false, true] {
+                for keep_unrepaired in [false, true] {
+                    let mut body = original.clone();
+                    body["repair_inconsistent_frames"] = json!(repair);
+                    body["keep_unrepaired"] = json!(keep_unrepaired);
+                    let request: ProcessRequest = serde_json::from_value(body).unwrap();
+                    request.validate().unwrap();
+                    assert_eq!(request.repair_inconsistent_frames, repair);
+                    assert_eq!(request.keep_unrepaired, keep_unrepaired);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frame_repair_options_accept_only_booleans() {
+        let original = json!({
+            "file_path": "/input.tif",
+            "output_file": "/output.tif",
+            "model_type": "sam3",
+            "predictor_type": "ImagePredictor"
+        });
+        for key in ["repair_inconsistent_frames", "keep_unrepaired"] {
+            for value in [json!(null), json!({}), json!(1), json!("true")] {
+                let mut body = original.clone();
+                body[key] = value;
+                assert!(serde_json::from_value::<ProcessRequest>(body).is_err());
+            }
         }
     }
 }

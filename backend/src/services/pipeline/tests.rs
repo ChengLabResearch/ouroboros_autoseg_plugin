@@ -5,6 +5,7 @@ use std::{
 
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde_json::{json, Value};
+use tracing::instrument::WithSubscriber;
 
 use super::{
     annotation_overlay_path, inference_device, plan, prepare, run, save_masks, validate_video_masks,
@@ -15,6 +16,7 @@ use crate::{
     domain::requests::ProcessRequest,
     imaging::{
         annotations::{annotation_samples_for_video, AnnotationOrigin},
+        cleanup::{keep_centerline_components, repair_inconsistent_frames},
         preprocess::PreparedFrameEncoding,
         tiff_io::{read_volume_frames, write_tiff_pages, WritableTiffPage},
     },
@@ -57,6 +59,8 @@ fn sample_request(predictor_type: &str) -> ProcessRequest {
         negative_border_points: None,
         overlay_annotation_points: false,
         keep_centerline_component: false,
+        repair_inconsistent_frames: false,
+        keep_unrepaired: false,
         annotation_overlay_intensity: 127,
     }
 }
@@ -231,11 +235,11 @@ async fn plan_matches_python_volume_mapping_semantics() {
     );
     assert_eq!(plan.copy_to_volume_mappings()[0].target_path, "");
     assert_eq!(
-        plan.copy_to_host_mappings(false)[0].source_path,
+        plan.copy_to_host_mappings(&request)[0].source_path,
         "/host/output/segmented.tif"
     );
     assert_eq!(
-        plan.copy_to_host_mappings(false)[0].target_path,
+        plan.copy_to_host_mappings(&request)[0].target_path,
         "Segmentation"
     );
 }
@@ -855,5 +859,228 @@ async fn cleanup_applies_to_both_predictors_before_primary_and_overlay_delivery(
                 assert_eq!(overlay[frame].pixels[7], output[frame].pixels[7]);
             }
         }
+    }
+}
+
+#[tokio::test]
+async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_both_predictors() {
+    for predictor in ["ImagePredictor", "VideoPredictor"] {
+        for cleanup in [false, true] {
+            for keep_unrepaired in [false, true] {
+                let fixture = VolumeFixture::start(None, None);
+                let pages: Vec<_> = (0..7)
+                    .map(|index| WritableTiffPage {
+                        width: 41,
+                        height: 41,
+                        channels: 1,
+                        pixels: vec![0; 41 * 41],
+                        description: (index == 0)
+                            .then(|| r#"{"annotation_points": [[20, 20, 0], [20, 20, 6]]}"#.into()),
+                    })
+                    .collect();
+                write_tiff_pages(&fixture.host_input, &pages).unwrap();
+                let mut request = sample_request(predictor);
+                request.output_file = r"C:\Data Set\output\segmented.tif".into();
+                request.keep_centerline_component = cleanup;
+                request.overlay_annotation_points = true;
+                request.repair_inconsistent_frames = true;
+                request.keep_unrepaired = keep_unrepaired;
+                let prepared = prepare(&fixture.state, &request).await.unwrap();
+                let mut accepted = FrameMask {
+                    width: 41,
+                    height: 41,
+                    pixels: vec![0; 41 * 41],
+                };
+                for y in 18..=22 {
+                    for x in 18..=22 {
+                        accepted.pixels[y * 41 + x] = 255;
+                    }
+                }
+                let flooded = FrameMask {
+                    width: 41,
+                    height: 41,
+                    pixels: vec![255; 41 * 41],
+                };
+                let mut masks = vec![
+                    accepted.clone(),
+                    flooded.clone(),
+                    accepted.clone(),
+                    FrameMask {
+                        width: 41,
+                        height: 41,
+                        pixels: vec![0; 41 * 41],
+                    },
+                    accepted.clone(),
+                    accepted.clone(),
+                    flooded,
+                ];
+                // Separate foreground is removed by either cleanup, but the optional
+                // unrepaired snapshot must reflect only the earlier centre-line step.
+                masks[0].pixels[0] = 255;
+                let mut expected_unrepaired = masks.clone();
+                if cleanup {
+                    keep_centerline_components(
+                        &mut expected_unrepaired,
+                        &prepared.annotation_points,
+                    )
+                    .unwrap();
+                }
+                // Algorithm tests own the independent geometry/classification oracle;
+                // this test checks that the pipeline delivers the cleanup results.
+                let mut expected_masks = expected_unrepaired.clone();
+                let expected_report =
+                    repair_inconsistent_frames(&mut expected_masks, &prepared.annotation_points)
+                        .unwrap();
+                let (progress, _receiver) = crate::services::progress::channel();
+                // Reuse the file-backed tracing capture used by the prompt-adapter
+                // tests, scoped to this future so concurrent jobs cannot leak in.
+                let log_file = tempfile::NamedTempFile::new().unwrap();
+                let writer = log_file.reopen().unwrap();
+                let subscriber = tracing_subscriber::fmt()
+                    .with_ansi(false)
+                    .without_time()
+                    .with_writer(move || writer.try_clone().unwrap())
+                    .finish();
+                save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
+                    .with_subscriber(subscriber)
+                    .await
+                    .unwrap();
+
+                let output = read_volume_frames(&fixture.host_outputs.join("segmented.tif"))
+                    .await
+                    .unwrap();
+                assert_eq!(output.len(), expected_masks.len());
+                for (actual, expected) in output.iter().zip(&expected_masks) {
+                    assert_eq!(actual.pixels, expected.pixels);
+                }
+                let report_path = fixture.host_outputs.join("segmented_frame_repair.json");
+                let report: Value =
+                    serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+                assert_eq!(report["schema_version"], 2);
+                assert_eq!(
+                    report["options"],
+                    json!({
+                        "repair_inconsistent_frames": true,
+                        "keep_unrepaired": keep_unrepaired,
+                    })
+                );
+                let expected_json = serde_json::to_value(&expected_report).unwrap();
+                assert_eq!(report["frames"], expected_json["frames"]);
+                assert_eq!(
+                    report["summary"],
+                    serde_json::to_value(expected_report.summary()).unwrap()
+                );
+                assert_eq!(report["summary"]["kept_frames"], 4);
+                assert_eq!(report["summary"]["clipped_frames"], 2);
+                assert_eq!(report["summary"]["replaced_frames"], 1);
+                let frames = report["frames"].as_array().unwrap();
+
+                let log = std::fs::read_to_string(log_file.path()).unwrap();
+                let line = log
+                    .lines()
+                    .find(|line| line.contains("inconsistent-frame repair complete"))
+                    .unwrap();
+                let (_, summary_and_frames) = line.split_once("summary=").unwrap();
+                let (summary_json, frames_and_anchors) =
+                    summary_and_frames.split_once(" flagged_frames=").unwrap();
+                let (frames_json, anchors_json) = frames_and_anchors
+                    .split_once(" recovered_anchors=")
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(summary_json).unwrap(),
+                    report["summary"]
+                );
+                assert_eq!(
+                    serde_json::from_str::<Value>(frames_json).unwrap(),
+                    json!([frames[1], frames[3], frames[6]])
+                );
+                assert_eq!(
+                    serde_json::from_str::<Value>(anchors_json).unwrap(),
+                    json!([frames[2], frames[4]])
+                );
+
+                let overlay = read_volume_frames(
+                    &fixture
+                        .host_outputs
+                        .join("segmented_annotation_overlay.tif"),
+                )
+                .await
+                .unwrap();
+                for (index, frame) in overlay.iter().enumerate() {
+                    assert_eq!(
+                        frame.pixels[2 * 41 + 2] == 192,
+                        expected_report.is_repaired(index)
+                    );
+                }
+                let raw_path = fixture.host_outputs.join("segmented_unrepaired.tif");
+                assert_eq!(raw_path.exists(), keep_unrepaired);
+                if keep_unrepaired {
+                    let raw = read_volume_frames(&raw_path).await.unwrap();
+                    assert_eq!(raw.len(), expected_unrepaired.len());
+                    for (actual, expected) in raw.iter().zip(&expected_unrepaired) {
+                        assert_eq!(actual.pixels, expected.pixels);
+                    }
+                    assert_eq!(raw[0].pixels[0], if cleanup { 0 } else { 255 });
+                    assert!(raw[1].pixels.iter().all(|pixel| *pixel == 255));
+                }
+                let delivery = fixture.requests().pop().unwrap();
+                let files = delivery.1["files"].as_array().unwrap();
+                assert_eq!(files.len(), if keep_unrepaired { 4 } else { 3 });
+                assert!(files
+                    .iter()
+                    .any(|file| file["sourcePath"]
+                        == r"C:\Data Set\output\segmented_frame_repair.json"));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn disabled_repair_preserves_existing_tiff_bytes_and_artifact_set() {
+    for (cleanup, keep_unrepaired) in [(false, false), (true, false), (false, true), (true, true)] {
+        let fixture = VolumeFixture::start(
+            Some(r#"{"annotation_points": [[0, 0, 0], [0, 0, 1]]}"#),
+            None,
+        );
+        let mut request = sample_request("VideoPredictor");
+        request.keep_centerline_component = cleanup;
+        request.keep_unrepaired = keep_unrepaired;
+        let prepared = prepare(&fixture.state, &request).await.unwrap();
+        let mut masks = vec![
+            FrameMask {
+                width: 4,
+                height: 2,
+                pixels: vec![255, 0, 0, 0, 0, 0, 0, 255]
+            };
+            2
+        ];
+        let mut expected = masks.clone();
+        if cleanup {
+            crate::imaging::cleanup::keep_centerline_components(
+                &mut expected,
+                &prepared.annotation_points,
+            )
+            .unwrap();
+        }
+        let expected_path = fixture.host_outputs.with_file_name("expected.tif");
+        crate::imaging::output::write_mask_stack(&expected_path, &expected)
+            .await
+            .unwrap();
+        let (progress, _receiver) = crate::services::progress::channel();
+        save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(fixture.host_outputs.join("segmented.tif")).unwrap(),
+            std::fs::read(expected_path).unwrap()
+        );
+        assert_eq!(std::fs::read_dir(&fixture.host_outputs).unwrap().count(), 1);
+        assert_eq!(
+            fixture.requests().pop().unwrap().1["files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

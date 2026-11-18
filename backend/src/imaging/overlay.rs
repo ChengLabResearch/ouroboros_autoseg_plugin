@@ -1,20 +1,37 @@
 use crate::{imaging::annotations::AnnotationOrigin, inference::image::PointPromptKind};
 
-pub fn draw_annotation_marker(
+pub enum OverlayMarker {
+    Prompt(PointPromptKind),
+    RepairedFrame,
+}
+
+pub fn draw_overlay_marker(
     mask_slice: &mut [u8],
     width: usize,
     height: usize,
     x: f32,
     y: f32,
     intensity: u8,
-    kind: PointPromptKind,
+    marker: OverlayMarker,
 ) {
     let x = x.round() as isize;
     let y = y.round() as isize;
-    let offsets: &[(isize, isize)] = if kind == PointPromptKind::Negative {
-        &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
-    } else if kind == PointPromptKind::Positive(AnnotationOrigin::GapFill) {
-        &[
+    let offsets: &[(isize, isize)] = match marker {
+        OverlayMarker::RepairedFrame => &[
+            (0, 0),
+            (-1, -1),
+            (1, 1),
+            (-1, 1),
+            (1, -1),
+            (-2, -2),
+            (2, 2),
+            (-2, 2),
+            (2, -2),
+        ],
+        OverlayMarker::Prompt(PointPromptKind::Negative) => {
+            &[(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+        }
+        OverlayMarker::Prompt(PointPromptKind::Positive(AnnotationOrigin::GapFill)) => &[
             (0, -3),
             (1, -2),
             (2, -1),
@@ -27,9 +44,8 @@ pub fn draw_annotation_marker(
             (-3, 0),
             (-2, -1),
             (-1, -2),
-        ]
-    } else {
-        &[
+        ],
+        OverlayMarker::Prompt(PointPromptKind::Positive(_)) => &[
             (0, 0),
             (1, 0),
             (-1, 0),
@@ -43,7 +59,7 @@ pub fn draw_annotation_marker(
             (-2, 0),
             (0, 2),
             (0, -2),
-        ]
+        ],
     };
 
     for (dx, dy) in offsets {
@@ -61,5 +77,25 @@ pub fn draw_annotation_marker(
         if let Some(pixel) = mask_slice.get_mut(index) {
             *pixel = intensity;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{draw_overlay_marker, OverlayMarker};
+
+    #[test]
+    fn repaired_frame_marker_uses_existing_image_edge_clipping() {
+        let mut pixels = vec![0; 4];
+        draw_overlay_marker(
+            &mut pixels,
+            2,
+            2,
+            2.0,
+            2.0,
+            192,
+            OverlayMarker::RepairedFrame,
+        );
+        assert_eq!(pixels, [192, 0, 0, 192]);
     }
 }
