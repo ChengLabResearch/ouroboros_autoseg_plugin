@@ -7,6 +7,9 @@ use crate::{
 mod distance;
 mod repair;
 
+pub(crate) use repair::{
+    repair_classified_frames, PreparedTraceClassification, TraceFrameClassifier,
+};
 pub use repair::{
     repair_inconsistent_frames, FrameFlagReason, FrameRepairAction, FrameRepairFrame,
     FrameRepairReport, FrameRepairRun, FrameRepairSummary,
@@ -24,6 +27,15 @@ pub struct CleanupStats {
     pub frames_without_seed: usize,
 }
 
+impl std::ops::AddAssign for CleanupStats {
+    fn add_assign(&mut self, other: Self) {
+        self.frames_changed += other.frames_changed;
+        self.pixels_removed += other.pixels_removed;
+        self.seed_misses += other.seed_misses;
+        self.frames_without_seed += other.frames_without_seed;
+    }
+}
+
 /// Keep the 8-connected foreground component at the interpolated centre line in
 /// each 2D frame. A background seed uses the nearest foreground pixel within a
 /// Euclidean radius of 10 pixels; ties use row-major order. If none exists, the
@@ -37,23 +49,41 @@ pub fn keep_centerline_components(
 
     for (frame_index, mask) in masks.iter_mut().enumerate() {
         let selection = selector.select(mask, annotation_points, frame_index)?;
-        stats.seed_misses += usize::from(selection.seed_status != TraceSeedStatus::Direct);
-        let Some(reached) = selection.component else {
-            stats.frames_without_seed += 1;
-            continue;
-        };
-
-        let mut removed = 0;
-        for (pixel, reached) in mask.pixels.iter_mut().zip(reached) {
-            if *pixel != 0 && !reached {
-                *pixel = 0;
-                removed += 1;
-            }
-        }
-        stats.frames_changed += usize::from(removed > 0);
-        stats.pixels_removed += removed;
+        stats += apply_trace_component(
+            mask,
+            selection.seed_status,
+            selection.component.unwrap_or(&[]).iter().copied(),
+        );
     }
     Ok(stats)
+}
+
+/// Apply a selected component with the centre-line cleanup's missing-seed policy.
+/// Both newly selected and already classified components use this same path.
+fn apply_trace_component(
+    mask: &mut FrameMask,
+    seed_status: TraceSeedStatus,
+    component: impl IntoIterator<Item = bool>,
+) -> CleanupStats {
+    let mut stats = CleanupStats {
+        seed_misses: usize::from(seed_status != TraceSeedStatus::Direct),
+        ..CleanupStats::default()
+    };
+    if matches!(
+        seed_status,
+        TraceSeedStatus::MissingTrace | TraceSeedStatus::MissingForeground
+    ) {
+        stats.frames_without_seed = 1;
+        return stats;
+    }
+    for (pixel, inside) in mask.pixels.iter_mut().zip(component) {
+        if *pixel != 0 && !inside {
+            *pixel = 0;
+            stats.pixels_removed += 1;
+        }
+    }
+    stats.frames_changed = usize::from(stats.pixels_removed > 0);
+    stats
 }
 
 /// The single owner of trace interpolation, seed recovery, and component selection.
@@ -69,7 +99,7 @@ struct TraceComponentSelection<'a> {
     seed_status: TraceSeedStatus,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TraceSeedStatus {
     MissingTrace,
     MissingForeground,

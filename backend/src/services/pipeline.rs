@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use crate::{
@@ -16,7 +16,11 @@ use crate::{
             annotation_samples_for_image, annotation_samples_for_video, default_annotations,
             fill_prompt_gaps, AnnotationPoint, VolumeShape,
         },
-        cleanup::{keep_centerline_components, repair_inconsistent_frames},
+        cleanup::{
+            keep_centerline_components, repair_classified_frames, repair_inconsistent_frames,
+            CleanupStats, FrameRepairReport,
+        },
+        input_window::{InputWindowController, InputWindowReport, SharedInputWindow},
         output::{
             write_annotation_overlay_stack, write_mask_stack, write_mask_stack_with_progress,
         },
@@ -27,6 +31,7 @@ use crate::{
         candle_sam3::{load_sam3_handle, CandleSam3ImageSegmenter, CandleSam3VideoSegmenter},
         image::{FrameMask, ImageSegmenter},
         video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
+        SegmentationOutput,
     },
     services::{
         progress::{report_frame, report_phase, ProgressSender},
@@ -48,9 +53,9 @@ pub struct PreparedPipelineInput {
     pub plan: PipelinePlan,
     pub volume: VolumeInput,
     /// Sole trace geometry for per-frame component selection in both cleanup steps.
-    pub annotation_points: Vec<AnnotationPoint>,
+    pub annotation_points: Arc<[AnnotationPoint]>,
     /// The sole prepared prompt list consumed by inference and prompt overlays.
-    pub prompts: Vec<VideoFramePrompt>,
+    pub prompts: Arc<[VideoFramePrompt]>,
     pub staged_frames: Vec<PreparedFrame>,
 }
 
@@ -68,9 +73,9 @@ impl PipelinePlan {
         if request.overlay_annotation_points {
             artifacts.push(annotation_overlay_path(&self.volume_output));
         }
-        if request.repair_inconsistent_frames {
+        if request.repair_inconsistent_frames || request.input_window.is_some() {
             artifacts.push(frame_repair_report_path(&self.volume_output));
-            if request.keep_unrepaired {
+            if request.repair_inconsistent_frames && request.keep_unrepaired {
                 artifacts.push(unrepaired_mask_path(&self.volume_output));
             }
         }
@@ -162,8 +167,8 @@ pub async fn prepare(
     Ok(PreparedPipelineInput {
         plan,
         volume,
-        annotation_points,
-        prompts,
+        annotation_points: annotation_points.into(),
+        prompts: prompts.into(),
         staged_frames,
     })
 }
@@ -204,13 +209,33 @@ async fn run_prepared(
     .await?;
     report_phase(progress, JobPhase::Inference);
 
-    let mut masks = match request.predictor_type.as_str() {
-        "ImagePredictor" => run_image_predictor(handle, prepared, progress).await?,
-        "VideoPredictor" => run_video_predictor(handle, prepared, progress).await?,
+    let input_window = request
+        .input_window
+        .map(|options| {
+            InputWindowController::new(
+                options,
+                prepared.annotation_points.clone(),
+                prepared.prompts.clone(),
+                request.keep_centerline_component || request.repair_inconsistent_frames,
+            )
+            .map(|controller| Arc::new(Mutex::new(controller)))
+        })
+        .transpose()?;
+    let mut output = match request.predictor_type.as_str() {
+        "ImagePredictor" => run_image_predictor(handle, prepared, input_window, progress).await?,
+        "VideoPredictor" => run_video_predictor(handle, prepared, input_window, progress).await?,
         _ => unreachable!("validated by ProcessRequest::validate"),
     };
 
-    save_masks(state, prepared, request, &mut masks, progress).await
+    save_masks(
+        state,
+        prepared,
+        request,
+        &mut output.masks,
+        output.input_window.as_mut(),
+        progress,
+    )
+    .await
 }
 
 async fn save_masks(
@@ -218,11 +243,19 @@ async fn save_masks(
     prepared: &PreparedPipelineInput,
     request: &ProcessRequest,
     masks: &mut [FrameMask],
+    mut input_window: Option<&mut InputWindowReport>,
     progress: &ProgressSender,
 ) -> Result<(), AppError> {
     report_phase(progress, JobPhase::Saving);
+    let mut classifications = None;
     if request.keep_centerline_component {
-        let stats = keep_centerline_components(masks, &prepared.annotation_points)?;
+        let stats = if let Some(window) = input_window.as_deref_mut() {
+            let (report, stats) = consume_window_classifications(window, masks)?;
+            classifications = Some(report);
+            stats
+        } else {
+            keep_centerline_components(masks, &prepared.annotation_points)?
+        };
         tracing::info!(
             output = %request.output_file,
             frames_changed = stats.frames_changed,
@@ -235,12 +268,21 @@ async fn save_masks(
     if let Some(parent) = prepared.plan.volume_output.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
+    let mut document = serde_json::json!({});
     let repair_report = if request.repair_inconsistent_frames {
         if request.keep_unrepaired {
             write_mask_stack(&unrepaired_mask_path(&prepared.plan.volume_output), masks).await?;
         }
-        let report = repair_inconsistent_frames(masks, &prepared.annotation_points)?;
-        let mut document = serde_json::to_value(&report)?;
+        if classifications.is_none() {
+            if let Some(window) = input_window.as_deref_mut() {
+                classifications = Some(consume_window_classifications(window, masks)?.0);
+            }
+        }
+        let report = match classifications.take() {
+            Some(report) => repair_classified_frames(masks, report)?,
+            None => repair_inconsistent_frames(masks, &prepared.annotation_points)?,
+        };
+        document = serde_json::to_value(&report)?;
         document["schema_version"] = 2.into();
         document["options"] = serde_json::json!({
             "repair_inconsistent_frames": request.repair_inconsistent_frames,
@@ -271,15 +313,44 @@ async fn save_masks(
             recovered_anchors = %serde_json::to_string(&recovered_anchors)?,
             "inconsistent-frame repair complete"
         );
+        Some(report)
+    } else {
+        if let Some(report) = &classifications {
+            // Centre-line-only jobs still retain the original detector records;
+            // ownership has moved out of the per-window records, not been copied.
+            document = serde_json::to_value(report)?;
+        }
+        classifications
+    };
+    let input_window = input_window.as_deref();
+    if let Some(report) = input_window {
+        let summary = report.summary();
+        tracing::info!(
+            output = %request.output_file,
+            resets = summary.resets,
+            flag_resets = summary.flag_resets,
+            prompt_resets = summary.prompt_resets,
+            border_frames = summary.border_frames,
+            border_fraction = summary.border_fraction,
+            "input window feedback complete"
+        );
+        document["schema_version"] = 3.into();
+        document["options"] = serde_json::json!({
+            "keep_centerline_component": request.keep_centerline_component,
+            "repair_inconsistent_frames": request.repair_inconsistent_frames,
+            "keep_unrepaired": request.keep_unrepaired,
+            "input_window": request.input_window,
+        });
+        document["input_window"] = serde_json::to_value(report)?;
+        document["input_window"]["summary"] = serde_json::to_value(summary)?;
+    }
+    if repair_report.is_some() || input_window.is_some() {
         tokio::fs::write(
             frame_repair_report_path(&prepared.plan.volume_output),
             serde_json::to_vec_pretty(&document)?,
         )
         .await?;
-        Some(report)
-    } else {
-        None
-    };
+    }
     write_mask_stack_with_progress(&prepared.plan.volume_output, masks, |frame, total| {
         report_frame(progress, JobPhase::Saving, frame, total)
     })
@@ -291,6 +362,7 @@ async fn save_masks(
             &prepared.prompts,
             request.annotation_overlay_intensity,
             repair_report.as_ref(),
+            input_window,
         )
         .await?;
     }
@@ -301,6 +373,47 @@ async fn save_masks(
     )
     .await?;
     Ok(())
+}
+
+/// Move the online selections into the post-pass without selecting or measuring
+/// the same components again. The mask stack becomes the selected-output owner.
+fn consume_window_classifications(
+    report: &mut InputWindowReport,
+    masks: &mut [FrameMask],
+) -> Result<(FrameRepairReport, CleanupStats), AppError> {
+    if report.frames.len() != masks.len() {
+        return Err(AppError::internal(
+            "Input window classifications do not match the output frame count",
+        ));
+    }
+    // Released predecessor pixels cannot support postprocessing. Check before
+    // consuming any records so a retention mistake cannot silently skip cleanup.
+    for (frame, mask) in report.frames.iter().zip(masks.iter()) {
+        let retained = frame.raw_detection.as_ref().is_some_and(|classified| {
+            classified.component.width == mask.width
+                && classified.component.height == mask.height
+                && classified.component.pixels.len() == mask.pixels.len()
+        });
+        if !retained {
+            return Err(AppError::internal(
+                "Input window did not retain the classified components required for postprocessing",
+            ));
+        }
+    }
+    let mut classifications = FrameRepairReport {
+        frames: Vec::with_capacity(masks.len()),
+    };
+    let mut stats = CleanupStats::default();
+    for (frame, mask) in report.frames.iter_mut().zip(masks) {
+        let (record, frame_stats) = frame
+            .raw_detection
+            .take()
+            .expect("validated retained classification")
+            .keep_component(mask);
+        classifications.frames.push(record);
+        stats += frame_stats;
+    }
+    Ok((classifications, stats))
 }
 
 async fn model_handle_for_request(
@@ -359,11 +472,21 @@ fn inference_device() -> Result<candle_core::Device, AppError> {
 async fn run_image_predictor(
     handle: &Arc<Sam3ModelHandle>,
     prepared: &PreparedPipelineInput,
+    input_window: Option<SharedInputWindow>,
     progress: &ProgressSender,
-) -> Result<Vec<FrameMask>, AppError> {
+) -> Result<SegmentationOutput, AppError> {
     let segmenter = CandleSam3ImageSegmenter {
         handle: handle.clone(),
     };
+    segment_image_frames(&segmenter, prepared, input_window, progress).await
+}
+
+async fn segment_image_frames(
+    segmenter: &impl ImageSegmenter,
+    prepared: &PreparedPipelineInput,
+    input_window: Option<SharedInputWindow>,
+    progress: &ProgressSender,
+) -> Result<SegmentationOutput, AppError> {
     let mut masks = Vec::with_capacity(prepared.staged_frames.len());
     let mut prompts = prepared.prompts.iter().peekable();
     for (i, staged) in prepared.staged_frames.iter().enumerate() {
@@ -376,7 +499,24 @@ async fn run_image_predictor(
         } else {
             &[]
         };
-        let mask = segmenter.segment(&staged.frame, points).await?;
+        let mut windowed_frame;
+        let frame = if let Some(controller) = &input_window {
+            windowed_frame = staged.frame.clone();
+            controller
+                .lock()
+                .map_err(|_| AppError::internal("Input window controller lock poisoned"))?
+                .blank_frame(i, &mut windowed_frame)?;
+            &windowed_frame
+        } else {
+            &staged.frame
+        };
+        let mask = Arc::new(segmenter.segment(frame, points).await?);
+        if let Some(controller) = &input_window {
+            controller
+                .lock()
+                .map_err(|_| AppError::internal("Input window controller lock poisoned"))?
+                .observe(i, mask.clone())?;
+        }
         masks.push(mask);
         report_frame(
             progress,
@@ -385,14 +525,33 @@ async fn run_image_predictor(
             prepared.staged_frames.len(),
         );
     }
-    Ok(masks)
+    let report = input_window
+        .map(|controller| {
+            controller
+                .lock()
+                .map_err(|_| AppError::internal("Input window controller lock poisoned"))?
+                .finish()
+        })
+        .transpose()?;
+    let masks = masks
+        .into_iter()
+        .map(|mask| {
+            Arc::try_unwrap(mask)
+                .map_err(|_| AppError::internal("Input window retained a completed raw mask"))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(SegmentationOutput {
+        masks,
+        input_window: report,
+    })
 }
 
 async fn run_video_predictor(
     handle: &Arc<Sam3ModelHandle>,
     prepared: &PreparedPipelineInput,
+    input_window: Option<SharedInputWindow>,
     progress: &ProgressSender,
-) -> Result<Vec<FrameMask>, AppError> {
+) -> Result<SegmentationOutput, AppError> {
     let segmenter = CandleSam3VideoSegmenter {
         handle: handle.clone(),
     };
@@ -400,15 +559,16 @@ async fn run_video_predictor(
     let callback: FrameProgressCallback = Arc::new(move |frame, total| {
         report_frame(&sender, JobPhase::Inference, frame, total);
     });
-    let masks = segmenter
+    let output = segmenter
         .segment_video(
             &prepared.plan.temp_volume_dir,
-            &prepared.prompts,
+            prepared.prompts.clone(),
+            input_window,
             Some(callback),
         )
         .await?;
-    validate_video_masks(&masks, prepared)?;
-    Ok(masks)
+    validate_video_masks(&output.masks, prepared)?;
+    Ok(output)
 }
 
 fn validate_video_masks(

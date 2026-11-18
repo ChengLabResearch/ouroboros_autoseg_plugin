@@ -3,8 +3,9 @@ use serde::Serialize;
 use crate::{error::AppError, imaging::annotations::AnnotationPoint, inference::image::FrameMask};
 
 use super::{
+    apply_trace_component,
     distance::{dilated_by_disc, signed_distances},
-    validate_mask_geometry, TraceComponentSelector, TraceSeedStatus,
+    validate_mask_geometry, CleanupStats, TraceComponentSelector, TraceSeedStatus,
 };
 
 const ANCHOR_RECOVERY_RADIUS: usize = 150;
@@ -55,27 +56,8 @@ impl FrameRepairFrame {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FrameRepairReport {
     /// One authoritative classification and outcome per input frame, in stack order.
-    #[serde(serialize_with = "serialize_frames")]
+    #[serde(serialize_with = "crate::imaging::serialize_indexed_frames")]
     pub frames: Vec<FrameRepairFrame>,
-}
-
-fn serialize_frames<S: serde::Serializer>(
-    frames: &[FrameRepairFrame],
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    // Frame identity is vector position. The explicit index exists only at output.
-    #[derive(Serialize)]
-    struct IndexedFrame<'a> {
-        frame_index: usize,
-        #[serde(flatten)]
-        frame: &'a FrameRepairFrame,
-    }
-    serializer.collect_seq(
-        frames
-            .iter()
-            .enumerate()
-            .map(|(frame_index, frame)| IndexedFrame { frame_index, frame }),
-    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -151,41 +133,61 @@ impl FrameRepairReport {
     }
 }
 
-/// Select trace components and classify against the preceding raw component,
-/// recover plausible anchors, then clip flagged frames to interpolated shape estimates.
-pub fn repair_inconsistent_frames(
-    masks: &mut [FrameMask],
-    annotation_points: &[AnnotationPoint],
-) -> Result<FrameRepairReport, AppError> {
-    for mask in masks.iter() {
-        validate_mask_geometry(mask)?;
-        if let Some(first) = masks.first() {
-            if (mask.width, mask.height) != (first.width, first.height) {
-                return Err(AppError::bad_request(
-                    "Frame repair requires consistent mask dimensions across the stack",
-                ));
-            }
+/// Own trace-component selection and initial frame classification for both
+/// online input windows and the offline repair pass.
+#[derive(Default)]
+pub(crate) struct TraceFrameClassifier {
+    selector: TraceComponentSelector,
+}
+
+/// One owner of a raw trace component, its cleanup outcome, and its classification.
+/// Component pixels and cleanup counts stay in memory; reports serialize the record.
+#[derive(Debug, Serialize)]
+pub(crate) struct PreparedTraceClassification {
+    #[serde(skip)]
+    pub(crate) component: FrameMask,
+    #[serde(flatten)]
+    pub(crate) record: FrameRepairFrame,
+    #[serde(skip)]
+    cleanup_stats: CleanupStats,
+}
+
+impl PreparedTraceClassification {
+    /// Consume this selection without repeating seed recovery or classification.
+    /// Missing seeds retain the raw mask, matching ordinary centre-line cleanup.
+    pub(crate) fn keep_component(self, mask: &mut FrameMask) -> (FrameRepairFrame, CleanupStats) {
+        if self.cleanup_stats.frames_without_seed == 0 {
+            *mask = self.component;
         }
+        (self.record, self.cleanup_stats)
     }
-    let mut report = FrameRepairReport {
-        frames: Vec::with_capacity(masks.len()),
-    };
-    let mut selector = TraceComponentSelector::default();
-    for frame_index in 0..masks.len() {
-        let (previous, current) = masks.split_at_mut(frame_index);
-        let mask = &mut current[0];
-        let selection = selector.select(mask, annotation_points, frame_index)?;
+}
+
+impl TraceFrameClassifier {
+    /// Select the raw trace component and compare it with the preceding
+    /// selected component, even when that predecessor was flagged. The caller
+    /// supplies matching frame geometry; recovery and repair happen separately.
+    pub(crate) fn prepare(
+        &mut self,
+        mut mask: FrameMask,
+        annotation_points: &[AnnotationPoint],
+        frame_index: usize,
+        previous: Option<(&FrameMask, &FrameRepairFrame)>,
+    ) -> Result<PreparedTraceClassification, AppError> {
+        let selection = self
+            .selector
+            .select(&mask, annotation_points, frame_index)?;
+        let seed_status = selection.seed_status;
         let mut reasons = Vec::new();
         if selection.seed_status == TraceSeedStatus::MissingTrace {
             reasons.push(FrameFlagReason::MissingTrace);
         }
-        if let Some(component) = selection.component {
-            for (pixel, &inside) in mask.pixels.iter_mut().zip(component) {
-                if !inside {
-                    *pixel = 0;
-                }
-            }
-        } else {
+        let cleanup_stats = apply_trace_component(
+            &mut mask,
+            seed_status,
+            selection.component.unwrap_or(&[]).iter().copied(),
+        );
+        if selection.component.is_none() {
             mask.pixels.fill(0);
             reasons.push(FrameFlagReason::EmptyComponent);
         }
@@ -199,12 +201,8 @@ pub fn repair_inconsistent_frames(
         }) {
             reasons.push(FrameFlagReason::EdgeContact);
         }
-        if let Some(previous) = previous.last() {
-            let previous_area = report
-                .frames
-                .last()
-                .expect("preceding frame classified")
-                .component_area;
+        if let Some((previous, previous_record)) = previous {
+            let previous_area = previous_record.component_area;
             let minimum = previous_area.min(component_area);
             let maximum = previous_area.max(component_area);
             let area_ratio = if maximum == 0 {
@@ -233,14 +231,81 @@ pub fn repair_inconsistent_frames(
                 reasons.push(FrameFlagReason::LowIou);
             }
         }
-        report.frames.push(FrameRepairFrame {
-            component_area,
-            reasons,
-            anchor_recovered: false,
-            repair: FrameRepairAction::Kept,
-        });
+        Ok(PreparedTraceClassification {
+            component: mask,
+            cleanup_stats,
+            record: FrameRepairFrame {
+                component_area,
+                reasons,
+                anchor_recovered: false,
+                repair: FrameRepairAction::Kept,
+            },
+        })
     }
+}
 
+/// Select trace components and classify against the preceding raw component,
+/// recover plausible anchors, then clip flagged frames to interpolated shape estimates.
+pub fn repair_inconsistent_frames(
+    masks: &mut [FrameMask],
+    annotation_points: &[AnnotationPoint],
+) -> Result<FrameRepairReport, AppError> {
+    validate_repair_geometry(masks)?;
+    let mut report = FrameRepairReport {
+        frames: Vec::with_capacity(masks.len()),
+    };
+    let mut classifier = TraceFrameClassifier::default();
+    for frame_index in 0..masks.len() {
+        let (previous, current) = masks.split_at_mut(frame_index);
+        let raw = FrameMask {
+            width: current[0].width,
+            height: current[0].height,
+            pixels: std::mem::take(&mut current[0].pixels),
+        };
+        let classified = classifier.prepare(
+            raw,
+            annotation_points,
+            frame_index,
+            previous.last().zip(report.frames.last()),
+        )?;
+        current[0] = classified.component;
+        report.frames.push(classified.record);
+    }
+    repair_classified_frames(masks, report)
+}
+
+fn validate_repair_geometry(masks: &[FrameMask]) -> Result<(), AppError> {
+    for mask in masks.iter() {
+        validate_mask_geometry(mask)?;
+        if let Some(first) = masks.first() {
+            if (mask.width, mask.height) != (first.width, first.height) {
+                return Err(AppError::bad_request(
+                    "Frame repair requires consistent mask dimensions across the stack",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Repair masks using their already measured classifications. Valid components
+/// must already be applied; missing-seed masks are cleared here, after callers
+/// have had the opportunity to preserve their unrepaired outputs.
+pub(crate) fn repair_classified_frames(
+    masks: &mut [FrameMask],
+    mut report: FrameRepairReport,
+) -> Result<FrameRepairReport, AppError> {
+    validate_repair_geometry(masks)?;
+    if masks.len() != report.frames.len() {
+        return Err(AppError::bad_request(
+            "Frame repair requires one classification per mask frame",
+        ));
+    }
+    for (mask, frame) in masks.iter_mut().zip(&report.frames) {
+        if frame.reasons.contains(&FrameFlagReason::EmptyComponent) {
+            mask.pixels.fill(0);
+        }
+    }
     recover_anchors(&mut report);
     let mut next = 0;
     while next < masks.len() {

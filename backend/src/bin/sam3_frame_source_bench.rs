@@ -41,6 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.image.image_size,
         config.image.image_mean,
         config.image.image_std,
+        None,
     )?;
     let frame_count = source.frame_count();
     let mut peak_loaded_frames = source.loaded_frame_count();

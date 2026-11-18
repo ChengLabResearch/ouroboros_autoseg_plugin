@@ -1,8 +1,12 @@
-use crate::{imaging::annotations::AnnotationOrigin, inference::image::PointPromptKind};
+use crate::{
+    imaging::{annotations::AnnotationOrigin, input_window::PixelBounds},
+    inference::image::PointPromptKind,
+};
 
 pub enum OverlayMarker {
     Prompt(PointPromptKind),
     RepairedFrame,
+    InputWindow(PixelBounds),
 }
 
 pub fn draw_overlay_marker(
@@ -14,9 +18,34 @@ pub fn draw_overlay_marker(
     intensity: u8,
     marker: OverlayMarker,
 ) {
+    let mut set_pixel = |x: usize, y: usize| {
+        if x < width && y < height {
+            if let Some(pixel) = mask_slice.get_mut(y * width + x) {
+                *pixel = intensity;
+            }
+        }
+    };
     let x = x.round() as isize;
     let y = y.round() as isize;
     let offsets: &[(isize, isize)] = match marker {
+        OverlayMarker::InputWindow(bounds) => {
+            let left = bounds.left.min(width);
+            let right = bounds.right.min(width);
+            let top = bounds.top.min(height);
+            let bottom = bounds.bottom.min(height);
+            if left >= right || top >= bottom {
+                return;
+            }
+            for x in left..right {
+                set_pixel(x, top);
+                set_pixel(x, bottom - 1);
+            }
+            for y in top..bottom {
+                set_pixel(left, y);
+                set_pixel(right - 1, y);
+            }
+            return;
+        }
         OverlayMarker::RepairedFrame => &[
             (0, 0),
             (-1, -1),
@@ -68,15 +97,7 @@ pub fn draw_overlay_marker(
         if xx < 0 || yy < 0 {
             continue;
         }
-        let xx = xx as usize;
-        let yy = yy as usize;
-        if xx >= width || yy >= height {
-            continue;
-        }
-        let index = yy * width + xx;
-        if let Some(pixel) = mask_slice.get_mut(index) {
-            *pixel = intensity;
-        }
+        set_pixel(xx as usize, yy as usize);
     }
 }
 

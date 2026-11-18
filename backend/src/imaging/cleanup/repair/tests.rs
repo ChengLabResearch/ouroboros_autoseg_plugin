@@ -45,6 +45,85 @@ fn accepted_frames_share_eight_connected_trace_selection_and_preserve_values() {
 }
 
 #[test]
+fn prepared_classifications_are_consumed_by_cleanup_and_repair_without_remeasurement() {
+    let mut valid = frame(40, 40, &rectangle(18, 18, 5, 5));
+    valid.pixels[20 * 40 + 20] = 1;
+    valid.pixels[0] = 255;
+    let raw = vec![
+        valid.clone(),
+        FrameMask {
+            width: 40,
+            height: 40,
+            pixels: vec![255; 1600],
+        },
+        frame(40, 40, &rectangle(22, 20, 3, 3)),
+        frame(40, 40, &[(39, 39)]),
+        valid,
+    ];
+    for annotations in [trace(20.0, 20.0).to_vec(), vec![]] {
+        let mut classifier = TraceFrameClassifier::default();
+        let mut classified = Vec::<PreparedTraceClassification>::new();
+        for (index, mask) in raw.iter().cloned().enumerate() {
+            let previous = classified
+                .last()
+                .map(|frame| (&frame.component, &frame.record));
+            classified.push(
+                classifier
+                    .prepare(mask, &annotations, index, previous)
+                    .unwrap(),
+            );
+        }
+        let initial_reasons = classified
+            .iter()
+            .map(|frame| frame.record.reasons.as_ptr())
+            .collect::<Vec<_>>();
+        let mut reused_masks = raw.clone();
+        let mut records = Vec::new();
+        let mut reused_stats = CleanupStats::default();
+        for (mask, frame) in reused_masks.iter_mut().zip(classified) {
+            let component_identity = frame.component.pixels.as_ptr();
+            let has_seed = frame.cleanup_stats.frames_without_seed == 0;
+            let (record, stats) = frame.keep_component(mask);
+            if has_seed {
+                assert_eq!(
+                    mask.pixels.as_ptr(),
+                    component_identity,
+                    "selected pixels transfer without being recalculated or copied"
+                );
+            }
+            records.push(record);
+            reused_stats += stats;
+        }
+        let mut ordinary_masks = raw.clone();
+        let ordinary_stats =
+            super::super::keep_centerline_components(&mut ordinary_masks, &annotations).unwrap();
+        assert_eq!(reused_stats, ordinary_stats);
+        for (reused, ordinary) in reused_masks.iter().zip(&ordinary_masks) {
+            assert_eq!(reused.pixels, ordinary.pixels);
+        }
+        let reused_report =
+            repair_classified_frames(&mut reused_masks, FrameRepairReport { frames: records })
+                .unwrap();
+        let ordinary_report =
+            repair_inconsistent_frames(&mut ordinary_masks, &annotations).unwrap();
+        assert_eq!(reused_report, ordinary_report);
+        for ((record, reasons), (reused, ordinary)) in reused_report
+            .frames
+            .iter()
+            .zip(initial_reasons)
+            .zip(reused_masks.iter().zip(&ordinary_masks))
+        {
+            assert_eq!(
+                record.reasons.as_ptr(),
+                reasons,
+                "the original detector record moves into the final report"
+            );
+            assert_eq!(reused.pixels, ordinary.pixels);
+        }
+    }
+}
+
+#[test]
 fn comparisons_use_previous_raw_selected_component_even_when_it_was_flagged() {
     let small = frame(9, 9, &rectangle(3, 3, 2, 2));
     let large = frame(9, 9, &rectangle(1, 1, 6, 6));

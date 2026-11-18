@@ -6,6 +6,8 @@ use candle_core::{DType, Device, Result, Tensor};
 use candle_transformers::models::sam3::{normalize_rgb_frame_for_sam3, FrameSource, ImageSize};
 use image::ImageReader;
 
+use crate::imaging::{input_window::SharedInputWindow, tiff_io::ImageFrame};
+
 #[derive(Debug)]
 struct FrameBlob {
     data: Vec<f32>,
@@ -31,7 +33,6 @@ impl FrameBlob {
 ///
 /// JPEG decode and bicubic resize remain in the plugin's existing `image`
 /// dependency. Only normalized tensors cross the Candle model boundary.
-#[derive(Debug)]
 pub struct StagedJpegFrameSource {
     frame_paths: Vec<PathBuf>,
     image_size: usize,
@@ -39,6 +40,7 @@ pub struct StagedJpegFrameSource {
     image_std: [f32; 3],
     video_size: ImageSize,
     cache: HashMap<usize, FrameBlob>,
+    input_window: Option<SharedInputWindow>,
 }
 
 impl StagedJpegFrameSource {
@@ -47,6 +49,7 @@ impl StagedJpegFrameSource {
         image_size: usize,
         image_mean: [f32; 3],
         image_std: [f32; 3],
+        input_window: Option<SharedInputWindow>,
     ) -> Result<Self> {
         let frame_paths = sorted_jpeg_paths(frames_dir)?;
         let first = frame_paths.first().expect("validated non-empty frame list");
@@ -62,6 +65,7 @@ impl StagedJpegFrameSource {
             image_std,
             video_size,
             cache: HashMap::new(),
+            input_window,
         })
     }
 
@@ -76,7 +80,7 @@ impl StagedJpegFrameSource {
         let path = self.frame_paths.get(frame_idx).ok_or_else(|| {
             candle_core::Error::Msg(format!("frame_idx {frame_idx} out of bounds"))
         })?;
-        let image = ImageReader::open(path)?
+        let mut image = ImageReader::open(path)?
             .decode()
             .map_err(candle_core::Error::wrap)?
             .to_rgb8();
@@ -90,6 +94,27 @@ impl StagedJpegFrameSource {
                 self.video_size.height,
                 self.video_size.width
             )
+        }
+        if let Some(input_window) = &self.input_window {
+            let mut frame = ImageFrame {
+                width: current_size.width,
+                height: current_size.height,
+                channels: 3,
+                pixels: image.into_raw(),
+            };
+            input_window
+                .lock()
+                .map_err(|_| {
+                    candle_core::Error::Msg("Input window controller lock poisoned".into())
+                })?
+                .blank_frame(frame_idx, &mut frame)
+                .map_err(|error| candle_core::Error::Msg(error.to_string()))?;
+            image = image::RgbImage::from_raw(
+                current_size.width as u32,
+                current_size.height as u32,
+                frame.pixels,
+            )
+            .expect("input window preserves frame geometry");
         }
         let resized = if current_size == ImageSize::square(self.image_size) {
             image
@@ -217,7 +242,7 @@ mod tests {
         write_jpeg(&temp.path().join("2.jpg"), [40, 50, 60], 3, 2);
         write_jpeg(&temp.path().join("1.jpg"), [70, 80, 90], 3, 2);
         fs::write(temp.path().join("ignored.png"), b"not a jpeg").unwrap();
-        let mut source = StagedJpegFrameSource::new(temp.path(), 4, [0.0; 3], [1.0; 3])?;
+        let mut source = StagedJpegFrameSource::new(temp.path(), 4, [0.0; 3], [1.0; 3], None)?;
 
         assert_eq!(source.frame_count(), 3);
         assert_eq!(source.video_size(), ImageSize::new(2, 3));
@@ -240,7 +265,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         write_jpeg(&temp.path().join("0.jpg"), [1, 2, 3], 3, 2);
         write_jpeg(&temp.path().join("1.jpg"), [4, 5, 6], 4, 2);
-        let mut source = StagedJpegFrameSource::new(temp.path(), 4, [0.0; 3], [1.0; 3])?;
+        let mut source = StagedJpegFrameSource::new(temp.path(), 4, [0.0; 3], [1.0; 3], None)?;
 
         let error = source.get_frame(1, &Device::Cpu).unwrap_err();
         assert!(error.to_string().contains("session expects 2x3"));
@@ -261,7 +286,7 @@ mod tests {
             .to_rgb8()
             .get_pixel(0, 0)
             .0;
-        let mut source = StagedJpegFrameSource::new(temp.path(), 4, [0.0; 3], [1.0; 3])?;
+        let mut source = StagedJpegFrameSource::new(temp.path(), 4, [0.0; 3], [1.0; 3], None)?;
 
         let values = source
             .get_frame(0, &Device::Cpu)?

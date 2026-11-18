@@ -8,19 +8,22 @@ use serde_json::{json, Value};
 use tracing::instrument::WithSubscriber;
 
 use super::{
-    annotation_overlay_path, inference_device, plan, prepare, run, save_masks, validate_video_masks,
+    annotation_overlay_path, inference_device, plan, prepare, run, save_masks,
+    segment_image_frames, validate_video_masks,
 };
 use crate::{
     app_state::AppState,
     config::AppConfig,
-    domain::requests::ProcessRequest,
+    domain::requests::{InputWindowOptions, ProcessRequest},
+    error::AppError,
     imaging::{
         annotations::{annotation_samples_for_video, AnnotationOrigin},
         cleanup::{keep_centerline_components, repair_inconsistent_frames},
+        input_window::InputWindowController,
         preprocess::PreparedFrameEncoding,
-        tiff_io::{read_volume_frames, write_tiff_pages, WritableTiffPage},
+        tiff_io::{read_volume_frames, write_tiff_pages, ImageFrame, WritableTiffPage},
     },
-    inference::image::FrameMask,
+    inference::image::{FrameMask, ImageSegmenter, PointPrompt},
 };
 use uuid::Uuid;
 
@@ -56,6 +59,7 @@ fn sample_request(predictor_type: &str) -> ProcessRequest {
         model_type: "sam3".to_string(),
         predictor_type: predictor_type.to_string(),
         max_prompt_gap: None,
+        input_window: None,
         overlay_annotation_points: false,
         keep_centerline_component: false,
         repair_inconsistent_frames: false,
@@ -315,7 +319,7 @@ async fn prepared_prompts_feed_both_adapters_and_exact_overlay_without_changing_
                 .collect::<Vec<_>>(),
             expected_frames
         );
-        for prompt in &prepared.prompts {
+        for prompt in prepared.prompts.iter() {
             assert_eq!(prompt.points.len(), 1);
             assert!(matches!(
                 prompt.points[0].kind,
@@ -341,9 +345,16 @@ async fn prepared_prompts_feed_both_adapters_and_exact_overlay_without_changing_
             11
         ];
         let (progress, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
-            .await
-            .unwrap();
+        save_masks(
+            &fixture.state,
+            &prepared,
+            &request,
+            &mut masks,
+            None,
+            &progress,
+        )
+        .await
+        .unwrap();
         let primary = read_volume_frames(&prepared.plan.volume_output)
             .await
             .unwrap();
@@ -545,9 +556,16 @@ async fn save_masks_delivers_primary_and_requested_overlay_to_windows_host() {
         assert!(!fixture.host_outputs.exists());
         assert!(!prepared.plan.volume_output.exists());
 
-        save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
-            .await
-            .expect("write output before requesting host delivery");
+        save_masks(
+            &fixture.state,
+            &prepared,
+            &request,
+            &mut masks,
+            None,
+            &progress,
+        )
+        .await
+        .expect("write output before requesting host delivery");
 
         let mut files = vec![json!({
             "sourcePath": r"C:\Data Set\output\segmented.tif", "targetPath": "Segmentation"
@@ -619,9 +637,16 @@ async fn save_masks_propagates_host_delivery_failure_and_retains_volume_output()
     ];
     let (progress, _receiver) = crate::services::progress::channel();
 
-    let error = save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
-        .await
-        .expect_err("saving must fail when host delivery fails");
+    let error = save_masks(
+        &fixture.state,
+        &prepared,
+        &request,
+        &mut masks,
+        None,
+        &progress,
+    )
+    .await
+    .expect_err("saving must fail when host delivery fails");
 
     assert!(
         error.to_string().contains("fixture copy-to-host failed"),
@@ -814,9 +839,16 @@ async fn cleanup_applies_to_both_predictors_before_primary_and_overlay_delivery(
                 2
             ];
             let (progress, _receiver) = crate::services::progress::channel();
-            save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
-                .await
-                .unwrap();
+            save_masks(
+                &fixture.state,
+                &prepared,
+                &request,
+                &mut masks,
+                None,
+                &progress,
+            )
+            .await
+            .unwrap();
             let output = read_volume_frames(&fixture.host_outputs.join("segmented.tif"))
                 .await
                 .unwrap();
@@ -842,7 +874,9 @@ async fn cleanup_applies_to_both_predictors_before_primary_and_overlay_delivery(
 async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_both_predictors() {
     for predictor in ["ImagePredictor", "VideoPredictor"] {
         for cleanup in [false, true] {
-            for keep_unrepaired in [false, true] {
+            for (keep_unrepaired, window) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
                 let fixture = VolumeFixture::start(None, None);
                 let pages: Vec<_> = (0..7)
                     .map(|index| WritableTiffPage {
@@ -861,6 +895,10 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 request.overlay_annotation_points = true;
                 request.repair_inconsistent_frames = true;
                 request.keep_unrepaired = keep_unrepaired;
+                request.input_window = window.then(|| InputWindowOptions {
+                    window_size: Some(16),
+                    ..InputWindowOptions::default()
+                });
                 let prepared = prepare(&fixture.state, &request).await.unwrap();
                 let mut accepted = FrameMask {
                     width: 41,
@@ -907,6 +945,31 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 let expected_report =
                     repair_inconsistent_frames(&mut expected_masks, &prepared.annotation_points)
                         .unwrap();
+                let mut input_window = request.input_window.map(|options| {
+                    let mut controller = InputWindowController::new(
+                        options,
+                        prepared.annotation_points.clone(),
+                        prepared.prompts.clone(),
+                        true,
+                    )
+                    .unwrap();
+                    for (index, (staged, mask)) in
+                        prepared.staged_frames.iter().zip(&masks).enumerate()
+                    {
+                        controller
+                            .blank_frame(index, &mut staged.frame.clone())
+                            .unwrap();
+                        controller.observe(index, Arc::new(mask.clone())).unwrap();
+                    }
+                    controller.finish().unwrap()
+                });
+                let expected_windows = input_window.as_ref().map(|report| {
+                    report
+                        .frames
+                        .iter()
+                        .map(|frame| frame.bounds)
+                        .collect::<Vec<_>>()
+                });
                 let (progress, _receiver) = crate::services::progress::channel();
                 // Reuse the file-backed tracing capture used by the prompt-adapter
                 // tests, scoped to this future so concurrent jobs cannot leak in.
@@ -917,10 +980,17 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                     .without_time()
                     .with_writer(move || writer.try_clone().unwrap())
                     .finish();
-                save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
-                    .with_subscriber(subscriber)
-                    .await
-                    .unwrap();
+                save_masks(
+                    &fixture.state,
+                    &prepared,
+                    &request,
+                    &mut masks,
+                    input_window.as_mut(),
+                    &progress,
+                )
+                .with_subscriber(subscriber)
+                .await
+                .unwrap();
 
                 let output = read_volume_frames(&fixture.host_outputs.join("segmented.tif"))
                     .await
@@ -932,14 +1002,41 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 let report_path = fixture.host_outputs.join("segmented_frame_repair.json");
                 let report: Value =
                     serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
-                assert_eq!(report["schema_version"], 2);
+                assert_eq!(report["schema_version"], if window { 3 } else { 2 });
                 assert_eq!(
                     report["options"],
-                    json!({
-                        "repair_inconsistent_frames": true,
-                        "keep_unrepaired": keep_unrepaired,
-                    })
+                    if window {
+                        json!({
+                            "keep_centerline_component": cleanup,
+                            "repair_inconsistent_frames": true,
+                            "keep_unrepaired": keep_unrepaired,
+                            "input_window": request.input_window,
+                        })
+                    } else {
+                        json!({
+                            "repair_inconsistent_frames": true,
+                            "keep_unrepaired": keep_unrepaired,
+                        })
+                    }
                 );
+                if let Some(bounds) = &expected_windows {
+                    let windows = report["input_window"]["frames"].as_array().unwrap();
+                    assert_eq!(windows.len(), bounds.len());
+                    for (index, (frame, bounds)) in windows.iter().zip(bounds).enumerate() {
+                        assert_eq!(frame["frame_index"], index);
+                        assert_eq!(frame["bounds"], serde_json::to_value(bounds).unwrap());
+                        assert!(
+                            frame.get("raw_detection").is_none(),
+                            "classification is owned only by root repair records"
+                        );
+                    }
+                    assert!(input_window
+                        .as_ref()
+                        .unwrap()
+                        .frames
+                        .iter()
+                        .all(|frame| frame.raw_detection.is_none()));
+                }
                 let expected_json = serde_json::to_value(&expected_report).unwrap();
                 assert_eq!(report["frames"], expected_json["frames"]);
                 assert_eq!(
@@ -952,6 +1049,13 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 let frames = report["frames"].as_array().unwrap();
 
                 let log = std::fs::read_to_string(log_file.path()).unwrap();
+                if window {
+                    assert!(log.contains("input window feedback complete"));
+                    assert!(log.contains(&format!(
+                        "resets={}",
+                        report["input_window"]["summary"]["resets"]
+                    )));
+                }
                 let line = log
                     .lines()
                     .find(|line| line.contains("inconsistent-frame repair complete"))
@@ -1043,9 +1147,16 @@ async fn disabled_repair_preserves_existing_tiff_bytes_and_artifact_set() {
             .await
             .unwrap();
         let (progress, _receiver) = crate::services::progress::channel();
-        save_masks(&fixture.state, &prepared, &request, &mut masks, &progress)
-            .await
-            .unwrap();
+        save_masks(
+            &fixture.state,
+            &prepared,
+            &request,
+            &mut masks,
+            None,
+            &progress,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             std::fs::read(fixture.host_outputs.join("segmented.tif")).unwrap(),
             std::fs::read(expected_path).unwrap()
@@ -1057,6 +1168,241 @@ async fn disabled_repair_preserves_existing_tiff_bytes_and_artifact_set() {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+}
+
+#[tokio::test]
+async fn window_only_and_centerline_jobs_deliver_each_detection_record_once() {
+    for cleanup in [false, true] {
+        let fixture = VolumeFixture::start(Some(r#"{"annotation_points": [[0, 0, 0]]}"#), None);
+        let mut request = sample_request("VideoPredictor");
+        request.input_window = Some(InputWindowOptions {
+            window_size: Some(16),
+            ..InputWindowOptions::default()
+        });
+        request.keep_centerline_component = cleanup;
+        request.keep_unrepaired = true; // Still ignored while repair is disabled.
+        request.overlay_annotation_points = true;
+        let prepared = prepare(&fixture.state, &request).await.unwrap();
+        let mut masks = vec![
+            FrameMask {
+                width: 4,
+                height: 2,
+                pixels: vec![255, 0, 0, 0, 0, 0, 0, 255]
+            };
+            2
+        ];
+        let mut controller = InputWindowController::new(
+            request.input_window.unwrap(),
+            prepared.annotation_points.clone(),
+            prepared.prompts.clone(),
+            cleanup,
+        )
+        .unwrap();
+        for (index, (staged, mask)) in prepared.staged_frames.iter().zip(&masks).enumerate() {
+            controller
+                .blank_frame(index, &mut staged.frame.clone())
+                .unwrap();
+            controller.observe(index, Arc::new(mask.clone())).unwrap();
+        }
+        let mut window = controller.finish().unwrap();
+        let before = serde_json::to_value(&window).unwrap();
+        let (progress, _receiver) = crate::services::progress::channel();
+        save_masks(
+            &fixture.state,
+            &prepared,
+            &request,
+            &mut masks,
+            Some(&mut window),
+            &progress,
+        )
+        .await
+        .unwrap();
+
+        let primary = read_volume_frames(&fixture.host_outputs.join("segmented.tif"))
+            .await
+            .unwrap();
+        for frame in &primary {
+            assert_eq!(frame.pixels[0], 255);
+            assert_eq!(frame.pixels[7], if cleanup { 0 } else { 255 });
+        }
+        let document: Value = serde_json::from_slice(
+            &std::fs::read(fixture.host_outputs.join("segmented_frame_repair.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(document["schema_version"], 3);
+        assert_eq!(document["options"]["keep_centerline_component"], cleanup);
+        assert_eq!(
+            document["input_window"]["frames"].as_array().unwrap().len(),
+            2
+        );
+        for (index, window_frame) in document["input_window"]["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(window_frame["frame_index"], index);
+            assert_eq!(window_frame["bounds"], before["frames"][index]["bounds"]);
+            if cleanup {
+                assert!(window_frame.get("raw_detection").is_none());
+                let mut expected_record = before["frames"][index]["raw_detection"].clone();
+                expected_record["frame_index"] = index.into();
+                assert_eq!(document["frames"][index], expected_record);
+            } else {
+                assert_eq!(
+                    window_frame["raw_detection"],
+                    before["frames"][index]["raw_detection"]
+                );
+                assert!(document.get("frames").is_none());
+            }
+        }
+        assert_eq!(
+            window
+                .frames
+                .iter()
+                .all(|frame| frame.raw_detection.is_none()),
+            cleanup
+        );
+        let overlay = read_volume_frames(
+            &fixture
+                .host_outputs
+                .join("segmented_annotation_overlay.tif"),
+        )
+        .await
+        .unwrap();
+        assert!(overlay[0].pixels.contains(&127));
+        assert!(
+            overlay[1].pixels.iter().all(|&pixel| pixel == 96),
+            "unprompted frame still shows its full-frame window"
+        );
+        assert!(!fixture
+            .host_outputs
+            .join("segmented_unrepaired.tif")
+            .exists());
+        assert_eq!(
+            fixture.requests().pop().unwrap().1["files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+}
+
+#[tokio::test]
+async fn image_loop_windows_before_encoding_and_preserves_raw_masks_and_prepared_prompt_identity() {
+    struct RecordingSegmenter {
+        calls: Mutex<Vec<(ImageFrame, Vec<PointPrompt>, usize)>>,
+        output: FrameMask,
+    }
+    #[async_trait::async_trait]
+    impl ImageSegmenter for RecordingSegmenter {
+        async fn segment(
+            &self,
+            frame: &ImageFrame,
+            prompts: &[PointPrompt],
+        ) -> Result<FrameMask, AppError> {
+            self.calls.lock().unwrap().push((
+                frame.clone(),
+                prompts.to_vec(),
+                prompts.as_ptr() as usize,
+            ));
+            Ok(self.output.clone())
+        }
+    }
+    let fixture = VolumeFixture::start(None, None);
+    let pages = (0..2)
+        .map(|index| WritableTiffPage {
+            width: 96,
+            height: 96,
+            channels: 1,
+            pixels: (0..96 * 96)
+                .map(|i| ((i % 96 + i / 96) % 32) as u8)
+                .collect(),
+            description: (index == 0)
+                .then(|| r#"{"annotation_points": [[48,48,0], [48,48,1]]}"#.into()),
+        })
+        .collect::<Vec<_>>();
+    write_tiff_pages(&fixture.host_input, &pages).unwrap();
+    let prepared = prepare(&fixture.state, &sample_request("ImagePredictor"))
+        .await
+        .unwrap();
+    let mut raw = FrameMask {
+        width: 96,
+        height: 96,
+        pixels: vec![0; 96 * 96],
+    };
+    for y in 46..51 {
+        for x in 46..51 {
+            raw.pixels[y * 96 + x] = 255;
+        }
+    }
+    raw.pixels[65 * 96 + 65] = 255; // A separate region must survive in raw model output.
+    let segmenter = RecordingSegmenter {
+        calls: Mutex::new(vec![]),
+        output: raw,
+    };
+    let controller = InputWindowController::new(
+        InputWindowOptions::default(),
+        prepared.annotation_points.clone(),
+        prepared.prompts.clone(),
+        false,
+    )
+    .unwrap();
+    let (progress, _receiver) = crate::services::progress::channel();
+    let output = segment_image_frames(
+        &segmenter,
+        &prepared,
+        Some(Arc::new(Mutex::new(controller))),
+        &progress,
+    )
+    .await
+    .unwrap();
+    let calls = segmenter.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0].0, prepared.staged_frames[0].frame,
+        "automatic sizing starts from an unrestricted observation"
+    );
+    let window = &output.input_window.as_ref().unwrap().frames[1];
+    assert_eq!(
+        (
+            window.bounds.left,
+            window.bounds.top,
+            window.bounds.right,
+            window.bounds.bottom
+        ),
+        (16, 16, 80, 80)
+    );
+    for y in 0..96 {
+        for x in 0..96 {
+            let inside = (16..80).contains(&x) && (16..80).contains(&y);
+            let expected = if inside {
+                prepared.staged_frames[1].frame.pixels[y * 96 + x]
+            } else {
+                window.background[0]
+            };
+            assert_eq!(calls[1].0.pixels[y * 96 + x], expected);
+        }
+    }
+    assert_ne!(
+        calls[1].0.pixels[0],
+        prepared.staged_frames[1].frame.pixels[0]
+    );
+    for (index, (frame, points, identity)) in calls.iter().enumerate() {
+        assert_eq!((frame.width, frame.height, frame.channels), (96, 96, 1));
+        assert_eq!(points, &prepared.prompts[index].points);
+        assert_eq!(
+            *identity,
+            prepared.prompts[index].points.as_ptr() as usize,
+            "the canonical prompt slice crosses the adapter unchanged"
+        );
+        assert_eq!(output.masks[index].pixels, segmenter.output.pixels);
+        assert_eq!(
+            prepared.staged_frames[index].frame.pixels, pages[index].pixels,
+            "source frames remain unchanged"
         );
     }
 }

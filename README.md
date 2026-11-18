@@ -43,6 +43,59 @@ Downloads become available after the checkpoint is finalized, and failed
 downloads can be retried. See the [download status contract](backend/docs/checkpoints.md#download-status)
 for API and restart behavior.
 
+### Input window
+
+**Input Window** is optional and off by default. It applies to both predictors
+and both model choices. Before model resizing and encoding, it replaces pixels
+outside a native-coordinate window with background. Frame dimensions, trace
+prompts, and output coordinates stay unchanged; output masks are not clipped.
+
+The API accepts `input_window: { "margin": 8, "max_growth": 5,
+"window_size": null }`. Omitted or `null` disables it; `{}` uses those defaults.
+Margin and maximum outward growth are nonnegative integers. A supplied window
+size is a positive integer, in pixels.
+
+Automatic sizing leaves the first frame unwindowed to measure the object. If
+its mask is empty, subsequent frames remain unwindowed until a nonempty mask is
+available. That first measurement initializes the reset-square side to twice
+the mask's larger bounding-box dimension, with a minimum of 64 pixels; later
+unflagged masks update it. There is no 64-pixel upper limit. An explicit size
+instead applies from frame zero.
+
+On each prompted frame, the window resets to that square, centred on the
+interpolated trace and clipped to the image edges. Image prediction prompts
+every frame, so every frame after the automatic bootstrap uses this rule.
+Other video frames follow the previous **raw** output's bounding box plus the
+margin. Each edge can move outward by at most `max_growth` pixels relative to
+the previous window; inward movement is unrestricted. An initial detector flag
+from [inconsistent-frame repair](#inconsistent-frame-repair) resets the **next**
+frame to the square. Later flagged masks do not enlarge the automatic reset
+size. Windowing uses these initial flags, before the repair pass's recovery of
+anchors using future frames, even when repair is disabled.
+
+The background is the current frame's median outside the previous raw mask,
+calculated independently for each colour channel. Even-sized samples use the
+mean of the middle two values, rounded down. When no background pixels remain,
+the whole current frame supplies the median. Historical video frames reuse
+their original window and background when the tracker encodes them again.
+Windowing requires `SAM3_VIDEO_HOTSTART_DELAY=0` (the default), because feedback
+must be available before the next input frame is encoded.
+
+Enabling windowing writes `segmented_frame_repair.json` even if repair is off.
+Its schema version is 3, with `input_window.frames` containing zero-based frame
+indices, `bounds` (`left`, `top`, exclusive `right`, exclusive `bottom`),
+`background`, `reset` (`initial`, `prompt`, `flag`, or `null`), and
+`touches_border`. Initial detector records appear as `raw_detection` within
+these entries when no mask postpass is requested. When cleanup or repair is
+enabled, those records move into the existing root `frames` list; repair then
+adds its anchor decisions and actions there. They are never duplicated.
+The window summary and job log report prompt/flag resets and the fraction of
+frames touching an image edge, including an unwindowed bootstrap frame. The
+initial window is excluded from reset counts. With **Draw Prompts**, the same
+bounds are drawn as a rectangle in the diagnostic overlay at intensity 96
+(95 if the positive prompt intensity is 96), beneath prompt and repair markers.
+With windowing off, existing sidecar formats and outputs are unchanged.
+
 ### Centre-line mask cleanup
 
 The optional **Keep Centre-line Component** control (`keep_centerline_component`,
@@ -141,7 +194,7 @@ use stars; positives added by **Max Prompt Gap** use hollow diamonds.
 The diagnostic overlay uses the same prepared prompt list submitted to
 inference. Video frames without prompts, including frames before the first and
 after the last prompt, remain identical to the primary mask unless marked as
-repaired by the optional repair step. Every positive
+repaired by the optional repair step or outlined by an enabled input window. Every positive
 on a prompted frame is drawn, including multiple annotations whose fractional
 z coordinates round to that frame.
 Image prediction still marks every frame it prompts. Coordinates are rounded

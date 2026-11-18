@@ -8,6 +8,35 @@ pub struct DownloadRequest {
     pub hf_token: Option<String>,
 }
 
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InputWindowOptions {
+    pub margin: usize,
+    pub max_growth: usize,
+    pub window_size: Option<usize>,
+}
+
+impl Default for InputWindowOptions {
+    fn default() -> Self {
+        Self {
+            margin: 8,
+            max_growth: 5,
+            window_size: None,
+        }
+    }
+}
+
+impl InputWindowOptions {
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self.window_size == Some(0) {
+            return Err(AppError::bad_request(
+                "input_window.window_size must be positive or null",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessRequest {
     pub file_path: String,
@@ -22,6 +51,8 @@ pub struct ProcessRequest {
     pub keep_unrepaired: bool,
     #[serde(default)]
     pub max_prompt_gap: Option<usize>,
+    #[serde(default)]
+    pub input_window: Option<InputWindowOptions>,
     #[serde(default)]
     pub overlay_annotation_points: bool,
     #[serde(default = "default_annotation_overlay_intensity")]
@@ -38,6 +69,9 @@ impl ProcessRequest {
         }
         if self.model_type.trim().is_empty() {
             return Err(AppError::bad_request("model_type must not be empty"));
+        }
+        if let Some(options) = self.input_window {
+            options.validate()?;
         }
 
         match self.predictor_type.as_str() {
@@ -56,7 +90,7 @@ const fn default_annotation_overlay_intensity() -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::ProcessRequest;
+    use super::{InputWindowOptions, ProcessRequest};
     use serde_json::json;
 
     #[test]
@@ -128,5 +162,71 @@ mod tests {
                 assert!(serde_json::from_value::<ProcessRequest>(body).is_err());
             }
         }
+    }
+
+    #[test]
+    fn input_window_defaults_off_and_an_empty_block_enables_defaults() {
+        for predictor in ["ImagePredictor", "VideoPredictor"] {
+            let original = json!({
+                "file_path": "/input.tif",
+                "output_file": "/output.tif",
+                "model_type": "sam3",
+                "predictor_type": predictor
+            });
+            let request: ProcessRequest = serde_json::from_value(original.clone()).unwrap();
+            assert_eq!(request.input_window, None);
+            for (value, expected) in [
+                (json!(null), None),
+                (json!({}), Some(InputWindowOptions::default())),
+                (
+                    json!({"margin": 0, "max_growth": 0, "window_size": 1}),
+                    Some(InputWindowOptions {
+                        margin: 0,
+                        max_growth: 0,
+                        window_size: Some(1),
+                    }),
+                ),
+                (
+                    json!({"margin": 12, "window_size": null}),
+                    Some(InputWindowOptions {
+                        margin: 12,
+                        ..InputWindowOptions::default()
+                    }),
+                ),
+            ] {
+                let mut body = original.clone();
+                body["input_window"] = value;
+                let request: ProcessRequest = serde_json::from_value(body).unwrap();
+                request.validate().unwrap();
+                assert_eq!(request.input_window, expected);
+            }
+            let mut body = original;
+            body["input_window"] = json!({"window_size": 0});
+            let request: ProcessRequest = serde_json::from_value(body).unwrap();
+            assert!(request.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn input_window_dimensions_accept_only_unsigned_integers() {
+        for key in ["margin", "max_growth", "window_size"] {
+            for value in [json!(-1), json!(1.5), json!("8"), json!(false)] {
+                let mut options = json!({});
+                options[key] = value;
+                assert!(serde_json::from_value::<InputWindowOptions>(options).is_err());
+            }
+        }
+        for key in ["margin", "max_growth"] {
+            let mut options = json!({});
+            options[key] = json!(null);
+            assert!(serde_json::from_value::<InputWindowOptions>(options).is_err());
+        }
+        InputWindowOptions {
+            margin: usize::MAX,
+            max_growth: usize::MAX,
+            window_size: Some(usize::MAX),
+        }
+        .validate()
+        .unwrap();
     }
 }

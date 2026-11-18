@@ -1,13 +1,17 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 
 use crate::{
     error::AppError,
-    imaging::tiff_io::ImageFrame,
+    imaging::{input_window::SharedInputWindow, tiff_io::ImageFrame},
     inference::{
         image::{FrameMask, ImageSegmenter, PointPrompt},
         video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
+        SegmentationOutput,
     },
 };
 
@@ -40,9 +44,10 @@ impl VideoSegmenter for CandleSam2VideoSegmenter {
     async fn segment_video(
         &self,
         _frames_dir: &Path,
-        _prompts: &[VideoFramePrompt],
+        _prompts: Arc<[VideoFramePrompt]>,
+        _input_window: Option<SharedInputWindow>,
         _progress: Option<FrameProgressCallback>,
-    ) -> Result<Vec<FrameMask>, AppError> {
+    ) -> Result<SegmentationOutput, AppError> {
         Err(AppError::not_implemented(format!(
             "Candle SAM2 video inference is not implemented yet for {}",
             self.checkpoint_path.display()
