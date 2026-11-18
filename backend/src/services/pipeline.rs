@@ -13,7 +13,7 @@ use crate::{
     error::AppError,
     imaging::{
         annotations::{
-            add_negative_border_points, annotation_samples_for_image, annotation_samples_for_video,
+            annotation_samples_for_image, annotation_samples_for_video,
             default_annotations, fill_prompt_gaps, AnnotationPoint, VolumeShape,
         },
         cleanup::{keep_centerline_components, repair_inconsistent_frames},
@@ -140,28 +140,11 @@ pub async fn prepare(
             "Prepared video annotation prompts"
         );
     }
-    let mut prompts = match request.predictor_type.as_str() {
+    let prompts = match request.predictor_type.as_str() {
         "ImagePredictor" => annotation_samples_for_image(&annotation_points, frames.len()),
         "VideoPredictor" => annotation_samples_for_video(&annotation_points, frames.len()),
         _ => unreachable!("validated by ProcessRequest::validate"),
     };
-    if let Some(options) = &request.negative_border_points {
-        add_negative_border_points(
-            &mut prompts,
-            VolumeShape {
-                frames: volume.geometry.frames,
-                height: volume.geometry.height,
-                width: volume.geometry.width,
-            },
-            options,
-        )?;
-        tracing::info!(
-            count = options.count,
-            inset_px = options.inset_px,
-            prompted_frames = prompts.len(),
-            "Prepared negative border points"
-        );
-    }
     let frame_name_width = frame_name_width(frames.len());
     let encoding = stage_encoding(&request.predictor_type)?;
     let staged_frames = frames

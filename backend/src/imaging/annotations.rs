@@ -1,8 +1,4 @@
-use crate::{
-    domain::requests::NegativeBorderPoints,
-    error::AppError,
-    inference::{image::PointPrompt, video::VideoFramePrompt},
-};
+use crate::inference::{image::PointPrompt, video::VideoFramePrompt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationOrigin {
@@ -199,47 +195,6 @@ pub fn annotation_samples_for_image(
             })
         })
         .collect()
-}
-
-/// Append fixed negatives to the prepared prompt frames without consulting masks.
-/// Distances are measured clockwise from the inset rectangle's top-left corner.
-pub fn add_negative_border_points(
-    prompts: &mut [VideoFramePrompt],
-    shape: VolumeShape,
-    options: &NegativeBorderPoints,
-) -> Result<(), AppError> {
-    let inset = options.inset_px;
-    let horizontal = shape.width.saturating_sub(1) as f32 - 2.0 * inset;
-    let vertical = shape.height.saturating_sub(1) as f32 - 2.0 * inset;
-    if horizontal <= 0.0 || vertical <= 0.0 {
-        return Err(AppError::bad_request(format!(
-            "negative_border_points.inset_px ({inset}) leaves no border rectangle in a {}x{} frame",
-            shape.width, shape.height
-        )));
-    }
-    let perimeter = 2.0 * (horizontal + vertical);
-    let negatives = (0..options.count)
-        .map(|index| {
-            let distance = perimeter * (index as f32 / options.count as f32);
-            let (x, y) = if distance < horizontal {
-                (inset + distance, inset)
-            } else if distance < horizontal + vertical {
-                (inset + horizontal, inset + distance - horizontal)
-            } else if distance < 2.0 * horizontal + vertical {
-                (
-                    inset + 2.0 * horizontal + vertical - distance,
-                    inset + vertical,
-                )
-            } else {
-                (inset, inset + perimeter - distance)
-            };
-            PointPrompt::negative(x, y)
-        })
-        .collect::<Vec<_>>();
-    for prompt in prompts {
-        prompt.points.extend_from_slice(&negatives);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -63,15 +63,10 @@ The marker key is:
 | --- | --- | --- |
 | Metadata or fallback positive | Star | 127 |
 | Gap-fill positive | Hollow diamond | 127 |
-| Negative border point | Small cross | 64 |
 | Repaired frame | X centred at (2, 2) | 192 |
 
-Negative border points, when enabled through `negative_border_points`, are
-included in those same frame prompt lists. If the API's positive overlay
-intensity is 64, negative crosses use 63 to remain distinct. Point coordinates
-are rounded to pixels and glyphs are clipped at image edges. The diagnostic
-represents submitted prompts; the runtime's 16-point limit may omit excess
-points during encoding. The primary mask and the centre-line cleanup's
+Point coordinates are rounded to pixels and glyphs are clipped at image
+edges. The primary mask and the centre-line cleanup's
 interpolated seeds are unchanged by drawing prompts.
 
 Repair markers derive from the same per-frame report saved in the JSON sidecar;
