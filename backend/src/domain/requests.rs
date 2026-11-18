@@ -24,40 +24,6 @@ impl Default for NegativeBorderPoints {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
-pub struct FrameRepairOptions {
-    pub max_area_ratio: f64,
-    pub min_iou: f64,
-    pub keep_unrepaired: bool,
-}
-
-impl Default for FrameRepairOptions {
-    fn default() -> Self {
-        Self {
-            max_area_ratio: 1.5,
-            min_iou: 0.5,
-            keep_unrepaired: false,
-        }
-    }
-}
-
-impl FrameRepairOptions {
-    pub fn validate(&self) -> Result<(), AppError> {
-        if !self.max_area_ratio.is_finite() || self.max_area_ratio < 1.0 {
-            return Err(AppError::bad_request(
-                "repair_inconsistent_frames.max_area_ratio must be finite and at least 1",
-            ));
-        }
-        if !self.min_iou.is_finite() || !(0.0..=1.0).contains(&self.min_iou) {
-            return Err(AppError::bad_request(
-                "repair_inconsistent_frames.min_iou must be finite and between 0 and 1",
-            ));
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessRequest {
     pub file_path: String,
@@ -67,7 +33,9 @@ pub struct ProcessRequest {
     #[serde(default)]
     pub keep_centerline_component: bool,
     #[serde(default)]
-    pub repair_inconsistent_frames: Option<FrameRepairOptions>,
+    pub repair_inconsistent_frames: bool,
+    #[serde(default)]
+    pub keep_unrepaired: bool,
     #[serde(default)]
     pub max_prompt_gap: Option<usize>,
     #[serde(default)]
@@ -88,9 +56,6 @@ impl ProcessRequest {
         }
         if self.model_type.trim().is_empty() {
             return Err(AppError::bad_request("model_type must not be empty"));
-        }
-        if let Some(options) = self.repair_inconsistent_frames {
-            options.validate()?;
         }
         if let Some(points) = self.negative_border_points {
             if points.count == 0 {
@@ -121,7 +86,7 @@ const fn default_annotation_overlay_intensity() -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameRepairOptions, NegativeBorderPoints, ProcessRequest};
+    use super::{NegativeBorderPoints, ProcessRequest};
     use serde_json::json;
 
     #[test]
@@ -238,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_repair_defaults_off_and_accepts_enabled_defaults_or_overrides() {
+    fn frame_repair_booleans_default_off_and_accept_all_combinations() {
         for predictor in ["ImagePredictor", "VideoPredictor"] {
             let original = json!({
                 "file_path": "/input.tif",
@@ -247,81 +212,36 @@ mod tests {
                 "predictor_type": predictor
             });
             let request: ProcessRequest = serde_json::from_value(original.clone()).unwrap();
-            assert_eq!(request.repair_inconsistent_frames, None);
-            for (value, expected) in [
-                (json!(null), None),
-                (json!({}), Some(FrameRepairOptions::default())),
-                (
-                    json!({ "keep_unrepaired": true }),
-                    Some(FrameRepairOptions {
-                        keep_unrepaired: true,
-                        ..FrameRepairOptions::default()
-                    }),
-                ),
-                (
-                    json!({ "max_area_ratio": 1, "min_iou": 0 }),
-                    Some(FrameRepairOptions {
-                        max_area_ratio: 1.0,
-                        min_iou: 0.0,
-                        keep_unrepaired: false,
-                    }),
-                ),
-                (
-                    json!({ "max_area_ratio": 2.25, "min_iou": 1 }),
-                    Some(FrameRepairOptions {
-                        max_area_ratio: 2.25,
-                        min_iou: 1.0,
-                        keep_unrepaired: false,
-                    }),
-                ),
-            ] {
-                let mut body = original.clone();
-                body["repair_inconsistent_frames"] = value;
-                let request: ProcessRequest = serde_json::from_value(body).unwrap();
-                request.validate().unwrap();
-                assert_eq!(request.repair_inconsistent_frames, expected);
+            assert!(!request.repair_inconsistent_frames);
+            assert!(!request.keep_unrepaired);
+            for repair in [false, true] {
+                for keep_unrepaired in [false, true] {
+                    let mut body = original.clone();
+                    body["repair_inconsistent_frames"] = json!(repair);
+                    body["keep_unrepaired"] = json!(keep_unrepaired);
+                    let request: ProcessRequest = serde_json::from_value(body).unwrap();
+                    request.validate().unwrap();
+                    assert_eq!(request.repair_inconsistent_frames, repair);
+                    assert_eq!(request.keep_unrepaired, keep_unrepaired);
+                }
             }
         }
     }
 
     #[test]
-    fn frame_repair_settings_use_shared_validation_for_invalid_thresholds() {
+    fn frame_repair_options_accept_only_booleans() {
         let original = json!({
             "file_path": "/input.tif",
             "output_file": "/output.tif",
             "model_type": "sam3",
             "predictor_type": "ImagePredictor"
         });
-        for value in [
-            json!({ "max_area_ratio": "1.5" }),
-            json!({ "min_iou": "0.5" }),
-            json!({ "keep_unrepaired": 1 }),
-        ] {
-            let mut body = original.clone();
-            body["repair_inconsistent_frames"] = value;
-            assert!(serde_json::from_value::<ProcessRequest>(body).is_err());
-        }
-
-        let mut request: ProcessRequest = serde_json::from_value(original).unwrap();
-        for max_area_ratio in [0.0, 0.99, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let options = FrameRepairOptions {
-                max_area_ratio,
-                ..FrameRepairOptions::default()
-            };
-            let error = options.validate().unwrap_err().to_string();
-            assert!(error.contains("max_area_ratio must be finite and at least 1"));
-            request.repair_inconsistent_frames = Some(options);
-            assert_eq!(request.validate().unwrap_err().to_string(), error);
-        }
-        for min_iou in [-0.01, 1.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let options = FrameRepairOptions {
-                min_iou,
-                ..FrameRepairOptions::default()
-            };
-            let error = options.validate().unwrap_err().to_string();
-            assert!(error.contains("min_iou must be finite and between 0 and 1"));
-            request.repair_inconsistent_frames = Some(options);
-            assert_eq!(request.validate().unwrap_err().to_string(), error);
+        for key in ["repair_inconsistent_frames", "keep_unrepaired"] {
+            for value in [json!(null), json!({}), json!(1), json!("true")] {
+                let mut body = original.clone();
+                body[key] = value;
+                assert!(serde_json::from_value::<ProcessRequest>(body).is_err());
+            }
         }
     }
 }

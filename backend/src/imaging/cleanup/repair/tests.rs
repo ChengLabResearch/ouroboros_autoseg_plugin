@@ -26,20 +26,11 @@ fn record(component_area: usize, reasons: Vec<FrameFlagReason>) -> FrameRepairFr
     }
 }
 
-fn accepted_record(mask: &FrameMask) -> FrameRepairFrame {
-    record(
-        mask.pixels.iter().filter(|&&pixel| pixel != 0).count(),
-        vec![],
-    )
-}
-
 #[test]
 fn accepted_frames_share_eight_connected_trace_selection_and_preserve_values() {
     let mut masks = vec![frame(7, 7, &[(2, 2), (3, 3), (4, 4), (0, 6)])];
     masks[0].pixels[2 * 7 + 2] = 1;
-    let report =
-        repair_inconsistent_frames(&mut masks, &trace(3.0, 3.0), &FrameRepairOptions::default())
-            .unwrap();
+    let report = repair_inconsistent_frames(&mut masks, &trace(3.0, 3.0)).unwrap();
     assert_eq!(report.frames[0].repair, FrameRepairAction::Kept);
     assert_eq!(report.frames[0].component_area, 3);
     assert!(report.frames[0].reasons.is_empty());
@@ -58,9 +49,7 @@ fn comparisons_use_previous_raw_selected_component_even_when_it_was_flagged() {
     let small = frame(9, 9, &rectangle(3, 3, 2, 2));
     let large = frame(9, 9, &rectangle(1, 1, 6, 6));
     let mut masks = vec![small, large.clone(), large.clone()];
-    let report =
-        repair_inconsistent_frames(&mut masks, &trace(3.0, 3.0), &FrameRepairOptions::default())
-            .unwrap();
+    let report = repair_inconsistent_frames(&mut masks, &trace(3.0, 3.0)).unwrap();
     assert!(report.frames[0].reasons.is_empty());
     assert_eq!(
         report.frames[1].reasons,
@@ -76,23 +65,24 @@ fn comparisons_use_previous_raw_selected_component_even_when_it_was_flagged() {
 }
 
 #[test]
-fn area_ratio_and_iou_threshold_equalities_are_accepted() {
-    let originals = vec![
-        frame(8, 7, &rectangle(2, 2, 2, 2)),
-        frame(8, 7, &rectangle(2, 2, 3, 2)),
-    ];
-    for (max_area_ratio, min_iou, expected) in [
-        (1.5, 2.0 / 3.0, vec![]),
-        (1.49, 2.0 / 3.0, vec![FrameFlagReason::AreaJump]),
-        (1.5, 0.67, vec![FrameFlagReason::LowIou]),
+fn fixed_area_ratio_and_iou_threshold_equalities_are_accepted() {
+    for (left, right, expected) in [
+        (rectangle(2, 2, 2, 2), rectangle(2, 2, 3, 2), vec![]),
+        (rectangle(2, 2, 3, 2), rectangle(2, 2, 2, 2), vec![]),
+        (
+            rectangle(2, 2, 2, 2),
+            rectangle(2, 2, 4, 2),
+            vec![FrameFlagReason::AreaJump],
+        ),
+        (rectangle(2, 2, 3, 2), rectangle(3, 2, 3, 2), vec![]),
+        (
+            rectangle(2, 2, 3, 2),
+            rectangle(4, 2, 3, 2),
+            vec![FrameFlagReason::LowIou],
+        ),
     ] {
-        let mut masks = originals.clone();
-        let options = FrameRepairOptions {
-            max_area_ratio,
-            min_iou,
-            keep_unrepaired: false,
-        };
-        let report = repair_inconsistent_frames(&mut masks, &trace(2.0, 2.0), &options).unwrap();
+        let mut masks = vec![frame(10, 7, &left), frame(10, 7, &right)];
+        let report = repair_inconsistent_frames(&mut masks, &trace(3.0, 3.0)).unwrap();
         assert_eq!(report.frames[1].reasons, expected);
     }
 }
@@ -107,12 +97,7 @@ fn valid_anchor_after_a_flood_is_recovered_without_changing_its_mask() {
         pixels: vec![255; 31 * 31],
     };
     let mut masks = vec![valid.clone(), flood, valid.clone(), valid.clone()];
-    let report = repair_inconsistent_frames(
-        &mut masks,
-        &trace(15.0, 15.0),
-        &FrameRepairOptions::default(),
-    )
-    .unwrap();
+    let report = repair_inconsistent_frames(&mut masks, &trace(15.0, 15.0)).unwrap();
     assert_eq!(
         report.frames[2].reasons,
         vec![FrameFlagReason::AreaJump, FrameFlagReason::LowIou]
@@ -134,7 +119,6 @@ fn valid_anchor_after_a_flood_is_recovered_without_changing_its_mask() {
 #[test]
 fn anchor_recovery_uses_inclusive_area_bounds_and_even_local_median() {
     let mut report = FrameRepairReport {
-        options: FrameRepairOptions::default(),
         frames: vec![
             record(8, vec![]),
             record(12, vec![]),
@@ -166,7 +150,6 @@ fn anchor_recovery_uses_inclusive_area_bounds_and_even_local_median() {
 #[test]
 fn recovery_uses_initial_accepted_snapshot_and_inclusive_150_frame_window() {
     let mut report = FrameRepairReport {
-        options: FrameRepairOptions::default(),
         frames: (0..302)
             .map(|_| record(30, vec![FrameFlagReason::EdgeContact]))
             .collect(),
@@ -182,7 +165,6 @@ fn recovery_uses_initial_accepted_snapshot_and_inclusive_150_frame_window() {
     );
 
     let mut report = FrameRepairReport {
-        options: FrameRepairOptions::default(),
         frames: (0..152)
             .map(|_| record(30, vec![FrameFlagReason::EdgeContact]))
             .collect(),
@@ -203,12 +185,7 @@ fn contact_with_each_frame_edge_flags_the_selected_component() {
     for (x, y) in [(0, 3), (6, 3), (3, 0), (3, 6)] {
         let mut masks = vec![frame(7, 7, &[(x, y)])];
         let original = masks[0].pixels.clone();
-        let report = repair_inconsistent_frames(
-            &mut masks,
-            &trace(x as f32, y as f32),
-            &FrameRepairOptions::default(),
-        )
-        .unwrap();
+        let report = repair_inconsistent_frames(&mut masks, &trace(x as f32, y as f32)).unwrap();
         assert_eq!(report.frames[0].reasons, vec![FrameFlagReason::EdgeContact]);
         assert!(!report.frames[0].anchor_recovered);
         assert_eq!(report.frames[0].repair, FrameRepairAction::Kept);
@@ -221,8 +198,7 @@ fn contact_with_each_frame_edge_flags_the_selected_component() {
 fn missing_trace_and_wholly_flagged_stacks_remain_empty_or_keep_selected_components() {
     let original = frame(7, 7, &rectangle(2, 2, 2, 2));
     let mut missing = vec![original; 3];
-    let report =
-        repair_inconsistent_frames(&mut missing, &[], &FrameRepairOptions::default()).unwrap();
+    let report = repair_inconsistent_frames(&mut missing, &[]).unwrap();
     assert!(missing
         .iter()
         .all(|mask| mask.pixels.iter().all(|&pixel| pixel == 0)));
@@ -252,12 +228,7 @@ fn missing_trace_and_wholly_flagged_stacks_remain_empty_or_keep_selected_compone
     assert_eq!(report.summary().repaired_frames, 0);
 
     let mut flagged = vec![frame(7, 7, &[(0, 0), (1, 1), (5, 5)]); 3];
-    let report = repair_inconsistent_frames(
-        &mut flagged,
-        &trace(0.0, 0.0),
-        &FrameRepairOptions::default(),
-    )
-    .unwrap();
+    let report = repair_inconsistent_frames(&mut flagged, &trace(0.0, 0.0)).unwrap();
     assert!(report
         .frames
         .iter()
@@ -281,9 +252,7 @@ fn empty_component_is_replaced_when_trace_and_an_accepted_estimate_exist() {
         anchor.clone(),
         anchor.clone(),
     ];
-    let report =
-        repair_inconsistent_frames(&mut masks, &trace(2.0, 2.0), &FrameRepairOptions::default())
-            .unwrap();
+    let report = repair_inconsistent_frames(&mut masks, &trace(2.0, 2.0)).unwrap();
     assert!(report.frames[1]
         .reasons
         .contains(&FrameFlagReason::EmptyComponent));
@@ -305,50 +274,34 @@ fn empty_component_is_replaced_when_trace_and_an_accepted_estimate_exist() {
 }
 
 #[test]
-fn aligned_sdf_estimates_follow_integer_centroid_motion_and_fractional_sampling() {
-    let left = frame(40, 15, &rectangle(2, 3, 3, 3));
-    let right = frame(40, 15, &rectangle(26, 7, 3, 3));
-    let anchors = AlignedAnchors::new(
-        &left,
-        &accepted_record(&left),
-        &right,
-        &accepted_record(&right),
-    );
-    for (fraction, x, y) in [
-        (0.0, 2, 3),
-        (0.25, 8, 4),
-        (0.5, 14, 5),
-        (0.75, 20, 6),
-        (1.0, 26, 7),
+fn in_place_chessboard_interpolation_preserves_overlap_and_excludes_zero_ties() {
+    let left = frame(10, 7, &rectangle(2, 2, 3, 3));
+    let right = frame(10, 7, &rectangle(4, 2, 3, 3));
+    for expected in [
+        vec![
+            rectangle(2, 2, 3, 3),
+            vec![(4, 2), (3, 3), (4, 3), (5, 3), (4, 4)],
+            rectangle(4, 2, 3, 3),
+        ],
+        // At t=1/3 and 2/3 the outer column has exactly zero blended distance.
+        vec![rectangle(3, 2, 2, 3), rectangle(4, 2, 2, 3)],
     ] {
-        let expected = frame(40, 15, &rectangle(x, y, 3, 3));
-        assert_eq!(
-            anchors.estimate(fraction),
-            expected
-                .pixels
-                .iter()
-                .map(|&pixel| pixel != 0)
-                .collect::<Vec<_>>()
-        );
+        let mut masks = vec![left.clone()];
+        masks.extend((0..expected.len()).map(|_| frame(10, 7, &[])));
+        masks.extend([right.clone(), right.clone()]);
+        let report = repair_inconsistent_frames(&mut masks, &trace(4.0, 3.0)).unwrap();
+        for (offset, pixels) in expected.iter().enumerate() {
+            let index = offset + 1;
+            assert_eq!(report.frames[index].repair, FrameRepairAction::Replaced);
+            assert_eq!(
+                masks[index].pixels,
+                frame(10, 7, pixels).pixels,
+                "frame{index}"
+            );
+        }
+        assert_eq!(masks[0].pixels, left.pixels);
+        assert!(report.frames[expected.len() + 1].anchor_recovered);
     }
-    let left = frame(8, 7, &rectangle(2, 2, 3, 3));
-    let right = frame(8, 7, &rectangle(3, 2, 3, 3));
-    let anchors = AlignedAnchors::new(
-        &left,
-        &accepted_record(&left),
-        &right,
-        &accepted_record(&right),
-    );
-    let expected = frame(8, 7, &rectangle(3, 2, 2, 3));
-    assert_eq!(
-        anchors.estimate(0.5),
-        expected
-            .pixels
-            .iter()
-            .map(|&pixel| pixel != 0)
-            .collect::<Vec<_>>(),
-        "half-pixel alignment uses bilinear SDF samples and excludes exact zero values"
-    );
 }
 
 #[test]
@@ -395,7 +348,14 @@ fn empty_estimate_uses_literal_empty_intersection_and_records_actual_changes() {
     assert!(nonempty.pixels.iter().all(|&pixel| pixel == 0));
 }
 
-fn dilated_rectangle(width: usize, height: usize, left: usize, top: usize, side: usize) -> Vec<u8> {
+fn dilated_rectangle(
+    width: usize,
+    height: usize,
+    left: usize,
+    top: usize,
+    columns: usize,
+    rows: usize,
+) -> Vec<u8> {
     (0..width * height)
         .map(|index| {
             let x = index % width;
@@ -403,12 +363,12 @@ fn dilated_rectangle(width: usize, height: usize, left: usize, top: usize, side:
             let dx = if x < left {
                 left - x
             } else {
-                x.saturating_sub(left + side - 1)
+                x.saturating_sub(left + columns - 1)
             };
             let dy = if y < top {
                 top - y
             } else {
-                y.saturating_sub(top + side - 1)
+                y.saturating_sub(top + rows - 1)
             };
             if dx * dx + dy * dy <= 100 {
                 255
@@ -423,7 +383,7 @@ fn dilated_rectangle(width: usize, height: usize, left: usize, top: usize, side:
 fn leading_internal_three_frame_and_trailing_runs_clip_using_accepted_estimates() {
     let mut left = frame(64, 40, &rectangle(20, 18, 3, 3));
     left.pixels[19 * 64 + 21] = 1;
-    let right = frame(64, 40, &rectangle(28, 18, 3, 3));
+    let right = frame(64, 40, &rectangle(21, 18, 3, 3));
     let flood = FrameMask {
         width: 64,
         height: 40,
@@ -437,29 +397,25 @@ fn leading_internal_three_frame_and_trailing_runs_clip_using_accepted_estimates(
         flood.clone(),
         flood.clone(),
         right.clone(),
+        right.clone(), // An initially accepted neighbour supplies the recovery median.
         flood.clone(),
         flood,
     ];
-    let options = FrameRepairOptions {
-        max_area_ratio: 1000.0,
-        min_iou: 0.0,
-        keep_unrepaired: true,
-    };
-    let report = repair_inconsistent_frames(&mut masks, &trace(26.0, 19.0), &options).unwrap();
-    for (index, expected_x) in [
-        (0, 20),
-        (1, 20),
-        (3, 22),
-        (4, 24),
-        (5, 26),
-        (7, 28),
-        (8, 28),
+    let report = repair_inconsistent_frames(&mut masks, &trace(21.0, 19.0)).unwrap();
+    for (index, expected_x, columns) in [
+        (0, 20, 3),
+        (1, 20, 3),
+        (3, 20, 3),
+        (4, 21, 2),
+        (5, 21, 3),
+        (8, 21, 3),
+        (9, 21, 3),
     ] {
         assert_eq!(report.frames[index].repair, FrameRepairAction::Clipped);
         assert_eq!(
             masks[index].pixels,
-            dilated_rectangle(64, 40, expected_x, 18, 3),
-            "frame{index} preserves the original within the aligned estimate's disk envelope"
+            dilated_rectangle(64, 40, expected_x, 18, columns, 3),
+            "frame{index} preserves the original within the in-place estimate's disc envelope"
         );
     }
     assert_eq!(masks[2].pixels, left.pixels);
@@ -467,13 +423,13 @@ fn leading_internal_three_frame_and_trailing_runs_clip_using_accepted_estimates(
     assert_eq!(
         report.summary(),
         FrameRepairSummary {
-            total_frames: 9,
-            initially_flagged_frames: 7,
-            recovered_anchor_frames: 0,
-            accepted_frames: 2,
+            total_frames: 10,
+            initially_flagged_frames: 9,
+            recovered_anchor_frames: 2,
+            accepted_frames: 3,
             flagged_frames: 7,
             repaired_frames: 7,
-            kept_frames: 2,
+            kept_frames: 3,
             clipped_frames: 7,
             replaced_frames: 0,
             unrepaired_frames: 0,
@@ -491,8 +447,8 @@ fn leading_internal_three_frame_and_trailing_runs_clip_using_accepted_estimates(
                     repaired_frames: 3
                 },
                 FrameRepairRun {
-                    start_frame: 7,
-                    end_frame: 8,
+                    start_frame: 8,
+                    end_frame: 9,
                     flagged_frames: 2,
                     repaired_frames: 2
                 },
@@ -523,20 +479,13 @@ fn leading_internal_three_frame_and_trailing_runs_clip_using_accepted_estimates(
             .iter()
             .map(|run| (run.start_frame, run.end_frame))
             .collect::<Vec<_>>(),
-        [(1, 3), (5, 8)]
+        [(1, 3), (6, 9)]
     );
 }
 
 #[test]
-fn repair_rejects_invalid_options_and_incompatible_frame_geometry_before_mutation() {
+fn repair_rejects_incompatible_frame_geometry_before_mutation() {
     let original = frame(7, 7, &[(0, 0), (4, 4)]);
-    let mut masks = vec![original.clone()];
-    let options = FrameRepairOptions {
-        min_iou: f64::NAN,
-        ..FrameRepairOptions::default()
-    };
-    assert!(repair_inconsistent_frames(&mut masks, &trace(0.0, 0.0), &options).is_err());
-    assert_eq!(masks[0].pixels, original.pixels);
     for other in [
         frame(8, 7, &[]),
         FrameMask {
@@ -546,12 +495,7 @@ fn repair_rejects_invalid_options_and_incompatible_frame_geometry_before_mutatio
         },
     ] {
         let mut masks = vec![original.clone(), other];
-        assert!(repair_inconsistent_frames(
-            &mut masks,
-            &trace(0.0, 0.0),
-            &FrameRepairOptions::default()
-        )
-        .is_err());
+        assert!(repair_inconsistent_frames(&mut masks, &trace(0.0, 0.0)).is_err());
         assert_eq!(masks[0].pixels, original.pixels);
     }
 }

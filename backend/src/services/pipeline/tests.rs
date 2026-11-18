@@ -13,7 +13,7 @@ use super::{
 use crate::{
     app_state::AppState,
     config::AppConfig,
-    domain::requests::{FrameRepairOptions, ProcessRequest},
+    domain::requests::ProcessRequest,
     imaging::{
         annotations::{annotation_samples_for_video, AnnotationOrigin},
         cleanup::{keep_centerline_components, repair_inconsistent_frames},
@@ -59,7 +59,8 @@ fn sample_request(predictor_type: &str) -> ProcessRequest {
         negative_border_points: None,
         overlay_annotation_points: false,
         keep_centerline_component: false,
-        repair_inconsistent_frames: None,
+        repair_inconsistent_frames: false,
+        keep_unrepaired: false,
         annotation_overlay_intensity: 127,
     }
 }
@@ -882,10 +883,8 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 request.output_file = r"C:\Data Set\output\segmented.tif".into();
                 request.keep_centerline_component = cleanup;
                 request.overlay_annotation_points = true;
-                request.repair_inconsistent_frames = Some(FrameRepairOptions {
-                    keep_unrepaired,
-                    ..Default::default()
-                });
+                request.repair_inconsistent_frames = true;
+                request.keep_unrepaired = keep_unrepaired;
                 let prepared = prepare(&fixture.state, &request).await.unwrap();
                 let mut accepted = FrameMask {
                     width: 41,
@@ -929,12 +928,9 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 // Algorithm tests own the independent geometry/classification oracle;
                 // this test checks that the pipeline delivers the cleanup results.
                 let mut expected_masks = expected_unrepaired.clone();
-                let expected_report = repair_inconsistent_frames(
-                    &mut expected_masks,
-                    &prepared.annotation_points,
-                    request.repair_inconsistent_frames.as_ref().unwrap(),
-                )
-                .unwrap();
+                let expected_report =
+                    repair_inconsistent_frames(&mut expected_masks, &prepared.annotation_points)
+                        .unwrap();
                 let (progress, _receiver) = crate::services::progress::channel();
                 // Reuse the file-backed tracing capture used by the prompt-adapter
                 // tests, scoped to this future so concurrent jobs cannot leak in.
@@ -961,9 +957,14 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
                 let report: Value =
                     serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
                 assert_eq!(report["schema_version"], 2);
-                assert_eq!(report["options"]["keep_unrepaired"], keep_unrepaired);
+                assert_eq!(
+                    report["options"],
+                    json!({
+                        "repair_inconsistent_frames": true,
+                        "keep_unrepaired": keep_unrepaired,
+                    })
+                );
                 let expected_json = serde_json::to_value(&expected_report).unwrap();
-                assert_eq!(report["options"], expected_json["options"]);
                 assert_eq!(report["frames"], expected_json["frames"]);
                 assert_eq!(
                     report["summary"],
@@ -1036,13 +1037,14 @@ async fn repair_delivers_report_overlay_and_optional_stack_after_cleanup_for_bot
 
 #[tokio::test]
 async fn disabled_repair_preserves_existing_tiff_bytes_and_artifact_set() {
-    for cleanup in [false, true] {
+    for (cleanup, keep_unrepaired) in [(false, false), (true, false), (false, true), (true, true)] {
         let fixture = VolumeFixture::start(
             Some(r#"{"annotation_points": [[0, 0, 0], [0, 0, 1]]}"#),
             None,
         );
         let mut request = sample_request("VideoPredictor");
         request.keep_centerline_component = cleanup;
+        request.keep_unrepaired = keep_unrepaired;
         let prepared = prepare(&fixture.state, &request).await.unwrap();
         let mut masks = vec![
             FrameMask {

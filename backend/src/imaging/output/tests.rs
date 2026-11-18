@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use super::{write_annotation_overlay_stack, write_mask_stack};
 use crate::{
-    domain::requests::FrameRepairOptions,
     imaging::annotations::{
         annotation_samples_for_video, fill_prompt_gaps, AnnotationOrigin, AnnotationPoint,
     },
@@ -329,7 +328,6 @@ async fn repair_markers_follow_report_actions_without_requiring_frame_prompts() 
         5
     ];
     let report = FrameRepairReport {
-        options: FrameRepairOptions::default(),
         frames: [
             (FrameRepairAction::Kept, vec![], false),
             (
@@ -440,7 +438,6 @@ async fn report_without_repairs_leaves_existing_prompt_overlay_byte_identical() 
         ],
     }];
     let report = FrameRepairReport {
-        options: FrameRepairOptions::default(),
         frames: vec![
             FrameRepairFrame {
                 component_area: 64,

@@ -1,17 +1,15 @@
 use serde::Serialize;
 
-use crate::{
-    domain::requests::FrameRepairOptions, error::AppError, imaging::annotations::AnnotationPoint,
-    inference::image::FrameMask,
-};
+use crate::{error::AppError, imaging::annotations::AnnotationPoint, inference::image::FrameMask};
 
 use super::{
-    distance::{dilated_by_radius, PaddedSignedDistanceField},
+    distance::{dilated_by_disc, signed_distances},
     validate_mask_geometry, TraceComponentSelector, TraceSeedStatus,
 };
 
 const ANCHOR_RECOVERY_RADIUS: usize = 150;
-const ESTIMATE_DILATION_RADIUS: usize = 10;
+const MAX_AREA_RATIO: f64 = 1.5;
+const MIN_IOU: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,7 +54,6 @@ impl FrameRepairFrame {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FrameRepairReport {
-    pub options: FrameRepairOptions,
     /// One authoritative classification and outcome per input frame, in stack order.
     #[serde(serialize_with = "serialize_frames")]
     pub frames: Vec<FrameRepairFrame>,
@@ -155,13 +152,11 @@ impl FrameRepairReport {
 }
 
 /// Select trace components and classify against the preceding raw component,
-/// recover plausible anchors, then clip flagged frames to aligned shape estimates.
+/// recover plausible anchors, then clip flagged frames to interpolated shape estimates.
 pub fn repair_inconsistent_frames(
     masks: &mut [FrameMask],
     annotation_points: &[AnnotationPoint],
-    options: &FrameRepairOptions,
 ) -> Result<FrameRepairReport, AppError> {
-    options.validate()?;
     for mask in masks.iter() {
         validate_mask_geometry(mask)?;
         if let Some(first) = masks.first() {
@@ -173,7 +168,6 @@ pub fn repair_inconsistent_frames(
         }
     }
     let mut report = FrameRepairReport {
-        options: *options,
         frames: Vec::with_capacity(masks.len()),
     };
     let mut selector = TraceComponentSelector::default();
@@ -220,7 +214,7 @@ pub fn repair_inconsistent_frames(
             } else {
                 maximum as f64 / minimum as f64
             };
-            if area_ratio > report.options.max_area_ratio {
+            if area_ratio > MAX_AREA_RATIO {
                 reasons.push(FrameFlagReason::AreaJump);
             }
             let intersection = previous
@@ -235,7 +229,7 @@ pub fn repair_inconsistent_frames(
             } else {
                 intersection as f64 / union as f64
             };
-            if iou < report.options.min_iou {
+            if iou < MIN_IOU {
                 reasons.push(FrameFlagReason::LowIou);
             }
         }
@@ -262,14 +256,9 @@ pub fn repair_inconsistent_frames(
         let following = (next < masks.len()).then_some(next);
         match (previous, following) {
             (Some(left), Some(right)) => {
-                // Retain only this bracket's fields. Native source components are
-                // sampled after centroid translation; no rounded binary shift occurs.
-                let anchors = AlignedAnchors::new(
-                    &masks[left],
-                    &report.frames[left],
-                    &masks[right],
-                    &report.frames[right],
-                );
+                // Both fields stay in the native pixel coordinates; keep only this bracket.
+                let left_field = signed_distances(&masks[left]);
+                let right_field = signed_distances(&masks[right]);
                 for frame_index in start..next {
                     if report.frames[frame_index]
                         .reasons
@@ -277,9 +266,15 @@ pub fn repair_inconsistent_frames(
                     {
                         continue;
                     }
-                    let fraction = (frame_index - left) as f64 / (right - left) as f64;
-                    let estimate =
-                        Estimate::new(anchors.estimate(fraction), anchors.width, anchors.height);
+                    // Integer gap weights preserve exact zero ties without division.
+                    let left_weight = (right - frame_index) as f64;
+                    let right_weight = (frame_index - left) as f64;
+                    let foreground = left_field
+                        .iter()
+                        .zip(&right_field)
+                        .map(|(&left, &right)| left_weight * left + right_weight * right > 0.0)
+                        .collect();
+                    let estimate = Estimate::new(foreground, masks[left].width, masks[left].height);
                     report.frames[frame_index].repair = estimate.apply_to(&mut masks[frame_index]);
                 }
             }
@@ -348,100 +343,6 @@ fn recover_anchors(report: &mut FrameRepairReport) {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Centroid {
-    x: f64,
-    y: f64,
-}
-
-fn centroid(mask: &FrameMask, record: &FrameRepairFrame) -> Centroid {
-    let mut x = 0.0;
-    let mut y = 0.0;
-    for (index, &pixel) in mask.pixels.iter().enumerate() {
-        if pixel != 0 {
-            x += (index % mask.width) as f64;
-            y += (index / mask.width) as f64;
-        }
-    }
-    Centroid {
-        x: x / record.component_area as f64,
-        y: y / record.component_area as f64,
-    }
-}
-
-struct AlignedAnchors {
-    left: PaddedSignedDistanceField,
-    right: PaddedSignedDistanceField,
-    left_centroid: Centroid,
-    right_centroid: Centroid,
-    width: usize,
-    height: usize,
-}
-
-impl AlignedAnchors {
-    fn new(
-        left: &FrameMask,
-        left_record: &FrameRepairFrame,
-        right: &FrameMask,
-        right_record: &FrameRepairFrame,
-    ) -> Self {
-        let left_centroid = centroid(left, left_record);
-        let right_centroid = centroid(right, right_record);
-        let padding_x = (left_centroid.x - right_centroid.x).abs().ceil() as usize + 1;
-        let padding_y = (left_centroid.y - right_centroid.y).abs().ceil() as usize + 1;
-        Self {
-            left: PaddedSignedDistanceField::new(
-                &left
-                    .pixels
-                    .iter()
-                    .map(|&pixel| pixel != 0)
-                    .collect::<Vec<_>>(),
-                left.width,
-                left.height,
-                padding_x,
-                padding_y,
-            ),
-            right: PaddedSignedDistanceField::new(
-                &right
-                    .pixels
-                    .iter()
-                    .map(|&pixel| pixel != 0)
-                    .collect::<Vec<_>>(),
-                right.width,
-                right.height,
-                padding_x,
-                padding_y,
-            ),
-            left_centroid,
-            right_centroid,
-            width: left.width,
-            height: left.height,
-        }
-    }
-
-    fn estimate(&self, fraction: f64) -> Vec<bool> {
-        let target = Centroid {
-            x: (1.0 - fraction) * self.left_centroid.x + fraction * self.right_centroid.x,
-            y: (1.0 - fraction) * self.left_centroid.y + fraction * self.right_centroid.y,
-        };
-        (0..self.width * self.height)
-            .map(|index| {
-                let x = (index % self.width) as f64;
-                let y = (index / self.width) as f64;
-                let left = self.left.sample(
-                    x + self.left_centroid.x - target.x,
-                    y + self.left_centroid.y - target.y,
-                );
-                let right = self.right.sample(
-                    x + self.right_centroid.x - target.x,
-                    y + self.right_centroid.y - target.y,
-                );
-                (1.0 - fraction) * left + fraction * right > 0.0
-            })
-            .collect()
-    }
-}
-
 /// Own the current expected foreground and its Euclidean clipping envelope.
 /// One-sided runs reuse the same estimate; two-sided runs retain only one at a time.
 struct Estimate {
@@ -453,7 +354,7 @@ struct Estimate {
 impl Estimate {
     fn new(foreground: Vec<bool>, width: usize, height: usize) -> Self {
         let area = foreground.iter().filter(|&&inside| inside).count();
-        let envelope = dilated_by_radius(&foreground, width, height, ESTIMATE_DILATION_RADIUS);
+        let envelope = dilated_by_disc(&foreground, width, height);
         Self {
             foreground,
             envelope,

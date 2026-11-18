@@ -72,8 +72,8 @@ cleanup leaves the frame unchanged; repair empties it, flags it
 `empty_component`, and may fill it from an accepted-frame estimate.
 
 The selected component is flagged if it touches an image edge, its area changes
-by more than **Max Area Ratio** (default 1.5) in either direction, or its IoU
-falls below **Minimum IoU** (default 0.5). Area and IoU compare against the
+by more than a factor of **1.5** in either direction, or its IoU
+falls below **0.5**. These thresholds are fixed. Area and IoU compare against the
 previous selected component **before any repair**, including previously flagged
 frames. The first frame has no previous-frame comparison. Missing trace points
 and empty selections are also flagged. Empty/nonempty area transitions count
@@ -88,15 +88,13 @@ Without an accepted frame in the window, the frame remains flagged. Recovered
 anchors keep their own selected masks unchanged.
 
 Remaining flagged frames are grouped into runs. Each frame's expected mask
-comes from the two surrounding accepted components, aligned on their
-foreground centroids. Their exact Euclidean signed distance fields are sampled
-bilinearly at fractional centroid offsets, interpolated by frame position,
-and thresholded strictly above zero at the interpolated centroid. Background
-padding covers all translated samples without clipping either anchor. A
+comes from the two surrounding accepted components. Their chessboard
+(Chebyshev) signed distance fields are interpolated in place by frame position,
+without alignment, and thresholded strictly above zero. A
 leading or trailing run uses its only accepted neighbour as the estimate.
 
 The frame keeps its own component intersected with the estimate dilated by a
-10-pixel Euclidean radius. Only when the surviving area is **less than 30% of
+fixed 21 × 21 Euclidean disc of radius 10 pixels. Only when the surviving area is **less than 30% of
 the undilated estimate's area** is the estimate substituted. There is no extra
 overlap/agreement gate. This preserves observed detail while filling dropouts.
 Actions are `kept` when there is no pixel change beyond component selection,
@@ -112,11 +110,11 @@ stays empty and flagged. Repair does not add inference prompts or rerun the
 model. Estimated frames remain review
 targets, particularly where the source image has lost contrast.
 
-The API option is
-`repair_inconsistent_frames: { "max_area_ratio": 1.5, "min_iou": 0.5, "keep_unrepaired": false }`.
-Omitting it or sending `null` disables repair; `{}` enables the defaults.
-The ratio must be finite and at least 1; IoU must be finite and between 0 and 1.
-Disabled repair leaves the existing output unchanged.
+The API options are two booleans: `repair_inconsistent_frames` and
+`keep_unrepaired`, both defaulting to `false`. Set the first to `true` to enable
+repair, and optionally the second to retain its input stack. `keep_unrepaired`
+has no effect when repair is off. Disabled repair leaves the existing output
+unchanged.
 
 For `segmented.tif`, the repaired primary output is accompanied by
 `segmented_frame_repair.json` (schema version 2). Each record contains the

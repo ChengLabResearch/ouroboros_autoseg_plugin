@@ -68,9 +68,9 @@ impl PipelinePlan {
         if request.overlay_annotation_points {
             artifacts.push(annotation_overlay_path(&self.volume_output));
         }
-        if let Some(options) = &request.repair_inconsistent_frames {
+        if request.repair_inconsistent_frames {
             artifacts.push(frame_repair_report_path(&self.volume_output));
-            if options.keep_unrepaired {
+            if request.keep_unrepaired {
                 artifacts.push(unrepaired_mask_path(&self.volume_output));
             }
         }
@@ -252,13 +252,17 @@ async fn save_masks(
     if let Some(parent) = prepared.plan.volume_output.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let repair_report = if let Some(options) = &request.repair_inconsistent_frames {
-        if options.keep_unrepaired {
+    let repair_report = if request.repair_inconsistent_frames {
+        if request.keep_unrepaired {
             write_mask_stack(&unrepaired_mask_path(&prepared.plan.volume_output), masks).await?;
         }
-        let report = repair_inconsistent_frames(masks, &prepared.annotation_points, options)?;
+        let report = repair_inconsistent_frames(masks, &prepared.annotation_points)?;
         let mut document = serde_json::to_value(&report)?;
         document["schema_version"] = 2.into();
+        document["options"] = serde_json::json!({
+            "repair_inconsistent_frames": request.repair_inconsistent_frames,
+            "keep_unrepaired": request.keep_unrepaired,
+        });
         document["summary"] = serde_json::to_value(report.summary())?;
         // Filter using runtime decisions, then log the same indexed output records
         // as the sidecar. Serialized values never drive repair or overlay behavior.
@@ -278,7 +282,7 @@ async fn save_masks(
             .collect();
         tracing::info!(
             output = %request.output_file,
-            options = ?report.options,
+            options = %document["options"],
             summary = %document["summary"],
             flagged_frames = %serde_json::to_string(&flagged_frames)?,
             recovered_anchors = %serde_json::to_string(&recovered_anchors)?,
