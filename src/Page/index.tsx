@@ -156,7 +156,6 @@ export default function SAM3Page() {
                     overlay_annotation_points: opts.overlayAnnotationPoints,
                     keep_centerline_component: opts.keepCenterlineComponent,
                     max_prompt_gap: opts.maxPromptGap,
-                    negative_border_points: opts.negativeBorderPoints,
                     repair_inconsistent_frames: opts.repairInconsistentFrames,
                     keep_unrepaired: opts.keepUnrepaired
                 })

@@ -133,34 +133,9 @@ the positive prompt intensity is 192). Kept frames, including recovered anchors
 and unchanged flagged frames, have no repair marker. All requested artifacts
 are copied beside the primary output.
 
-### Negative border points
+### Prompt overlay
 
-The optional **Negative Border Points** control adds background prompts to both
-predictors and both model choices. It is off by default. When enabled, it
-defaults to **15 points** and a **12-pixel inset**; 15 replaces the earlier
-16-point proposal so one positive plus the default negatives fits SAM3's
-16-point runtime limit. Count must be a positive integer; inset must be finite
-and nonnegative, and may be fractional.
-
-The API setting is `negative_border_points: { "count": 15, "inset_px": 12 }`.
-Omitting the setting or sending `null` disables it; `{}` enables the defaults,
-and omitted object fields use their respective defaults. A frame's border is
-the rectangle `[inset, width - 1 - inset] × [inset, height - 1 - inset]`.
-Points start at the top-left corner and proceed clockwise, equally spaced by
-arc length around its perimeter. An inset that collapses either side of the
-rectangle is rejected after reading the input dimensions.
-
-Video prediction adds negatives on the same frames as its selected positive
-prompts, including extra prompts selected by **Max Prompt Gap**. Image
-prediction adds them on every frame it actually prompts. Negatives are not
-filtered using the previous mask. The job log reports the configured count
-and inset, the number of prompted frames, and calls exceeding the unchanged
-16-point limit; upstream truncation means excess submitted points may not all
-be encoded. Counts above the default remain available for explicit tuning.
-
-With **Draw Prompts**, negative border points appear as small crosses at
-intensity 64 (63 if the API's positive overlay intensity is 64), distinct from
-the default positive intensity of 127. Original metadata and fallback positives
+With **Draw Prompts**, original metadata and fallback positives
 use stars; positives added by **Max Prompt Gap** use hollow diamonds.
 
 The diagnostic overlay uses the same prepared prompt list submitted to
@@ -168,10 +143,11 @@ inference. Video frames without prompts, including frames before the first and
 after the last prompt, remain identical to the primary mask unless marked as
 repaired by the optional repair step. Every positive
 on a prompted frame is drawn, including multiple annotations whose fractional
-z coordinates round to that frame, along with any negative border points.
+z coordinates round to that frame.
 Image prediction still marks every frame it prompts. Coordinates are rounded
 to pixels and glyphs are clipped at image edges. The overlay records submitted
-prompts; it does not imply that over-cap points were encoded by the runtime.
+prompts; it does not imply that over-cap points were encoded by the runtime,
+whose 16-point limit may omit excess points during encoding.
 Drawing prompts changes neither inference nor centre-line cleanup, which keeps
 its existing interpolated annotation seeds.
 
