@@ -13,8 +13,8 @@ use crate::{
     error::AppError,
     imaging::{
         annotations::{
-            annotation_samples_for_image, annotation_samples_for_video,
-            default_annotations, fill_prompt_gaps, AnnotationPoint, VolumeShape,
+            annotation_samples_for_image, annotation_samples_for_video, default_annotations,
+            fill_prompt_gaps, AnnotationPoint, VolumeShape,
         },
         cleanup::{keep_centerline_components, repair_inconsistent_frames},
         output::{

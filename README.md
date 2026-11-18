@@ -145,7 +145,9 @@ repaired by the optional repair step. Every positive
 on a prompted frame is drawn, including multiple annotations whose fractional
 z coordinates round to that frame.
 Image prediction still marks every frame it prompts. Coordinates are rounded
-to pixels and glyphs are clipped at image edges.
+to pixels and glyphs are clipped at image edges. The overlay records submitted
+prompts; it does not imply that over-cap points were encoded by the runtime,
+whose 16-point limit may omit excess points during encoding.
 Drawing prompts changes neither inference nor centre-line cleanup, which keeps
 its existing interpolated annotation seeds.
 
