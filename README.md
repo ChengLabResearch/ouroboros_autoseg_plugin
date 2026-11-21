@@ -332,11 +332,13 @@ toolkit available.
 ### Registry Backend Images
 
 The `Build and Verify Backend Images` workflow fingerprints the actual CPU and
-CUDA build inputs. Same-repository pull requests publish
-`candidate-pr-<number>-<fingerprint>` images and update the bounded canonical
-CPU/CUDA registry caches; fork pull requests only read those caches. A matching
-`main` build locates the merged pull request and reuses its candidates instead
-of rerunning Cargo. Successful `main` builds publish commit tags:
+CUDA build inputs separately and runs their jobs in parallel. Same-repository
+runs publish `candidate-<fingerprint>` and `candidate-<fingerprint>-cuda` images
+and update the bounded canonical CPU/CUDA registry caches; fork pull requests
+only read those caches. Any run with matching build inputs reuses the existing
+candidate instead of rerunning Cargo. CPU candidates require passing tests;
+CUDA candidates can publish independently once their image build passes.
+Successful `main` builds wait for both jobs and publish commit tags:
 
 - `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>`
 - `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>-cuda`
@@ -349,9 +351,11 @@ target, and the `-cuda` tags use the CUDA runtime target. The existing
 `backend/compose.registry.yml` is an opt-in compose file that accepts a prebuilt
 immutable image through `OUROBOROS_AUTOSEG_BACKEND_IMAGE`.
 
-Hosted CI checks the declared `cuda,cudnn` capabilities and verifies that the
-backend's ELF dependencies resolve the cuDNN runtime without initializing a
-GPU. An optional checkpoint-backed pre-release diagnostic can exercise an
+The `cuda-runtime` image build checks the declared `cuda,cudnn` capabilities
+and verifies that the backend's ELF dependencies resolve the cuDNN runtime
+without initializing a GPU. Reusing a candidate therefore also reuses its
+successful check. The Dockerfile pins base images by digest so updates are
+deliberate. An optional checkpoint-backed pre-release diagnostic can exercise an
 exact image digest on a GPU host without rebuilding it:
 
 ```bash

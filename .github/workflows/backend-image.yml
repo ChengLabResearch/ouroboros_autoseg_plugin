@@ -6,7 +6,6 @@ on:
       - .github/workflows/backend-image.yml
       - backend/**
       - scripts/backend-build-fingerprint.mjs
-      - README.md
   push:
     branches:
       - main
@@ -28,14 +27,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       cpu_fingerprint: ${{ steps.fingerprint.outputs.cpu_fingerprint }}
       cuda_fingerprint: ${{ steps.fingerprint.outputs.cuda_fingerprint }}
       can_publish: ${{ steps.context.outputs.can_publish }}
       is_main: ${{ steps.context.outputs.is_main }}
-      candidate_scope: ${{ steps.context.outputs.candidate_scope }}
-      pr_number: ${{ steps.context.outputs.pr_number }}
+      cpu_candidate: ${{ steps.fingerprint.outputs.cpu_candidate }}
+      cuda_candidate: ${{ steps.fingerprint.outputs.cuda_candidate }}
       cpu_builder_image: ${{ steps.fingerprint.outputs.cpu_builder_image }}
       cpu_runtime_image: ${{ steps.fingerprint.outputs.cpu_runtime_image }}
       cuda_builder_image: ${{ steps.fingerprint.outputs.cuda_builder_image }}
@@ -61,13 +59,19 @@ jobs:
           cuda_fingerprint="$({ node scripts/backend-build-fingerprint.mjs \
             --variant cuda \
             --output "${output_dir}/cuda.json"; } | tail -n 1)"
-          cpu_builder_image="$(jq -r '.baseImages[] | select(.stage == "builder") | "\(.image)@\(.digest)"' "${output_dir}/cpu.json")"
-          cpu_runtime_image="$(jq -r '.baseImages[] | select(.stage == "runtime") | "\(.image)@\(.digest)"' "${output_dir}/cpu.json")"
-          cuda_builder_image="$(jq -r '.baseImages[] | select(.stage == "cuda-builder") | "\(.image)@\(.digest)"' "${output_dir}/cuda.json")"
-          cuda_runtime_image="$(jq -r '.baseImages[] | select(.stage == "cuda-runtime") | "\(.image)@\(.digest)"' "${output_dir}/cuda.json")"
+          pinned_image() {
+            jq -r --arg stage "$2" '.baseImages[] | select(.stage == $stage) |
+              if .image | contains("@") then .image else "\(.image)@\(.digest)" end' "$1"
+          }
+          cpu_builder_image="$(pinned_image "${output_dir}/cpu.json" builder)"
+          cpu_runtime_image="$(pinned_image "${output_dir}/cpu.json" runtime)"
+          cuda_builder_image="$(pinned_image "${output_dir}/cuda.json" cuda-builder)"
+          cuda_runtime_image="$(pinned_image "${output_dir}/cuda.json" cuda-runtime)"
           printf '%s\n' \
             "cpu_fingerprint=${cpu_fingerprint}" \
             "cuda_fingerprint=${cuda_fingerprint}" \
+            "cpu_candidate=${REGISTRY_IMAGE}:candidate-${cpu_fingerprint}" \
+            "cuda_candidate=${REGISTRY_IMAGE}:candidate-${cuda_fingerprint}-cuda" \
             "cpu_builder_image=${cpu_builder_image}" \
             "cpu_runtime_image=${cpu_runtime_image}" \
             "cuda_builder_image=${cuda_builder_image}" \
@@ -82,9 +86,7 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           can_publish=false
@@ -97,33 +99,9 @@ jobs:
             is_main=true
           fi
 
-          pr_number=""
-          candidate_scope="manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
-            pr_number="${PR_NUMBER}"
-            candidate_scope="pr-${pr_number}"
-          elif [[ "${is_main}" == "true" ]]; then
-            if ! pr_number="$(gh api \
-              -H 'Accept: application/vnd.github+json' \
-              "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
-              --jq '[.[] | select(.base.ref == "main" and .merged_at != null)] | sort_by(.merged_at) | last | .number // empty' \
-              2>/dev/null)"; then
-              echo "Unable to query the pull request associated with ${GITHUB_SHA}; using the main fallback scope" >&2
-              pr_number=""
-            fi
-
-            if [[ -n "${pr_number}" ]]; then
-              candidate_scope="pr-${pr_number}"
-            else
-              candidate_scope="main-${GITHUB_SHA}"
-            fi
-          fi
-
           printf '%s\n' \
             "can_publish=${can_publish}" \
             "is_main=${is_main}" \
-            "candidate_scope=${candidate_scope}" \
-            "pr_number=${pr_number}" \
             >> "${GITHUB_OUTPUT}"
 
       - name: Upload build fingerprints
@@ -144,7 +122,7 @@ jobs:
       digest: ${{ steps.resolve.outputs.digest }}
 
     env:
-      CANDIDATE_IMAGE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend:candidate-${{ needs.prepare.outputs.candidate_scope }}-${{ needs.prepare.outputs.cpu_fingerprint }}
+      CANDIDATE_IMAGE: ${{ needs.prepare.outputs.cpu_candidate }}
       CANONICAL_CACHE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend:buildcache-cpu
       CPU_BUILDER_IMAGE: ${{ needs.prepare.outputs.cpu_builder_image }}
       CPU_RUNTIME_IMAGE: ${{ needs.prepare.outputs.cpu_runtime_image }}
@@ -253,7 +231,7 @@ jobs:
 
   cuda:
     name: CUDA Candidate
-    needs: [prepare, cpu]
+    needs: prepare
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -262,7 +240,7 @@ jobs:
       digest: ${{ steps.resolve.outputs.digest }}
 
     env:
-      CANDIDATE_IMAGE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend:candidate-${{ needs.prepare.outputs.candidate_scope }}-${{ needs.prepare.outputs.cuda_fingerprint }}-cuda
+      CANDIDATE_IMAGE: ${{ needs.prepare.outputs.cuda_candidate }}
       CANONICAL_CACHE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend:buildcache-cuda
       CUDA_BUILDER_IMAGE: ${{ needs.prepare.outputs.cuda_builder_image }}
       CUDA_RUNTIME_IMAGE: ${{ needs.prepare.outputs.cuda_runtime_image }}
@@ -357,34 +335,6 @@ jobs:
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           printf 'CUDA candidate: `%s` (`%s`)\n' "${CANDIDATE_IMAGE}" "${digest}" >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Verify CUDA and cuDNN compile capabilities
-        shell: bash
-        env:
-          CUDA_DIGEST: ${{ steps.resolve.outputs.digest }}
-          CAN_PUBLISH: ${{ needs.prepare.outputs.can_publish }}
-          LOCAL_IMAGE: ouroboros-autoseg-backend:cuda-${{ needs.prepare.outputs.cuda_fingerprint }}
-        run: |
-          set -euo pipefail
-          image="${LOCAL_IMAGE}"
-          if [[ "${CAN_PUBLISH}" == "true" ]]; then
-            image="${REGISTRY_IMAGE}@${CUDA_DIGEST}"
-          fi
-
-          docker run --rm \
-            --entrypoint /bin/sh \
-            "${image}" \
-            -ceu '
-              test "${OUROBOROS_COMPILED_FEATURES}" = "cuda,cudnn"
-              test "${OUROBOROS_COMPILED_CUDA}" = "true"
-              test "${OUROBOROS_COMPILED_CUDNN}" = "true"
-              linkage="$(ldd /usr/local/bin/ouroboros-autoseg-plugin-backend)"
-              printf "%s\n" "${linkage}"
-              printf "%s\n" "${linkage}" | grep -Eq "libcudnn[.]so([.][0-9]+)* => /"
-              ! printf "%s\n" "${linkage}" | grep -Eq "libcudnn[.]so([.][0-9]+)* => not found"
-            '
-          printf 'Hosted CUDA gate passed for `%s`: `cuda,cudnn` compiled and cuDNN resolves.\n' \
-            "${image}" >> "${GITHUB_STEP_SUMMARY}"
-
   record-candidates:
     name: Record Candidate Images
     needs: [prepare, cpu, cuda]
@@ -396,8 +346,9 @@ jobs:
       - name: Write candidate image record
         shell: bash
         env:
-          CANDIDATE_SCOPE: ${{ needs.prepare.outputs.candidate_scope }}
-          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          CPU_CANDIDATE: ${{ needs.prepare.outputs.cpu_candidate }}
+          CUDA_CANDIDATE: ${{ needs.prepare.outputs.cuda_candidate }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           CAN_PUBLISH: ${{ needs.prepare.outputs.can_publish }}
           CPU_FINGERPRINT: ${{ needs.prepare.outputs.cpu_fingerprint }}
           CUDA_FINGERPRINT: ${{ needs.prepare.outputs.cuda_fingerprint }}
@@ -411,23 +362,21 @@ jobs:
             --arg event "${GITHUB_EVENT_NAME}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
-            --arg candidate_scope "${CANDIDATE_SCOPE}" \
             --arg pr_number "${PR_NUMBER}" \
             --argjson published "${CAN_PUBLISH}" \
             --arg cpu_fingerprint "${CPU_FINGERPRINT}" \
             --arg cuda_fingerprint "${CUDA_FINGERPRINT}" \
             --arg cpu_digest "${CPU_DIGEST}" \
             --arg cuda_digest "${CUDA_DIGEST}" \
-            --arg cpu_image "${REGISTRY_IMAGE}:candidate-${CANDIDATE_SCOPE}-${CPU_FINGERPRINT}" \
-            --arg cuda_image "${REGISTRY_IMAGE}:candidate-${CANDIDATE_SCOPE}-${CUDA_FINGERPRINT}-cuda" \
+            --arg cpu_image "${CPU_CANDIDATE}" \
+            --arg cuda_image "${CUDA_CANDIDATE}" \
             '{
-              schemaVersion: 1,
+              schemaVersion: 2,
               repository: $repository,
               commit: $commit,
               event: $event,
               runId: $run_id,
               runAttempt: $run_attempt,
-              candidateScope: $candidate_scope,
               pullRequest: (if $pr_number == "" then null else ($pr_number | tonumber) end),
               published: $published,
               cpu: {fingerprint: $cpu_fingerprint, image: $cpu_image, digest: $cpu_digest},
@@ -464,8 +413,8 @@ jobs:
       - name: Verify and promote candidate manifests
         shell: bash
         env:
-          CPU_CANDIDATE: ${{ env.REGISTRY_IMAGE }}:candidate-${{ needs.prepare.outputs.candidate_scope }}-${{ needs.prepare.outputs.cpu_fingerprint }}
-          CUDA_CANDIDATE: ${{ env.REGISTRY_IMAGE }}:candidate-${{ needs.prepare.outputs.candidate_scope }}-${{ needs.prepare.outputs.cuda_fingerprint }}-cuda
+          CPU_CANDIDATE: ${{ needs.prepare.outputs.cpu_candidate }}
+          CUDA_CANDIDATE: ${{ needs.prepare.outputs.cuda_candidate }}
           CPU_DIGEST: ${{ needs.cpu.outputs.digest }}
           CUDA_DIGEST: ${{ needs.cuda.outputs.digest }}
         run: |

@@ -1,7 +1,7 @@
-ARG CPU_BUILDER_IMAGE=rust:1.88-slim-bookworm
-ARG CPU_RUNTIME_IMAGE=debian:bookworm-slim
-ARG CUDA_BUILDER_IMAGE=nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
-ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+ARG CPU_BUILDER_IMAGE=rust:1.88-slim-bookworm@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89
+ARG CPU_RUNTIME_IMAGE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+ARG CUDA_BUILDER_IMAGE=nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04@sha256:622e78a1d02c0f90ed900e3985d6c975d8e2dc9ee5e61643aed587dcf9129f42
+ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04@sha256:2fcc4280646484290cc50dce5e65f388dd04352b07cbe89a635703bd1f9aedb6
 
 # ── Stage 1: build the Rust backend for CPU runtimes ─────────────────────────
 # Rust 1.88+ is required by the locked image dependency; it also supports edition 2024 manifests.
@@ -42,7 +42,7 @@ RUN touch src/lib.rs src/main.rs \
 COPY about.toml about.hbs ./
 RUN cargo about generate --locked --fail about.hbs -o THIRD_PARTY_LICENSES.txt
 
-# ── Test target used by CI before either runtime image can publish ───────────
+# ── CPU tests gate its candidate; main/release promotion requires both jobs ──
 FROM builder AS test
 
 COPY tests/ tests/
@@ -136,6 +136,17 @@ COPY licenses/ /usr/share/licenses/ouroboros-autoseg-plugin-backend/
 COPY --from=cuda-builder \
     /build/plugin/backend/THIRD_PARTY_LICENSES.txt \
     /usr/share/licenses/ouroboros-autoseg-plugin-backend/
+
+# Verify capabilities and cuDNN linkage before a reusable candidate can publish.
+# This does not initialize a GPU and runs on the hosted CPU-only builders.
+RUN set -eu; \
+    test "${OUROBOROS_COMPILED_FEATURES}" = "cuda,cudnn"; \
+    test "${OUROBOROS_COMPILED_CUDA}" = "true"; \
+    test "${OUROBOROS_COMPILED_CUDNN}" = "true"; \
+    linkage="$(ldd /usr/local/bin/ouroboros-autoseg-plugin-backend)"; \
+    printf '%s\n' "${linkage}"; \
+    printf '%s\n' "${linkage}" | grep -Eq 'libcudnn[.]so([.][0-9]+)* => /'; \
+    ! printf '%s\n' "${linkage}" | grep -Eq 'libcudnn[.]so([.][0-9]+)* => not found'
 
 EXPOSE 8686
 
