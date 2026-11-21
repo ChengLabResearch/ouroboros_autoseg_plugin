@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -17,7 +17,13 @@ ARG CPU_RUNTIME_IMAGE=example/cpu-runtime:1
 ARG CUDA_BUILDER_IMAGE=example/cuda-builder:1
 ARG CUDA_RUNTIME_IMAGE=example/cuda-runtime:1
 
-FROM \${CPU_BUILDER_IMAGE} AS builder
+FROM \${CPU_BUILDER_IMAGE} AS builder-base
+RUN native-cpu-setup
+
+FROM builder-base AS builder-dependency-layer
+RUN cpu-dependencies
+
+FROM builder-dependency-layer AS builder
 RUN cpu-build
 
 FROM builder AS test
@@ -25,8 +31,13 @@ COPY tests/ tests/
 RUN cpu-test
 
 # CUDA builder stage
-FROM \${CUDA_BUILDER_IMAGE} AS cuda-builder
+FROM \${CUDA_BUILDER_IMAGE} AS cuda-builder-base
 ARG CANDLE_FEATURES=cuda
+
+FROM cuda-builder-base AS cuda-builder-dependency-layer
+RUN cuda-dependencies
+
+FROM cuda-builder-dependency-layer AS cuda-builder
 RUN cuda-build
 
 FROM \${CPU_RUNTIME_IMAGE} AS runtime
@@ -85,8 +96,8 @@ describe('backend build fingerprints', () => {
 
 		expect(secondCpu.fingerprint).toBe(firstCpu.fingerprint)
 		expect(firstCpu.fingerprint).not.toBe(cuda.fingerprint)
-		expect(firstCpu.dockerfile.stages).toEqual(['builder', 'test', 'runtime'])
-		expect(cuda.dockerfile.stages).toEqual(['cuda-builder', 'cuda-runtime'])
+		expect(firstCpu.dockerfile.stages).toEqual(['builder-base', 'builder-dependency-layer', 'builder', 'test', 'runtime'])
+		expect(cuda.dockerfile.stages).toEqual(['cuda-builder-base', 'cuda-builder-dependency-layer', 'cuda-builder', 'cuda-runtime'])
 	})
 
 	it('changes only CUDA when CUDA features or bases change', async () => {
@@ -172,5 +183,33 @@ describe('backend build fingerprints', () => {
 		const cudaAfter = await fingerprint('cuda', { digestOverrides: changedDigests })
 		expect(cpuAfter.fingerprint).toBe(cpuBefore.fingerprint)
 		expect(cudaAfter.fingerprint).not.toBe(cudaBefore.fingerprint)
+	})
+
+	it('derives compatible archives from the real Dockerfile while resolving internal builder ancestry', async () => {
+		const realDockerfile = await readFile(new URL('../backend/Dockerfile', import.meta.url), 'utf8')
+		await writeFile(join(root, 'backend', 'Dockerfile'), realDockerfile)
+		const cpu = await fingerprint('cpu')
+		const cuda = await fingerprint('cuda')
+		expect(cpu.baseImages[0].image).toMatch(/^rust:/)
+		expect(cuda.baseImages[0].image).toMatch(/^nvidia\/cuda:/)
+		expect(cpu.dockerfile.stages).toContain('test')
+		expect(cpu.dependencyCache.namespace).not.toBe(cuda.dependencyCache.namespace)
+
+		await writeFile(join(root, 'backend', 'src', 'lib.rs'), 'source-v2\n')
+		expect((await fingerprint('cpu')).dependencyCache).toEqual(cpu.dependencyCache)
+		await writeFile(join(root, 'backend', 'Cargo.lock'), 'lock-v2\n')
+		for (const [variant, before] of [['cpu', cpu], ['cuda', cuda]]) {
+			const after = await fingerprint(variant)
+			expect(after.dependencyCache.namespace).toBe(before.dependencyCache.namespace)
+			expect(after.dependencyCache.key).not.toBe(before.dependencyCache.key)
+		}
+
+		// An edit above dependency compilation can restore native Cargo output.
+		await writeFile(join(root, 'backend', 'Dockerfile'), realDockerfile.replaceAll('CARGO_ABOUT_VERSION=0.9.3', 'CARGO_ABOUT_VERSION=0.9.4'))
+		expect((await fingerprint('cpu')).dependencyCache.namespace).toBe(cpu.dependencyCache.namespace)
+		expect((await fingerprint('cuda')).dependencyCache.namespace).toBe(cuda.dependencyCache.namespace)
+		await writeFile(join(root, 'backend', 'Dockerfile'), realDockerfile.replace('CUDA_COMPUTE_CAP=75', 'CUDA_COMPUTE_CAP=86'))
+		expect((await fingerprint('cpu')).dependencyCache.namespace).toBe(cpu.dependencyCache.namespace)
+		expect((await fingerprint('cuda')).dependencyCache.namespace).not.toBe(cuda.dependencyCache.namespace)
 	})
 })
