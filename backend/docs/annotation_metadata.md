@@ -52,7 +52,8 @@ tissue if the trace misses the lumen.
 prepared point list passed to inference. It does not interpolate additional
 display points. In video mode, frames without prepared prompts, including
 leading and trailing frames, remain pixel-identical to the primary mask unless
-marked as repaired by the optional inconsistent-frame repair step.
+marked as repaired by the optional inconsistent-frame repair step or outlined
+by the optional input window.
 Multiple annotations that round to the same frame all appear; they are not
 collapsed into one point. Image mode continues to mark every actually prompted
 frame using its prepared points.
@@ -63,6 +64,7 @@ The marker key is:
 | --- | --- | --- |
 | Metadata or fallback positive | Star | 127 |
 | Gap-fill positive | Hollow diamond | 127 |
+| Input window | Rectangle at native window bounds | 96 |
 | Repaired frame | X centred at (2, 2) | 192 |
 
 Point coordinates are rounded to pixels and glyphs are clipped at image
@@ -79,3 +81,11 @@ unchanged flagged frames remain in that list without an X. Repair uses the
 existing interpolated trace for component selection, independently of the sparse list
 of inference prompts. See [inconsistent-frame repair](../../README.md#inconsistent-frame-repair)
 for the request options, rule, and output files.
+
+Input-window rectangles derive from the recorded preprocessing bounds in the
+same sidecar. They appear on every frame when windowing is enabled, including
+unprompted video frames and the full-frame automatic bootstrap. Rectangles
+are drawn before point and repair markers, at intensity 95 when the positive
+intensity is 96. They affect only the diagnostic TIFF. See
+[input window](../../README.md#input-window) for accepted-component feedback,
+startup constraints, flag holds, and the schema-version-3 sidecar fields.

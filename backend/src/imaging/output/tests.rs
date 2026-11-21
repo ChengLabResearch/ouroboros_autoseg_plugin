@@ -6,6 +6,7 @@ use crate::{
         annotation_samples_for_video, fill_prompt_gaps, AnnotationOrigin, AnnotationPoint,
     },
     imaging::cleanup::{FrameFlagReason, FrameRepairAction, FrameRepairFrame, FrameRepairReport},
+    imaging::input_window::{InputWindowFrame, InputWindowReport, PixelBounds},
     imaging::tiff_io::{inspect_volume, read_volume_frames},
     inference::{
         image::{FrameMask, PointPrompt},
@@ -109,6 +110,7 @@ async fn write_annotation_overlay_stack_preserves_source_masks_and_marks_points(
         &annotation_samples_for_video(&annotations, masks.len()),
         127,
         None,
+        None,
     )
     .await
     .expect("write overlay stack");
@@ -155,6 +157,7 @@ async fn write_annotation_overlay_stack_marks_only_added_prompt_frames_with_holl
         &masks,
         &annotation_samples_for_video(&annotations, masks.len()),
         127,
+        None,
         None,
     )
     .await
@@ -238,9 +241,16 @@ async fn overlay_uses_every_prepared_point_with_its_original_kind_and_frame() {
         let output_path = root
             .path()
             .join(format!("overlay-{positive_intensity}.tif"));
-        write_annotation_overlay_stack(&output_path, &masks, &prompts, positive_intensity, None)
-            .await
-            .expect("write overlay");
+        write_annotation_overlay_stack(
+            &output_path,
+            &masks,
+            &prompts,
+            positive_intensity,
+            None,
+            None,
+        )
+        .await
+        .expect("write overlay");
         let frames = read_volume_frames(&output_path)
             .await
             .expect("read overlay");
@@ -307,7 +317,7 @@ async fn overlay_without_prepared_prompts_is_byte_identical_to_primary_stack() {
     write_mask_stack(&primary_path, &masks)
         .await
         .expect("write primary");
-    write_annotation_overlay_stack(&overlay_path, &masks, &[], 127, None)
+    write_annotation_overlay_stack(&overlay_path, &masks, &[], 127, None, None)
         .await
         .expect("write overlay without points");
     assert_eq!(
@@ -365,7 +375,7 @@ async fn repair_markers_follow_report_actions_without_requiring_frame_prompts() 
     };
     for (positive_intensity, repair_intensity) in [(127, 192), (192, 191)] {
         let path = root.path().join(format!("repair-{positive_intensity}.tif"));
-        write_annotation_overlay_stack(&path, &masks, &[], positive_intensity, Some(&report))
+        write_annotation_overlay_stack(&path, &masks, &[], positive_intensity, Some(&report), None)
             .await
             .expect("repair overlay without prompts");
         let frames = read_volume_frames(&path).await.unwrap();
@@ -398,9 +408,16 @@ async fn repair_markers_follow_report_actions_without_requiring_frame_prompts() 
             frame_index: 1,
             points: vec![PointPrompt::positive(2.0, 2.0, AnnotationOrigin::Metadata)],
         }];
-        write_annotation_overlay_stack(&path, &masks, &prompts, positive_intensity, Some(&report))
-            .await
-            .expect("repair glyph over prompt");
+        write_annotation_overlay_stack(
+            &path,
+            &masks,
+            &prompts,
+            positive_intensity,
+            Some(&report),
+            None,
+        )
+        .await
+        .expect("repair glyph over prompt");
         let frames = read_volume_frames(&path).await.unwrap();
         assert_eq!(
             frames[1].pixels[2 * 8 + 2],
@@ -453,14 +470,153 @@ async fn report_without_repairs_leaves_existing_prompt_overlay_byte_identical() 
             },
         ],
     };
-    write_annotation_overlay_stack(&baseline_path, &masks, &prompts, 127, None)
+    write_annotation_overlay_stack(&baseline_path, &masks, &prompts, 127, None, None)
         .await
         .unwrap();
-    write_annotation_overlay_stack(&report_path, &masks, &prompts, 127, Some(&report))
+    write_annotation_overlay_stack(&report_path, &masks, &prompts, 127, Some(&report), None)
         .await
         .unwrap();
     assert_eq!(
         std::fs::read(baseline_path).unwrap(),
         std::fs::read(report_path).unwrap()
     );
+}
+
+#[tokio::test]
+async fn window_rectangles_follow_report_bounds_below_prompt_and_repair_markers() {
+    let root = tempfile::tempdir().expect("overlay fixture");
+    let masks = vec![
+        FrameMask {
+            width: 10,
+            height: 10,
+            pixels: vec![255; 100]
+        };
+        2
+    ];
+    let report = InputWindowReport {
+        frames: [
+            PixelBounds {
+                left: 2,
+                top: 2,
+                right: 8,
+                bottom: 9,
+            },
+            PixelBounds {
+                left: 0,
+                top: 1,
+                right: 10,
+                bottom: 10,
+            },
+        ]
+        .into_iter()
+        .map(|bounds| InputWindowFrame {
+            bounds,
+            background: vec![0],
+            reset: None,
+            touches_border: false,
+            raw_detection: None,
+        })
+        .collect(),
+    };
+    let repairs = FrameRepairReport {
+        frames: [FrameRepairAction::Clipped, FrameRepairAction::Kept]
+            .into_iter()
+            .map(|repair| FrameRepairFrame {
+                component_area: 100,
+                reasons: vec![],
+                anchor_recovered: false,
+                repair,
+            })
+            .collect(),
+    };
+    let prompts = vec![VideoFramePrompt {
+        frame_index: 0,
+        points: vec![PointPrompt::positive(2.0, 2.0, AnnotationOrigin::Metadata)],
+    }];
+
+    for (positive_intensity, window_intensity) in [(127, 96), (96, 95)] {
+        let path = root.path().join(format!("window-{positive_intensity}.tif"));
+        write_annotation_overlay_stack(
+            &path,
+            &masks,
+            &prompts,
+            positive_intensity,
+            Some(&repairs),
+            Some(&report),
+        )
+        .await
+        .expect("window overlay");
+        let frames = read_volume_frames(&path).await.unwrap();
+        assert_eq!(
+            frames[0].pixels[2 * 10 + 2],
+            192,
+            "repair draws over window and prompt"
+        );
+        assert_eq!(
+            frames[0].pixels[2 * 10 + 3],
+            positive_intensity,
+            "prompt draws over window"
+        );
+        assert_eq!(frames[0].pixels[2 * 10 + 6], window_intensity, "top edge");
+        assert_eq!(
+            frames[0].pixels[8 * 10 + 6],
+            window_intensity,
+            "bottom is exclusive"
+        );
+        assert_eq!(
+            frames[0].pixels[6 * 10 + 7],
+            window_intensity,
+            "right is exclusive"
+        );
+        assert_eq!(
+            frames[0].pixels[6 * 10 + 6],
+            255,
+            "interior remains unchanged"
+        );
+        assert_eq!(
+            frames[0].pixels[9 * 10 + 6],
+            255,
+            "outside remains unchanged"
+        );
+        for y in 0..10 {
+            for x in 0..10 {
+                let expected = if y >= 1 && (y == 1 || y == 9 || x == 0 || x == 9) {
+                    window_intensity
+                } else {
+                    255
+                };
+                assert_eq!(
+                    frames[1].pixels[y * 10 + x],
+                    expected,
+                    "unprompted frame at ({x}, {y})"
+                );
+            }
+        }
+    }
+    assert!(
+        masks
+            .iter()
+            .all(|mask| mask.pixels.iter().all(|&pixel| pixel == 255)),
+        "raw source masks are unchanged"
+    );
+}
+
+#[tokio::test]
+async fn window_overlay_rejects_missing_frame_records() {
+    let root = tempfile::tempdir().expect("overlay fixture");
+    let target = root.path().join("incomplete.tif");
+    let masks = vec![FrameMask {
+        width: 2,
+        height: 2,
+        pixels: vec![0; 4],
+    }];
+    let report = InputWindowReport { frames: vec![] };
+    let error = write_annotation_overlay_stack(&target, &masks, &[], 127, None, Some(&report))
+        .await
+        .expect_err("missing window record");
+    assert_eq!(
+        error.to_string(),
+        "Input window report must contain one record per mask frame"
+    );
+    assert!(!target.exists());
 }

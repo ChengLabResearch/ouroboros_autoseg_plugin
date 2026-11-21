@@ -137,3 +137,77 @@ describe('inconsistent frame repair options', () => {
         expect(panel.control('repair-keep-unrepaired').checked).toBe(false);
     });
 });
+
+describe('input window options', () => {
+    it('defaults off and submits null even after disabling edited options', () => {
+        const panel = form();
+        expect(panel.control('input-window').checked).toBe(false);
+        expect(panel.find((props) => props.id === 'input-window-margin')).toBeUndefined();
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ inputWindow: null }));
+        panel.change('input-window', true);
+        panel.change('input-window-margin', '-1');
+        expect(panel.control('Run Segmentation').disabled).toBe(true);
+        panel.change('input-window', false);
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ inputWindow: null }));
+    });
+
+    it.each(['ImagePredictor', 'VideoPredictor'])('submits defaults and edited settings for %s', (predictor) => {
+        const panel = form();
+        panel.change('ImagePredictor', predictor);
+        panel.change('input-window', true);
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            predictor_type: predictor,
+            inputWindow: { margin: 8, max_growth: 5, window_size: null },
+        }));
+        panel.change('input-window-margin', '0');
+        panel.change('input-window-growth', '0');
+        panel.change('input-window-size', '32');
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            inputWindow: { margin: 0, max_growth: 0, window_size: 32 },
+        }));
+        panel.change('input-window-size', '');
+        panel.control('Run Segmentation').onClick?.();
+        expect(panel.onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({
+            inputWindow: { margin: 0, max_growth: 0, window_size: null },
+        }));
+    });
+
+    it.each(['input-window-margin', 'input-window-growth', 'input-window-size'])(
+        'rejects negative, fractional, unsafe, and browser-invalid values for %s', (id) => {
+            const panel = form();
+            panel.change('input-window', true);
+            for (const value of ['-1', '1.5', '9007199254740992']) {
+                panel.change(id, value);
+                expect(panel.control(id)['aria-invalid']).toBe(true);
+                expect(panel.control('Run Segmentation').disabled).toBe(true);
+            }
+            panel.change(id, '', true);
+            expect(panel.control('Run Segmentation').disabled).toBe(true);
+            panel.change(id, '1');
+            expect(panel.control(id)['aria-invalid']).toBe(false);
+            expect(panel.control('Run Segmentation').disabled).toBe(false);
+        },
+    );
+
+    it('requires margin and growth but allows unrestricted startup', () => {
+        const panel = form();
+        panel.change('input-window', true);
+        for (const id of ['input-window-margin', 'input-window-growth']) {
+            panel.change(id, '');
+            expect(panel.control('Run Segmentation').disabled).toBe(true);
+            panel.change(id, '0');
+            expect(panel.control('Run Segmentation').disabled).toBe(false);
+        }
+        panel.change('input-window-size', '0');
+        expect(panel.control('Run Segmentation').disabled).toBe(true);
+        panel.change('input-window-size', '');
+        expect(panel.control('Run Segmentation').disabled).toBe(false);
+    });
+});

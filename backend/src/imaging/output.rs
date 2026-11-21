@@ -4,6 +4,7 @@ use crate::{
     error::AppError,
     imaging::{
         cleanup::FrameRepairReport,
+        input_window::InputWindowReport,
         overlay::{draw_overlay_marker, OverlayMarker},
         tiff_io::{write_tiff_pages, WritableTiffPage},
     },
@@ -69,10 +70,27 @@ pub async fn write_annotation_overlay_stack(
     prompts: &[VideoFramePrompt],
     intensity: u8,
     repair_report: Option<&FrameRepairReport>,
+    input_window_report: Option<&InputWindowReport>,
 ) -> Result<(), AppError> {
+    if input_window_report.is_some_and(|report| report.frames.len() != masks.len()) {
+        return Err(AppError::bad_request(
+            "Input window report must contain one record per mask frame",
+        ));
+    }
     let mut overlay_masks = masks.to_vec();
     let mut prompts = prompts.iter().peekable();
     for (frame_index, mask) in overlay_masks.iter_mut().enumerate() {
+        if let Some(report) = input_window_report {
+            draw_overlay_marker(
+                &mut mask.pixels,
+                mask.width,
+                mask.height,
+                0.0,
+                0.0,
+                if intensity == 96 { 95 } else { 96 },
+                OverlayMarker::InputWindow(report.frames[frame_index].bounds),
+            );
+        }
         if prompts
             .peek()
             .is_some_and(|prompt| prompt.frame_index == frame_index)

@@ -8,7 +8,7 @@ use tracing::{info, warn};
 use crate::{
     app_state::Sam3ModelHandle,
     error::AppError,
-    imaging::tiff_io::ImageFrame,
+    imaging::{input_window::SharedInputWindow, tiff_io::ImageFrame},
     inference::{
         candle_sam3_frame_source::StagedJpegFrameSource,
         candle_sam3_helpers::{
@@ -17,6 +17,7 @@ use crate::{
         },
         image::{FrameMask, ImageSegmenter, PointPrompt},
         video::{FrameProgressCallback, VideoFramePrompt, VideoSegmenter},
+        SegmentationOutput,
     },
 };
 
@@ -161,14 +162,20 @@ impl VideoSegmenter for CandleSam3VideoSegmenter {
     async fn segment_video(
         &self,
         frames_dir: &Path,
-        prompts: &[VideoFramePrompt],
+        prompts: Arc<[VideoFramePrompt]>,
+        input_window: Option<SharedInputWindow>,
         progress: Option<FrameProgressCallback>,
-    ) -> Result<Vec<FrameMask>, AppError> {
+    ) -> Result<SegmentationOutput, AppError> {
         let handle = self.handle.clone();
         let frames_dir = frames_dir.to_path_buf();
-        let prompts = prompts.to_vec();
         tokio::task::spawn_blocking(move || {
-            run_video_inference(&handle, &frames_dir, &prompts, progress.as_ref())
+            run_video_inference(
+                &handle,
+                &frames_dir,
+                &prompts,
+                input_window,
+                progress.as_ref(),
+            )
         })
         .await
         .map_err(|e| AppError::internal(e.to_string()))?
@@ -179,8 +186,13 @@ fn run_video_inference(
     handle: &Sam3ModelHandle,
     frames_dir: &Path,
     prompts: &[VideoFramePrompt],
+    input_window: Option<SharedInputWindow>,
     progress: Option<&FrameProgressCallback>,
-) -> Result<Vec<FrameMask>, AppError> {
+) -> Result<SegmentationOutput, AppError> {
+    validate_input_window_hotstart(
+        input_window.is_some(),
+        handle.tracker.config().predictor.hotstart_delay,
+    )?;
     let session_config = configured_low_memory_video_session()?;
     let session_options = session_config.options.clone();
     info!(
@@ -204,6 +216,7 @@ fn run_video_inference(
         config.image.image_size,
         config.image.image_mean,
         config.image.image_std,
+        input_window.clone(),
     )
     .map_err(|e| AppError::internal(e.to_string()))?;
     let source_size = source.source_size();
@@ -251,9 +264,20 @@ fn run_video_inference(
                     |frame| {
                         let mask = video_frame_to_mask(&frame.objects, frame_width, frame_height)
                             .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
-                        masks
+                        let mask = masks
                             .push_forward(frame.frame_idx, mask)
                             .map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+                        if let Some(input_window) = &input_window {
+                            input_window
+                                .lock()
+                                .map_err(|_| {
+                                    candle_core::Error::Msg(
+                                        "Input window controller lock poisoned".into(),
+                                    )
+                                })?
+                                .observe(frame.frame_idx, Arc::clone(mask))
+                                .map_err(|error| candle_core::Error::Msg(error.to_string()))?;
+                        }
                         if let Some(callback) = progress {
                             callback(frame.frame_idx, frame_count);
                         }
@@ -308,7 +332,19 @@ fn run_video_inference(
                     cache_stats.cached_output_frames
                 )));
             }
-            masks.finish()
+            let input_window = input_window
+                .as_ref()
+                .map(|controller| {
+                    controller
+                        .lock()
+                        .map_err(|_| AppError::internal("Input window controller lock poisoned"))?
+                        .finish()
+                })
+                .transpose()?;
+            Ok(SegmentationOutput {
+                masks: masks.finish()?,
+                input_window,
+            })
         },
         |predictor| {
             predictor
@@ -318,8 +354,17 @@ fn run_video_inference(
     )
 }
 
+fn validate_input_window_hotstart(enabled: bool, hotstart_delay: usize) -> Result<(), AppError> {
+    if enabled && hotstart_delay != 0 {
+        return Err(AppError::bad_request(
+            "Input blanking requires SAM3_VIDEO_HOTSTART_DELAY=0 so each raw mask is available before encoding the next frame",
+        ));
+    }
+    Ok(())
+}
+
 struct VideoMaskCollector {
-    masks: Vec<Option<FrameMask>>,
+    masks: Vec<Option<Arc<FrameMask>>>,
     last_frame_idx: Option<usize>,
 }
 
@@ -336,7 +381,11 @@ impl VideoMaskCollector {
         })
     }
 
-    fn push_forward(&mut self, frame_idx: usize, mask: FrameMask) -> Result<(), AppError> {
+    fn push_forward(
+        &mut self,
+        frame_idx: usize,
+        mask: FrameMask,
+    ) -> Result<&Arc<FrameMask>, AppError> {
         if frame_idx >= self.masks.len() {
             return Err(AppError::upstream(format!(
                 "Video stream emitted out-of-range frame {frame_idx} for {} frames",
@@ -355,9 +404,11 @@ impl VideoMaskCollector {
             )));
         }
 
-        self.masks[frame_idx] = Some(mask);
+        self.masks[frame_idx] = Some(Arc::new(mask));
         self.last_frame_idx = Some(frame_idx);
-        Ok(())
+        Ok(self.masks[frame_idx]
+            .as_ref()
+            .expect("inserted streamed mask"))
     }
 
     #[cfg(test)]
@@ -380,7 +431,7 @@ impl VideoMaskCollector {
             )));
         }
 
-        self.masks[frame_idx] = Some(mask);
+        self.masks[frame_idx] = Some(Arc::new(mask));
         self.last_frame_idx = Some(frame_idx);
         Ok(())
     }
@@ -397,7 +448,15 @@ impl VideoMaskCollector {
                 "Video stream omitted frame indices {missing:?}"
             )));
         }
-        Ok(self.masks.into_iter().flatten().collect())
+        self.masks
+            .into_iter()
+            .flatten()
+            .map(|mask| {
+                Arc::try_unwrap(mask).map_err(|_| {
+                    AppError::internal("Input window retained a raw mask after video completion")
+                })
+            })
+            .collect()
     }
 }
 
@@ -841,6 +900,174 @@ mod tests {
     }
 
     #[test]
+    fn input_window_rejects_delayed_feedback_without_changing_other_video_runs() {
+        validate_input_window_hotstart(true, 0).expect("synchronous feedback");
+        validate_input_window_hotstart(false, 15).expect("ordinary delayed stream");
+        assert!(validate_input_window_hotstart(true, 15)
+            .expect_err("delayed output cannot control the next frame")
+            .to_string()
+            .contains("SAM3_VIDEO_HOTSTART_DELAY=0"));
+    }
+
+    #[test]
+    fn video_input_window_uses_accepted_component_and_replays_historical_pixels() {
+        use std::collections::BTreeSet;
+        use std::sync::Mutex;
+
+        use crate::{
+            domain::requests::InputWindowOptions,
+            imaging::{annotations::AnnotationPoint, input_window::InputWindowController},
+        };
+
+        for window_size in [Some(16), None] {
+            let temp = tempfile::tempdir().expect("staged frames");
+            for frame_idx in 0..2 {
+                ImageBuffer::from_fn(32, 32, |x, y| {
+                    let value = if (6..26).contains(&x) && (6..26).contains(&y) {
+                        255u8
+                    } else {
+                        0u8
+                    };
+                    Rgb([value; 3])
+                })
+                .save(temp.path().join(format!("{frame_idx}.jpg")))
+                .expect("write staged JPEG");
+            }
+            let annotations = Arc::from(vec![AnnotationPoint {
+                x: 16.0,
+                y: 16.0,
+                z: 0.0,
+                origin: AnnotationOrigin::Metadata,
+            }]);
+            let prompts = Arc::from(vec![VideoFramePrompt {
+                frame_index: 0,
+                points: vec![PointPrompt::positive(
+                    16.0,
+                    16.0,
+                    AnnotationOrigin::Metadata,
+                )],
+            }]);
+            let controller = Arc::new(Mutex::new(
+                InputWindowController::new(
+                    InputWindowOptions {
+                        margin: 2,
+                        max_growth: 5,
+                        window_size,
+                    },
+                    annotations,
+                    prompts,
+                    false,
+                )
+                .expect("input window controller"),
+            ));
+            let mut source = StagedJpegFrameSource::new(
+                temp.path(),
+                64,
+                [0.0; 3],
+                [1.0; 3],
+                Some(controller.clone()),
+            )
+            .expect("staged frame source");
+            let first = source
+                .get_frame(0, &Device::Cpu)
+                .expect("initial window")
+                .flatten_all()
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap();
+            if window_size.is_none() {
+                let original =
+                    StagedJpegFrameSource::new(temp.path(), 64, [0.0; 3], [1.0; 3], None)
+                        .unwrap()
+                        .get_frame(0, &Device::Cpu)
+                        .unwrap()
+                        .flatten_all()
+                        .unwrap()
+                        .to_vec1::<f32>()
+                        .unwrap();
+                assert_eq!(
+                    first, original,
+                    "automatic bootstrap encodes the unrestricted first frame"
+                );
+            }
+            assert!(
+                source.get_frame(1, &Device::Cpu).is_err(),
+                "next frame must await raw output"
+            );
+
+            let mut masks = VideoMaskCollector::new(2).expect("collector");
+            for frame_idx in 0..2 {
+                let mut pixels = vec![0; 32 * 32];
+                for y in 15..18 {
+                    for x in 15..18 {
+                        pixels[y * 32 + x] = 255;
+                    }
+                }
+                let raw = masks
+                    .push_forward(
+                        frame_idx,
+                        FrameMask {
+                            width: 32,
+                            height: 32,
+                            pixels,
+                        },
+                    )
+                    .expect("raw model output");
+                controller
+                    .lock()
+                    .unwrap()
+                    .observe(frame_idx, Arc::clone(raw))
+                    .unwrap();
+                assert_eq!(
+                    Arc::strong_count(raw),
+                    2,
+                    "collector and classifier share the raw mask"
+                );
+                if frame_idx == 0 {
+                    source.evict_except(&BTreeSet::new());
+                    let next = source
+                        .get_frame(1, &Device::Cpu)
+                        .expect("accepted component determines next input")
+                        .flatten_all()
+                        .unwrap()
+                        .to_vec1::<f32>()
+                        .unwrap();
+                    assert!(first[32 * 64 + 20] > 0.9);
+                    assert!(
+                        next[32 * 64 + 20] < 0.1,
+                        "window contracted before resize and encoding"
+                    );
+                }
+            }
+
+            source.evict_except(&BTreeSet::new());
+            let historical = source
+                .get_frame(0, &Device::Cpu)
+                .expect("historical conditioning frame")
+                .flatten_all()
+                .unwrap()
+                .to_vec1::<f32>()
+                .unwrap();
+            assert_eq!(
+                historical, first,
+                "historical features receive the original input window"
+            );
+            controller
+                .lock()
+                .unwrap()
+                .finish()
+                .expect("release predecessor mask");
+            assert_eq!(
+                masks
+                    .finish()
+                    .expect("no duplicate raw mask ownership remains")
+                    .len(),
+                2
+            );
+        }
+    }
+
+    #[test]
     fn video_output_validation_rejects_missing_duplicate_out_of_range_and_invalid_order() {
         let mut missing = VideoMaskCollector::new(3).expect("collector");
         missing.push_forward(0, test_mask(0)).expect("frame 0");
@@ -970,8 +1197,9 @@ mod tests {
 
         let success_dir = tempfile::tempdir().expect("success fixture");
         write_test_jpeg(&success_dir.path().join("0.jpg"), [10, 20, 30], 3, 2);
-        let success_source = StagedJpegFrameSource::new(success_dir.path(), 4, [0.0; 3], [1.0; 3])
-            .expect("success source");
+        let success_source =
+            StagedJpegFrameSource::new(success_dir.path(), 4, [0.0; 3], [1.0; 3], None)
+                .expect("success source");
         let mut success = FakeSessionOwner {
             source: Box::new(success_source),
             closed: false,
@@ -994,8 +1222,9 @@ mod tests {
         let failure_dir = tempfile::tempdir().expect("failure fixture");
         write_test_jpeg(&failure_dir.path().join("0.jpg"), [1, 2, 3], 3, 2);
         write_test_jpeg(&failure_dir.path().join("1.jpg"), [4, 5, 6], 4, 2);
-        let failure_source = StagedJpegFrameSource::new(failure_dir.path(), 4, [0.0; 3], [1.0; 3])
-            .expect("failure source");
+        let failure_source =
+            StagedJpegFrameSource::new(failure_dir.path(), 4, [0.0; 3], [1.0; 3], None)
+                .expect("failure source");
         let mut failure = FakeSessionOwner {
             source: Box::new(failure_source),
             closed: false,

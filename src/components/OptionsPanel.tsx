@@ -11,6 +11,11 @@ export type SubmitPayload = {
     maxPromptGap: number | null;
     repairInconsistentFrames: boolean;
     keepUnrepaired: boolean;
+    inputWindow: {
+        margin: number;
+        max_growth: number;
+        window_size: number | null;
+    } | null;
 };
 
 type Props = {
@@ -29,6 +34,13 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const [promptGapBadInput, setPromptGapBadInput] = useState(false);
     const [repairFramesEnabled, setRepairFramesEnabled] = useState(false);
     const [keepUnrepaired, setKeepUnrepaired] = useState(false);
+    const [inputWindowEnabled, setInputWindowEnabled] = useState(false);
+    const [windowMargin, setWindowMargin] = useState('8');
+    const [windowGrowth, setWindowGrowth] = useState('5');
+    const [windowSize, setWindowSize] = useState('');
+    const [windowMarginBadInput, setWindowMarginBadInput] = useState(false);
+    const [windowGrowthBadInput, setWindowGrowthBadInput] = useState(false);
+    const [windowSizeBadInput, setWindowSizeBadInput] = useState(false);
     const inputFileRef = useRef<HTMLInputElement | null>(null);
     const outputFileRef = useRef<HTMLInputElement | null>(null);
 
@@ -281,7 +293,18 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
     const gapValue = Number(maxPromptGap);
     const validPromptGap = !promptGapBadInput && (maxPromptGap === '' ||
         (Number.isSafeInteger(gapValue) && gapValue > 0));
-    const canRun = !isRunning && fp && outFp && (!videoPredictor || validPromptGap);
+    const marginValue = Number(windowMargin);
+    const growthValue = Number(windowGrowth);
+    const sizeValue = Number(windowSize);
+    const validWindowMargin = !windowMarginBadInput && windowMargin !== '' &&
+        Number.isSafeInteger(marginValue) && marginValue >= 0;
+    const validWindowGrowth = !windowGrowthBadInput && windowGrowth !== '' &&
+        Number.isSafeInteger(growthValue) && growthValue >= 0;
+    const validWindowSize = !windowSizeBadInput && (windowSize === '' ||
+        (Number.isSafeInteger(sizeValue) && sizeValue > 0));
+    const validInputWindow = validWindowMargin && validWindowGrowth && validWindowSize;
+    const canRun = !isRunning && fp && outFp && (!videoPredictor || validPromptGap) &&
+        (!inputWindowEnabled || validInputWindow);
 
     return (
         <div className={styles.container}>
@@ -301,7 +324,12 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             keepCenterlineComponent,
                             maxPromptGap: videoPredictor && maxPromptGap !== '' ? gapValue : null,
                             repairInconsistentFrames: repairFramesEnabled,
-                            keepUnrepaired
+                            keepUnrepaired,
+                            inputWindow: inputWindowEnabled ? {
+                                margin: marginValue,
+                                max_growth: growthValue,
+                                window_size: windowSize === '' ? null : sizeValue,
+                            } : null,
                         })} 
                         disabled={!canRun}
                         title="Run Segmentation"
@@ -395,6 +423,101 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             marks added prompts with hollow diamonds.
                         </p>
                         {!validPromptGap && <p role="alert">Enter a positive whole number of slices, or leave blank to turn this off.</p>}
+                    </>}
+
+                    <div className={styles.row}>
+                        <label className={styles.label} htmlFor="input-window">Restrict Input Window</label>
+                        <div className={styles.inputContainer}>
+                            <input
+                                id="input-window"
+                                type="checkbox"
+                                checked={inputWindowEnabled}
+                                onChange={(e) => setInputWindowEnabled(e.target.checked)}
+                                aria-describedby="input-window-help"
+                            />
+                        </div>
+                    </div>
+                    <p id="input-window-help">
+                        Blanks the background outside a window following the accepted component
+                        around the trace, without cropping or changing frame geometry. Flagged masks
+                        hold the last accepted window; prompted frames recenter it at the same size.
+                    </p>
+                    {inputWindowEnabled && <>
+                        <p>
+                            Recommended starting settings: margin 8 px, maximum growth 5 px per edge
+                            per frame, and blank initial size for unrestricted startup. Smaller margins
+                            or growth limits can exclude parts of a changing structure.
+                        </p>
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="input-window-margin">Window Margin (px)</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="input-window-margin"
+                                    className={styles.input}
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    value={windowMargin}
+                                    onChange={(e) => {
+                                        setWindowMargin(e.target.value);
+                                        setWindowMarginBadInput(e.target.validity.badInput);
+                                    }}
+                                    aria-invalid={!validWindowMargin}
+                                />
+                            </div>
+                        </div>
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="input-window-growth">Maximum Window Growth (px/frame)</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="input-window-growth"
+                                    className={styles.input}
+                                    type="number"
+                                    min="0"
+                                    step="1"
+                                    value={windowGrowth}
+                                    onChange={(e) => {
+                                        setWindowGrowth(e.target.value);
+                                        setWindowGrowthBadInput(e.target.validity.badInput);
+                                    }}
+                                    aria-invalid={!validWindowGrowth}
+                                />
+                            </div>
+                        </div>
+                        <div className={styles.row}>
+                            <label className={styles.label} htmlFor="input-window-size">Initial Window Size (px)</label>
+                            <div className={styles.inputContainer}>
+                                <input
+                                    id="input-window-size"
+                                    className={styles.input}
+                                    type="number"
+                                    min="1"
+                                    step="1"
+                                    placeholder="Unrestricted"
+                                    value={windowSize}
+                                    onChange={(e) => {
+                                        setWindowSize(e.target.value);
+                                        setWindowSizeBadInput(e.target.validity.badInput);
+                                    }}
+                                    aria-invalid={!validWindowSize}
+                                    aria-describedby="input-window-size-help"
+                                />
+                            </div>
+                        </div>
+                        <p id="input-window-size-help">
+                            Leave blank for unrestricted input until a component is accepted. Enter a
+                            positive whole number to use a trace-centred square during startup.
+                            After startup, the window follows accepted components and can change size.
+                        </p>
+                        <p>
+                            Small accepted components can shrink the window enough to miss part of the
+                            structure. Flag holds keep that window; prompt recentering moves it without
+                            enlarging it. Review the output for missed regions as well as leakage.
+                        </p>
+                        {!validInputWindow && <p role="alert">
+                            Margin and growth must be nonnegative whole numbers. Window size must be
+                            a positive whole number, or blank for unrestricted startup.
+                        </p>}
                     </>}
 
                     <div className={styles.row}>
