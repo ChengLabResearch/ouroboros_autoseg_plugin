@@ -17,8 +17,9 @@ env:
   CUDA_CANDLE_FEATURES: cuda,cudnn
 
 concurrency:
-  group: backend-images-${{ github.event.pull_request.number || github.ref }}
-  # Every main commit must retain its exact sha-* images for later tag promotion.
+  # Separate main commits so a newer push cannot replace an older pending run.
+  # PRs still share a group so superseded runs are cancelled.
+  group: backend-images-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.sha) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
