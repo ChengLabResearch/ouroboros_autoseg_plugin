@@ -241,6 +241,7 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 [[package]]
 name = "candle-core"
 version = "0.11.0"
+source = "git+https://github.com/den-sq/candle?rev=9af0337b7784d638c14f3234b0ebca0971768207#9af0337b7784d638c14f3234b0ebca0971768207"
 dependencies = [
  "byteorder",
  "candle-kernels",
@@ -268,6 +269,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.11.0"
+source = "git+https://github.com/den-sq/candle?rev=9af0337b7784d638c14f3234b0ebca0971768207#9af0337b7784d638c14f3234b0ebca0971768207"
 dependencies = [
  "cudaforge",
 ]
@@ -275,6 +277,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.11.0"
+source = "git+https://github.com/den-sq/candle?rev=9af0337b7784d638c14f3234b0ebca0971768207#9af0337b7784d638c14f3234b0ebca0971768207"
 dependencies = [
  "candle-core",
  "half",
@@ -287,13 +290,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle-sam3"
+version = "0.1.0"
+source = "git+https://github.com/den-sq/candle-sam3?rev=8d762350304f683a35215aa1d2c8d71d845f3be3#8d762350304f683a35215aa1d2c8d71d845f3be3"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "cc",
+ "half",
+ "serde",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
 name = "candle-transformers"
 version = "0.11.0"
+source = "git+https://github.com/den-sq/candle?rev=9af0337b7784d638c14f3234b0ebca0971768207#9af0337b7784d638c14f3234b0ebca0971768207"
 dependencies = [
  "byteorder",
  "candle-core",
  "candle-nn",
- "cc",
  "fancy-regex",
  "half",
  "num-traits",
@@ -309,6 +327,7 @@ dependencies = [
 [[package]]
 name = "candle-ug"
 version = "0.11.0"
+source = "git+https://github.com/den-sq/candle?rev=9af0337b7784d638c14f3234b0ebca0971768207#9af0337b7784d638c14f3234b0ebca0971768207"
 dependencies = [
  "ug",
  "ug-cuda",
@@ -1588,7 +1607,7 @@ dependencies = [
  "axum",
  "candle-core",
  "candle-nn",
- "candle-transformers",
+ "candle-sam3",
  "futures-util",
  "image",
  "indexmap",

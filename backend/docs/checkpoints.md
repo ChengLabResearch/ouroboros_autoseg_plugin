@@ -1,7 +1,7 @@
 # Checkpoint Verification
 
 The production Rust backend loads SAM3 checkpoints through
-`candle_transformers::models::sam3::Sam3CheckpointSource::upstream_pth`.
+`candle_sam3::Sam3CheckpointSource::upstream_pth`.
 
 ## Download status
 

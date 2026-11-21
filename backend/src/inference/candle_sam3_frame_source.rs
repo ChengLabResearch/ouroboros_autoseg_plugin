@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use candle_core::{DType, Device, Result, Tensor};
-use candle_transformers::models::sam3::{normalize_rgb_frame_for_sam3, FrameSource, ImageSize};
+use sam3::{normalize_rgb_frame_for_sam3, FrameSource, ImageSize};
 use image::ImageReader;
 
 use crate::imaging::{input_window::SharedInputWindow, tiff_io::ImageFrame};

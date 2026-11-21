@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use candle_core::{DType, Device, Tensor};
-use candle_transformers::models::sam3::{normalize_rgb_frame_for_sam3, Config, FrameSource};
+use sam3::{normalize_rgb_frame_for_sam3, Config, FrameSource};
 use image::ImageReader;
 use ouroboros_autoseg_plugin_backend::inference::candle_sam3_frame_source::StagedJpegFrameSource;
 

@@ -2,7 +2,6 @@ use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use candle_core::DType;
-use candle_transformers::models::sam3;
 use tracing::{info, warn};
 
 use crate::{
@@ -696,7 +695,7 @@ mod tests {
         inference::image::{PointPrompt, PointPromptKind},
     };
     use candle_core::Device;
-    use candle_transformers::models::sam3::FrameSource;
+    use sam3::FrameSource;
     use image::{ImageBuffer, Rgb};
 
     fn test_mask(value: u8) -> FrameMask {
