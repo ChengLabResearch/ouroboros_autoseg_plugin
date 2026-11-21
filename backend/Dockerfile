@@ -13,10 +13,6 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# cargo-about generates the third-party licence notices shipped in the runtime image.
-ARG CARGO_ABOUT_VERSION=0.9.3
-RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
-
 # Candle and candle-sam3 are git dependencies pinned in Cargo.toml and Cargo.lock;
 # Cargo fetches them during the dependency build below.
 # CANDLE_SAM3_COMMIT is reported in the backend log as candle_sha and must equal
@@ -34,6 +30,12 @@ RUN mkdir -p src \
     && printf '' > src/lib.rs \
     && cargo build --release --locked --bin ouroboros-autoseg-plugin-backend \
     && rm -rf src
+
+# cargo-about generates the third-party licence notices shipped in the runtime
+# image. It is installed after the dependency build so that layer's cache is
+# unaffected, and before the plugin source so source edits do not reinstall it.
+ARG CARGO_ABOUT_VERSION=0.9.3
+RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
 
 COPY src/ src/
 RUN touch src/lib.rs src/main.rs \
@@ -66,9 +68,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
 
-ARG CARGO_ABOUT_VERSION=0.9.3
-RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
-
 ARG CANDLE_SAM3_COMMIT=8d762350304f683a35215aa1d2c8d71d845f3be3
 ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
 
@@ -85,6 +84,9 @@ RUN test "${CANDLE_FEATURES}" = "cuda,cudnn" \
     && cargo build --release --locked --features "${CANDLE_FEATURES}" \
         --bin ouroboros-autoseg-plugin-backend \
     && rm -rf src
+
+ARG CARGO_ABOUT_VERSION=0.9.3
+RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
 
 COPY src/ src/
 RUN touch src/lib.rs src/main.rs \
