@@ -31,9 +31,18 @@ RUN mkdir -p src \
     && cargo build --release --locked --bin ouroboros-autoseg-plugin-backend \
     && rm -rf src
 
+# cargo-about generates the third-party licence notices shipped in the runtime
+# image. It is installed after the dependency build so that layer's cache is
+# unaffected, and before the plugin source so source edits do not reinstall it.
+ARG CARGO_ABOUT_VERSION=0.9.3
+RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
+
 COPY src/ src/
 RUN touch src/lib.rs src/main.rs \
     && cargo build --release --locked --bin ouroboros-autoseg-plugin-backend
+
+COPY about.toml about.hbs ./
+RUN cargo about generate --locked --fail about.hbs -o THIRD_PARTY_LICENSES.txt
 
 # ── Test target used by CI before either runtime image can publish ───────────
 FROM builder AS test
@@ -76,10 +85,17 @@ RUN test "${CANDLE_FEATURES}" = "cuda,cudnn" \
         --bin ouroboros-autoseg-plugin-backend \
     && rm -rf src
 
+ARG CARGO_ABOUT_VERSION=0.9.3
+RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
+
 COPY src/ src/
 RUN touch src/lib.rs src/main.rs \
     && cargo build --release --locked --features "${CANDLE_FEATURES}" \
     --bin ouroboros-autoseg-plugin-backend
+
+COPY about.toml about.hbs ./
+RUN cargo about generate --locked --fail --features "${CANDLE_FEATURES}" \
+    about.hbs -o THIRD_PARTY_LICENSES.txt
 
 # ── Stage 3: minimal CPU runtime image ───────────────────────────────────────
 FROM ${CPU_RUNTIME_IMAGE} AS runtime
@@ -92,6 +108,10 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder \
     /build/plugin/backend/target/release/ouroboros-autoseg-plugin-backend \
     /usr/local/bin/ouroboros-autoseg-plugin-backend
+COPY licenses/LICENSE licenses/LICENSE-SAM /usr/share/licenses/ouroboros-autoseg-plugin-backend/
+COPY --from=builder \
+    /build/plugin/backend/THIRD_PARTY_LICENSES.txt \
+    /usr/share/licenses/ouroboros-autoseg-plugin-backend/
 
 EXPOSE 8686
 
@@ -116,6 +136,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=cuda-builder \
     /build/plugin/backend/target/release/ouroboros-autoseg-plugin-backend \
     /usr/local/bin/ouroboros-autoseg-plugin-backend
+COPY licenses/ /usr/share/licenses/ouroboros-autoseg-plugin-backend/
+COPY --from=cuda-builder \
+    /build/plugin/backend/THIRD_PARTY_LICENSES.txt \
+    /usr/share/licenses/ouroboros-autoseg-plugin-backend/
 
 EXPOSE 8686
 

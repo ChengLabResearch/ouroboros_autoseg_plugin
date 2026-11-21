@@ -44,12 +44,16 @@ describe('backend build fingerprints', () => {
 		root = await mkdtemp(join(tmpdir(), 'backend-fingerprint-'))
 		await mkdir(join(root, 'backend', 'src'), { recursive: true })
 		await mkdir(join(root, 'backend', 'tests'), { recursive: true })
+		await mkdir(join(root, 'backend', 'licenses'), { recursive: true })
 		await mkdir(join(root, 'scripts'), { recursive: true })
 		await Promise.all([
 			writeFile(join(root, 'backend', '.dockerignore'), 'target\n'),
 			writeFile(join(root, 'backend', 'Cargo.lock'), 'lock-v1\n'),
 			writeFile(join(root, 'backend', 'Cargo.toml'), 'manifest-v1\n'),
 			writeFile(join(root, 'backend', 'Dockerfile'), DOCKERFILE),
+			writeFile(join(root, 'backend', 'about.hbs'), 'template-v1\n'),
+			writeFile(join(root, 'backend', 'about.toml'), 'about-v1\n'),
+			writeFile(join(root, 'backend', 'licenses', 'LICENSE-SAM'), 'licence-v1\n'),
 			writeFile(join(root, 'backend', 'src', 'lib.rs'), 'source-v1\n'),
 			writeFile(join(root, 'backend', 'tests', 'smoke.rs'), 'test-v1\n'),
 			writeFile(join(root, 'scripts', 'backend-build-fingerprint.mjs'), 'fingerprint-code-v1\n')
@@ -112,10 +116,14 @@ describe('backend build fingerprints', () => {
 		expect(cudaAfter.fingerprint).toBe(cudaBefore.fingerprint)
 	})
 
-	it('changes both variants for shared source inputs', async () => {
+	it.each([
+		['source', ['src', 'lib.rs']],
+		['licence-notice', ['about.toml']],
+		['shipped licence', ['licenses', 'LICENSE-SAM']]
+	])('changes both variants for shared %s inputs', async (_label, path) => {
 		const cpuBefore = await fingerprint('cpu')
 		const cudaBefore = await fingerprint('cuda')
-		await writeFile(join(root, 'backend', 'src', 'lib.rs'), 'source-v2\n')
+		await writeFile(join(root, 'backend', ...path), 'changed\n')
 
 		const cpuAfter = await fingerprint('cpu')
 		const cudaAfter = await fingerprint('cuda')

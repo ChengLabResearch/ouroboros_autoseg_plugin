@@ -27,7 +27,10 @@ for (const required of [
 	'plugin-release.json',
 	'index.html',
 	'icon.svg',
-	'compose.yml'
+	'compose.yml',
+	'LICENSE',
+	'LICENSE-SAM',
+	'THIRD_PARTY_NOTICES.txt'
 ]) {
 	assert(entries.has(required), `release archive is missing ${required}`)
 }
@@ -37,12 +40,14 @@ for (const buildOnly of [
 	'Cargo.toml',
 	'Dockerfile',
 	'RUST_SCAFFOLD.md',
+	'about.hbs',
+	'about.toml',
 	'pyproject.toml',
 	'poetry.lock'
 ]) {
 	assert(!entries.has(buildOnly), `release archive includes build-only file ${buildOnly}`)
 }
-for (const buildOnlyDirectory of ['app/', 'docs/', 'scripts/', 'src/', 'tests/']) {
+for (const buildOnlyDirectory of ['app/', 'docs/', 'licenses/', 'scripts/', 'src/', 'tests/']) {
 	assert(
 		![...entries].some((entry) => entry.startsWith(buildOnlyDirectory)),
 		`release archive includes build-only directory ${buildOnlyDirectory}`
@@ -84,7 +89,14 @@ for (const assetPath of assetPaths) {
 	assert(entries.has(assetPath), `index.html references missing archive asset ${assetPath}`)
 }
 
-for (const file of ['package.json', 'plugin-release.json', 'compose.yml']) {
+for (const file of [
+	'package.json',
+	'plugin-release.json',
+	'compose.yml',
+	'LICENSE',
+	'LICENSE-SAM',
+	'THIRD_PARTY_NOTICES.txt'
+]) {
 	const archived = readArchivedText(file).trim()
 	const built = (await readFile(join(artifactLayout, file), 'utf8')).trim()
 	assert(archived === built, `archived ${file} does not match the validated layout`)

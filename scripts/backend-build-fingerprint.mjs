@@ -79,6 +79,9 @@ export async function buildFingerprint({
 		join(backendRoot, '.dockerignore'),
 		join(backendRoot, 'Cargo.lock'),
 		join(backendRoot, 'Cargo.toml'),
+		join(backendRoot, 'about.hbs'),
+		join(backendRoot, 'about.toml'),
+		join(backendRoot, 'licenses'),
 		join(backendRoot, 'src'),
 		join(backendRoot, 'tests'),
 		join(root, 'scripts', 'backend-build-fingerprint.mjs')

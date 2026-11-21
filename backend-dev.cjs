@@ -13,10 +13,13 @@ const dependencyPaths = [
     'Cargo.lock',
     'Cargo.toml',
     'Dockerfile',
+    'about.hbs',
+    'about.toml',
     'compose.dev.yml',
     'compose.gpu.dev.yml',
     'compose.gpu.yml',
     'compose.yml',
+    'licenses',
     'src',
     'tests'
 ]
