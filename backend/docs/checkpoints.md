@@ -3,6 +3,33 @@
 The production Rust backend loads SAM3 checkpoints through
 `candle_sam3::Sam3CheckpointSource::upstream_pth`.
 
+## Storage and migration
+
+The backend stores checkpoints under
+`<volume>/persist/sam3-segmentation/chkpts/`. Inside the backend container,
+`<volume>` is `/ouroboros-volume`; native runs use `VOLUME_MOUNT_PATH` (default
+`/tmp/ouroboros-volume`). Downloads, model availability, and model loading all
+use this checkpoint directory. Input and output staging remains under
+`<volume>/sam3-segmentation/` and is not persistent checkpoint storage.
+
+On startup after upgrading, the backend moves existing final checkpoint files
+(regular `.pt` files) from `<volume>/sam3-segmentation/chkpts/` into the new
+directory. This is a one-time migration of each file: an existing destination
+takes precedence and is never overwritten, and incomplete `.part` downloads
+are not migrated. A migration I/O error stops startup and reports the affected
+locations, rather than treating the legacy checkpoint as missing and downloading
+it again.
+
+Persistence across Ouroboros application sessions requires the host to preserve
+`persist` during shutdown cleanup. The upstream fix for
+[#257](https://github.com/ChengLabResearch/ouroboros/pull/257) is merged as
+[`94087e698d79e5c21ac3b2df884f503a1d377787`](https://github.com/ChengLabResearch/ouroboros/commit/94087e698d79e5c21ac3b2df884f503a1d377787),
+but is not yet released. Use an unreleased build containing that fix; the minimum
+released version is pending. Older host versions remain compatible with the
+plugin but remove checkpoints at application shutdown, so the next session
+requires another download. A native backend's storage lifetime instead depends
+on its configured volume directory.
+
 ## Download status
 
 The checkpoint service owns each model's download lifecycle and writes its

@@ -123,7 +123,10 @@ impl AppConfig {
                     .unwrap_or_else(|_| "/tmp/ouroboros-volume".to_string()),
             )
         };
-        let checkpoint_dir = internal_volume_path.join(&plugin_name).join("chkpts");
+        let checkpoint_dir = internal_volume_path
+            .join("persist")
+            .join(&plugin_name)
+            .join("chkpts");
         let fallback_annotation_interval = std::env::var("FALLBACK_ANNOTATION_INTERVAL")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -175,6 +178,52 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Import completed checkpoints before any request or download can start.
+    /// The legacy directory is a migration source, never a runtime fallback.
+    pub(crate) fn migrate_legacy_checkpoints(&self) -> Result<(), AppError> {
+        let legacy_dir = self.plugin_root().join("chkpts");
+        let migration_error = |error| {
+            AppError::internal(format!(
+                "Failed to migrate checkpoints from {} to {}: {error}",
+                legacy_dir.display(),
+                self.checkpoint_dir.display()
+            ))
+        };
+        let entries = match std::fs::read_dir(&legacy_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(migration_error(error)),
+        };
+
+        for entry in entries {
+            let entry = entry.map_err(&migration_error)?;
+            let source = entry.path();
+            if !entry.file_type().map_err(&migration_error)?.is_file()
+                || source.extension().is_none_or(|extension| extension != "pt")
+            {
+                continue;
+            }
+            let destination = self.checkpoint_dir.join(entry.file_name());
+            // Preserve any existing destination, including a symlink. Startup
+            // precedes the checkpoint service, so no owned download can race us.
+            match destination.symlink_metadata() {
+                Ok(_) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(migration_error(error)),
+            }
+            self.ensure_checkpoint_dir()
+                .and_then(|()| std::fs::rename(&source, &destination).map_err(AppError::from))
+                .map_err(|error| {
+                    AppError::internal(format!(
+                        "Failed to migrate checkpoint {} to {}: {error}",
+                        source.display(),
+                        destination.display()
+                    ))
+                })?;
+        }
+        Ok(())
+    }
+
     pub fn volume_server_endpoint(&self, path: &str) -> String {
         let base = self.volume_server_url.trim_end_matches('/');
         let path = path.trim_start_matches('/');
@@ -185,3 +234,6 @@ impl AppConfig {
 fn running_in_docker() -> bool {
     Path::new("/.dockerenv").exists() || std::env::var("RUNNING_IN_DOCKER").as_deref() == Ok("1")
 }
+
+#[cfg(test)]
+mod tests;

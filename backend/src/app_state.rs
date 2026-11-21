@@ -35,6 +35,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: AppConfig) -> Result<Self, AppError> {
+        config.migrate_legacy_checkpoints()?;
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()?;
