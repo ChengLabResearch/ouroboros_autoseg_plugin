@@ -13,6 +13,12 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# cargo-about generates the third-party licence notices shipped in the runtime
+# image. Installing it before the lockfile is copied keeps it cached across
+# dependency changes.
+ARG CARGO_ABOUT_VERSION=0.9.3
+RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
+
 # Candle and candle-sam3 are git dependencies pinned in Cargo.toml and Cargo.lock;
 # Cargo fetches them during the dependency build below.
 # build.rs derives the logged engine revision from the resolved Cargo.lock source.
@@ -28,19 +34,19 @@ RUN mkdir -p src \
     && cargo build --release --locked --bin ouroboros-autoseg-plugin-backend \
     && rm -rf src
 
-# cargo-about generates the third-party licence notices shipped in the runtime
-# image. It is installed after the dependency build so that layer's cache is
-# unaffected, and before the plugin source so source edits do not reinstall it.
-ARG CARGO_ABOUT_VERSION=0.9.3
-RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
+# Licence notices depend only on the lockfile and the cargo-about config, so
+# they are generated before the plugin source is copied.
+COPY about.toml about.hbs ./
+RUN mkdir -p src \
+    && printf 'fn main() {}\n' > src/main.rs \
+    && printf '' > src/lib.rs \
+    && cargo about generate --locked --fail about.hbs -o THIRD_PARTY_LICENSES.txt \
+    && rm -rf src
 
 COPY build.rs ./
 COPY src/ src/
 RUN touch src/lib.rs src/main.rs \
     && cargo build --release --locked --bin ouroboros-autoseg-plugin-backend
-
-COPY about.toml about.hbs ./
-RUN cargo about generate --locked --fail about.hbs -o THIRD_PARTY_LICENSES.txt
 
 # ── Test target used by CI before either runtime image can publish ───────────
 FROM builder AS test
@@ -66,6 +72,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
 
+ARG CARGO_ABOUT_VERSION=0.9.3
+RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
+
 WORKDIR /build/plugin/backend
 ARG CANDLE_FEATURES=cuda,cudnn
 ARG CUDA_COMPUTE_CAP=75
@@ -80,18 +89,19 @@ RUN test "${CANDLE_FEATURES}" = "cuda,cudnn" \
         --bin ouroboros-autoseg-plugin-backend \
     && rm -rf src
 
-ARG CARGO_ABOUT_VERSION=0.9.3
-RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
+COPY about.toml about.hbs ./
+RUN mkdir -p src \
+    && printf 'fn main() {}\n' > src/main.rs \
+    && printf '' > src/lib.rs \
+    && cargo about generate --locked --fail --features "${CANDLE_FEATURES}" \
+        about.hbs -o THIRD_PARTY_LICENSES.txt \
+    && rm -rf src
 
 COPY build.rs ./
 COPY src/ src/
 RUN touch src/lib.rs src/main.rs \
     && cargo build --release --locked --features "${CANDLE_FEATURES}" \
     --bin ouroboros-autoseg-plugin-backend
-
-COPY about.toml about.hbs ./
-RUN cargo about generate --locked --fail --features "${CANDLE_FEATURES}" \
-    about.hbs -o THIRD_PARTY_LICENSES.txt
 
 # ── Stage 3: minimal CPU runtime image ───────────────────────────────────────
 FROM ${CPU_RUNTIME_IMAGE} AS runtime
