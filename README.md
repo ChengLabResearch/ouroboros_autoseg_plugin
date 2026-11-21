@@ -355,7 +355,9 @@ retains compiled tests in the single final registry cache export.
 The fingerprint script owns separate CPU/CUDA native cache identities, including
 the builder image, Rust toolchain, platform, features and CUDA architecture.
 Archive generations may change with the lockfile while their compatible restore
-prefix remains stable. Archives are saved only after verification. Since GitHub
+prefix remains stable. Archives are saved only after verification. Snapshot
+transfer uses BuildKit's tar exporter and preserves Cargo timestamps; export
+stops after five minutes if stalled, leaving the verified candidate usable. Since GitHub
 scopes PR archives to the PR, `main` can populate its shared archive from an
 already-built registry snapshot after a merge; it does not compile to populate
 that archive. Forks only restore. Saves are skipped when the archive or repository

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, closeSync, mkdtempSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -36,6 +36,7 @@ function main() {
 	const temporary = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), 'backend-dependency-cache-'))
 	const secretPath = join(temporary, 'probe-secret')
 	const logPath = join(temporary, `${operation}.jsonl`)
+	const tarPath = join(temporary, 'snapshot.tar')
 	writeFileSync(secretPath, 'probe\n')
 	const args = [
 		'buildx', 'build', '--builder', process.env.BUILDER,
@@ -43,24 +44,32 @@ function main() {
 		'--build-arg', `${record.variant.toUpperCase()}_BUILDER_IMAGE=${base.image.split('@')[0]}@${base.digest}`,
 		'--build-arg', `BACKEND_CACHE_NAMESPACE=${cache.namespace}`,
 		'--target', operation === 'probe' ? cache.dependencyStage : cache.exportStage,
-		'--progress=rawjson', '--secret', `id=backend-dependency-probe,src=${secretPath}`,
-		'--output', operation === 'probe' ? 'type=cacheonly' : `type=local,dest=${resolve(archiveDirectory)}`
+		`--progress=${operation === 'probe' ? 'rawjson' : 'plain'}`, '--secret', `id=backend-dependency-probe,src=${secretPath}`,
+		'--output', operation === 'probe' ? 'type=cacheonly' : `type=tar,dest=${tarPath}`
 	]
 	if (cacheFrom) args.push('--cache-from', cacheFrom)
 	args.push('backend')
-	console.log(`${operation}: ${record.variant} dependency cache; BuildKit log: ${logPath}`)
-	const log = openSync(logPath, 'w')
+	console.log(`${operation}: ${record.variant} dependency cache${operation === 'probe' ? `; BuildKit log: ${logPath}` : ''}`)
+	const log = operation === 'probe' ? openSync(logPath, 'w') : undefined
 	let result
 	try {
 		// Export keeps the probe guard: an evicted snapshot must not compile during writeback.
-		result = spawnSync('docker', args, { stdio: ['ignore', log, log] })
+		// Large local-directory exports stalled in CI and a real CPU reproduction.
+		// Native tar export avoids fsutil's per-file receive path; bound writeback
+		// so a stalled transfer cannot hold the verified candidate indefinitely.
+		result = spawnSync('docker', args, {
+			stdio: log === undefined ? 'inherit' : ['ignore', log, log],
+			...(operation === 'export' ? { timeout: 300_000, killSignal: 'SIGKILL' } : {})
+		})
 	} finally {
-		closeSync(log)
+		if (log !== undefined) closeSync(log)
 		unlinkSync(secretPath)
 	}
+	if (operation === 'export' && result.status !== 0) rmSync(tarPath, { force: true })
+	if (result.error?.code === 'ETIMEDOUT') throw new Error('Dependency snapshot export exceeded five minutes')
 	if (result.error) throw result.error
-	if (result.signal) throw new Error(`Dependency cache ${operation} interrupted by ${result.signal}; see ${logPath}`)
-	const raw = readFileSync(logPath, 'utf8')
+	if (result.signal) throw new Error(`Dependency cache ${operation} interrupted by ${result.signal}`)
+	const raw = operation === 'probe' ? readFileSync(logPath, 'utf8') : ''
 	if (operation === 'probe' && result.status !== 0 && isDependencyCacheMiss(raw)) {
 		output('dependency_miss', 'true')
 		console.log('Dependency cache miss: the probe stopped before compilation.')
@@ -68,7 +77,17 @@ function main() {
 	}
 	if (result.status !== 0) {
 		const diagnostic = raw.split('\n').findLast((line) => line.startsWith('ERROR:'))
-		throw new Error(`Dependency cache ${operation} failed; see ${logPath}${diagnostic ? `\n${diagnostic}` : ''}`)
+		throw new Error(`Dependency cache ${operation} failed; see ${operation === 'probe' ? logPath : 'BuildKit output above'}${diagnostic ? `\n${diagnostic}` : ''}`)
+	}
+	if (operation === 'export') {
+		mkdirSync(archiveDirectory, { recursive: true })
+		try {
+			const extracted = spawnSync('tar', ['-xf', tarPath, '--no-same-owner', '-C', resolve(archiveDirectory)], { stdio: 'inherit' })
+			if (extracted.error) throw extracted.error
+			if (extracted.status !== 0) throw new Error('Dependency snapshot extraction failed')
+		} finally {
+			unlinkSync(tarPath)
+		}
 	}
 	if (operation === 'probe') output('dependency_miss', 'false')
 	console.log(`Dependency cache ${operation} succeeded.`)
