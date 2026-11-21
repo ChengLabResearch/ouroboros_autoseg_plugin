@@ -28,43 +28,29 @@ What is intentionally still stubbed:
 - Candle SAM3 image and video inference
 - Volume transfer and checkpoint-backed end-to-end execution inside the Rust pipeline
 
-## Local Candle layout
+## Candle dependencies
 
-The Rust backend uses Cargo path dependencies that expect the Candle fork to
-live beside this plugin checkout:
+The backend uses two git dependencies, both pinned by commit in `Cargo.toml` and
+`Cargo.lock`:
 
-```text
-$OUROBOROS_REPOS/
-  candle_sam3_main/
-  ouroboros_autoseg_plugin/
-    backend/
-```
+- `candle-core` and `candle-nn` from [den-sq/candle](https://github.com/den-sq/candle),
+  a fork of Candle with general changes (MIT OR Apache-2.0);
+- `sam3` (crate `candle-sam3`) from [den-sq/candle-sam3](https://github.com/den-sq/candle-sam3),
+  the SAM 3 engine, distributed under the SAM License.
 
-Keep the sibling directory named `candle_sam3_main`. The Dockerfile clones the
-same repository to the same name, so preserving this layout keeps local builds
-and container builds aligned while still allowing a separate experimental
-`candle_sam3` checkout.
+`candle-sam3` pins the same fork commit, so both use one set of Candle types. When
+updating either pin, keep the fork `rev` here equal to the one in `candle-sam3`'s
+`Cargo.toml`, and keep the Dockerfile's `CANDLE_SAM3_COMMIT` equal to the
+`candle-sam3` `rev`.
 
-Create the local sibling checkout at the pinned commit:
+No sibling checkout is needed:
 
 ```bash
-export OUROBOROS_REPOS=/path/to/ouroboros/repos
-cd "$OUROBOROS_REPOS"
-git clone https://github.com/den-sq/candle_sam3.git candle_sam3_main
-git -C candle_sam3_main checkout c0400c6513c21655828bb92633cc190a3501a6f6
-```
-
-Then verify the backend path dependencies resolve:
-
-```bash
-cd "$OUROBOROS_REPOS/ouroboros_autoseg_plugin/backend"
-test -d ../../candle_sam3_main || { echo "missing candle_sam3_main sibling - see backend/RUST_SCAFFOLD.md"; exit 1; }
+cd ouroboros_autoseg_plugin/backend
 cargo build --release
 cargo test
 ```
 
-Recommended next steps:
-
-1. Wire the Phase 3 staging path into the real volume-transfer pipeline.
-2. Implement the image inference path before the video path.
-3. Switch Docker and compose files only after the Rust backend can satisfy the current frontend contract.
+To build against local checkouts of either repository, use a
+[`[patch]`](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html)
+section in an uncommitted `.cargo/config.toml`.

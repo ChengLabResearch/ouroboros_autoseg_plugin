@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use candle_core::Device;
-use candle_transformers::models::sam3;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{

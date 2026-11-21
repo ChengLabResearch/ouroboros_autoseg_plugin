@@ -13,22 +13,12 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Layout inside the build container mirrors the local tava_hut structure so
-# the Cargo.toml path deps (../../candle_sam3_main/…) resolve correctly:
-#
-#   /build/
-#     candle_sam3_main/    ← cloned from GitHub
-#     plugin/
-#       backend/           ← copied from build context (this directory)
-#         Cargo.toml       ← path "../../candle_sam3_main/…" resolves to /build/candle_sam3_main/
-
-WORKDIR /build
-
-# Clone candle_sam3 at the pinned commit used during development.
-ARG CANDLE_SAM3_COMMIT=c0400c6513c21655828bb92633cc190a3501a6f6
+# Candle and candle-sam3 are git dependencies pinned in Cargo.toml and Cargo.lock;
+# Cargo fetches them during the dependency build below.
+# CANDLE_SAM3_COMMIT is reported in the backend log as candle_sha and must equal
+# the candle-sam3 `rev` in Cargo.toml.
+ARG CANDLE_SAM3_COMMIT=8d762350304f683a35215aa1d2c8d71d845f3be3
 ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
-RUN git clone https://github.com/den-sq/candle_sam3.git candle_sam3_main \
-    && git -C candle_sam3_main checkout "${CANDLE_SAM3_COMMIT}"
 
 # Compile the stable dependency graph before copying plugin source. The dummy
 # package is replaced below, while its target artifacts remain reusable when
@@ -69,12 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
 
-WORKDIR /build
-
-ARG CANDLE_SAM3_COMMIT=c0400c6513c21655828bb92633cc190a3501a6f6
+ARG CANDLE_SAM3_COMMIT=8d762350304f683a35215aa1d2c8d71d845f3be3
 ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
-RUN git clone https://github.com/den-sq/candle_sam3.git candle_sam3_main \
-    && git -C candle_sam3_main checkout "${CANDLE_SAM3_COMMIT}"
 
 WORKDIR /build/plugin/backend
 ARG CANDLE_FEATURES=cuda,cudnn

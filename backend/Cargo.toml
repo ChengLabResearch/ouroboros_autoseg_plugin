@@ -10,20 +10,22 @@ default = []
 cuda = [
     "candle-core/cuda",
     "candle-nn/cuda",
-    "candle-transformers/cuda",
+    "sam3/cuda",
 ]
 cudnn = [
     "cuda",
     "candle-core/cudnn",
     "candle-nn/cudnn",
-    "candle-transformers/cudnn",
+    "sam3/cudnn",
 ]
 
 [dependencies]
 async-trait = "=0.1.77"
-candle-core = { path = "../../candle_sam3_main/candle-core", package = "candle-core", version = "0.11.0" }
-candle-nn = { path = "../../candle_sam3_main/candle-nn", version = "0.11.0" }
-candle-transformers = { path = "../../candle_sam3_main/candle-transformers", version = "0.11.0" }
+# Candle from the den-sq fork, at the same commit candle-sam3 pins, so both use one set of Candle types.
+candle-core = { git = "https://github.com/den-sq/candle", rev = "9af0337b7784d638c14f3234b0ebca0971768207" }
+candle-nn = { git = "https://github.com/den-sq/candle", rev = "9af0337b7784d638c14f3234b0ebca0971768207" }
+# SAM 3 engine; distributed under the SAM License (see the crate's LICENSE-SAM).
+sam3 = { package = "candle-sam3", git = "https://github.com/den-sq/candle-sam3", rev = "8d762350304f683a35215aa1d2c8d71d845f3be3" }
 axum = { version = "=0.6.20", features = ["json", "macros"] }
 futures-util = "=0.3.31"
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "tiff"] }

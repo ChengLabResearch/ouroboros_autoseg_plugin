@@ -1,6 +1,5 @@
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::ops;
-use candle_transformers::models::sam3;
 
 use crate::{
     error::AppError,
@@ -201,7 +200,7 @@ pub fn first_frame_dimensions(frames_dir: &std::path::Path) -> Result<(usize, us
 /// single video frame.  The `masks` tensor on each `ObjectFrameOutput` holds
 /// probability values; pixels where any object's probability > 0.5 become 255.
 pub fn video_frame_to_mask(
-    objects: &[candle_transformers::models::sam3::ObjectFrameOutput],
+    objects: &[sam3::ObjectFrameOutput],
     out_width: usize,
     out_height: usize,
 ) -> Result<FrameMask, AppError> {
