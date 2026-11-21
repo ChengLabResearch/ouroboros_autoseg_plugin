@@ -6,6 +6,8 @@ on:
       - .github/workflows/backend-image.yml
       - backend/**
       - scripts/backend-build-fingerprint.mjs
+      - scripts/backend-dependency-cache.mjs
+      - .github/actions/backend-dependency-cache/**
   push:
     branches:
       - main
@@ -13,7 +15,6 @@ on:
 
 env:
   REGISTRY_IMAGE: ghcr.io/chenglabresearch/ouroboros-autoseg-backend
-  CUDA_CANDLE_FEATURES: cuda,cudnn
 
 concurrency:
   # Separate main commits so a newer push cannot replace an older pending run.
@@ -61,7 +62,7 @@ jobs:
             --output "${output_dir}/cuda.json"; } | tail -n 1)"
           pinned_image() {
             jq -r --arg stage "$2" '.baseImages[] | select(.stage == $stage) |
-              if .image | contains("@") then .image else "\(.image)@\(.digest)" end' "$1"
+              "\(.image | split("@")[0])@\(.digest)"' "$1"
           }
           cpu_builder_image="$(pinned_image "${output_dir}/cpu.json" builder)"
           cpu_runtime_image="$(pinned_image "${output_dir}/cpu.json" runtime)"
@@ -118,6 +119,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     outputs:
       digest: ${{ steps.resolve.outputs.digest }}
 
@@ -132,6 +134,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
+        id: builder
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -153,19 +156,16 @@ jobs:
             printf '%s\n' "exists=false" "digest=" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Test backend
-        if: steps.inspect.outputs.exists != 'true'
-        uses: docker/build-push-action@v6
+      - name: Prepare CPU dependency cache
+        id: dependency-cache
+        uses: ./.github/actions/backend-dependency-cache
         with:
-          context: ./backend
-          file: ./backend/Dockerfile
-          target: test
-          push: false
-          build-args: |
-            CPU_BUILDER_IMAGE=${{ env.CPU_BUILDER_IMAGE }}
-            CPU_RUNTIME_IMAGE=${{ env.CPU_RUNTIME_IMAGE }}
-          cache-from: |
-            type=registry,ref=${{ env.CANONICAL_CACHE }}
+          phase: restore
+          variant: cpu
+          builder: ${{ steps.builder.outputs.name }}
+          candidate-exists: ${{ steps.inspect.outputs.exists }}
+          can-publish: ${{ needs.prepare.outputs.can_publish }}
+          is-main: ${{ needs.prepare.outputs.is_main }}
 
       - name: Build and publish CPU candidate
         id: publish
@@ -173,11 +173,13 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./backend
+          platforms: ${{ steps.dependency-cache.outputs.platform }}
           file: ./backend/Dockerfile
           target: runtime
           push: true
           tags: ${{ env.CANDIDATE_IMAGE }}
           build-args: |
+            BACKEND_CACHE_NAMESPACE=${{ steps.dependency-cache.outputs.namespace }}
             CPU_BUILDER_IMAGE=${{ env.CPU_BUILDER_IMAGE }}
             CPU_RUNTIME_IMAGE=${{ env.CPU_RUNTIME_IMAGE }}
           labels: |
@@ -185,8 +187,7 @@ jobs:
             org.opencontainers.image.title=Ouroboros autoseg backend (CPU candidate)
             io.ouroboros.build.fingerprint=${{ needs.prepare.outputs.cpu_fingerprint }}
             io.ouroboros.build.variant=cpu
-          cache-from: |
-            type=registry,ref=${{ env.CANONICAL_CACHE }}
+          cache-from: ${{ steps.dependency-cache.outputs.cache-from }}
           cache-to: type=registry,ref=${{ env.CANONICAL_CACHE }},mode=max,image-manifest=true,oci-mediatypes=true
 
       - name: Build CPU candidate without publishing
@@ -195,6 +196,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./backend
+          platforms: ${{ steps.dependency-cache.outputs.platform }}
           file: ./backend/Dockerfile
           target: runtime
           push: false
@@ -202,10 +204,20 @@ jobs:
           provenance: false
           tags: ouroboros-autoseg-backend:cpu-${{ needs.prepare.outputs.cpu_fingerprint }}
           build-args: |
+            BACKEND_CACHE_NAMESPACE=${{ steps.dependency-cache.outputs.namespace }}
             CPU_BUILDER_IMAGE=${{ env.CPU_BUILDER_IMAGE }}
             CPU_RUNTIME_IMAGE=${{ env.CPU_RUNTIME_IMAGE }}
-          cache-from: |
-            type=registry,ref=${{ env.CANONICAL_CACHE }}
+          cache-from: ${{ steps.dependency-cache.outputs.cache-from }}
+
+      - name: Save CPU dependency archive
+        if: steps.dependency-cache.outputs.save == 'true'
+        uses: ./.github/actions/backend-dependency-cache
+        with:
+          phase: save
+          variant: cpu
+          builder: ${{ steps.builder.outputs.name }}
+          can-publish: ${{ needs.prepare.outputs.can_publish }}
+          cache-from: ${{ steps.dependency-cache.outputs.cache-from }}
 
       - name: Resolve CPU candidate digest
         id: resolve
@@ -236,6 +248,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     outputs:
       digest: ${{ steps.resolve.outputs.digest }}
 
@@ -250,6 +263,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
+        id: builder
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -271,27 +285,38 @@ jobs:
             printf '%s\n' "exists=false" "digest=" >> "${GITHUB_OUTPUT}"
           fi
 
+      - name: Prepare CUDA dependency cache
+        id: dependency-cache
+        uses: ./.github/actions/backend-dependency-cache
+        with:
+          phase: restore
+          variant: cuda
+          builder: ${{ steps.builder.outputs.name }}
+          candidate-exists: ${{ steps.inspect.outputs.exists }}
+          can-publish: ${{ needs.prepare.outputs.can_publish }}
+          is-main: ${{ needs.prepare.outputs.is_main }}
+
       - name: Build and publish CUDA candidate
         id: publish
         if: steps.inspect.outputs.exists != 'true' && needs.prepare.outputs.can_publish == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./backend
+          platforms: ${{ steps.dependency-cache.outputs.platform }}
           file: ./backend/Dockerfile
           target: cuda-runtime
           push: true
           tags: ${{ env.CANDIDATE_IMAGE }}
           build-args: |
+            BACKEND_CACHE_NAMESPACE=${{ steps.dependency-cache.outputs.namespace }}
             CUDA_BUILDER_IMAGE=${{ env.CUDA_BUILDER_IMAGE }}
             CUDA_RUNTIME_IMAGE=${{ env.CUDA_RUNTIME_IMAGE }}
-            CANDLE_FEATURES=${{ env.CUDA_CANDLE_FEATURES }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.title=Ouroboros autoseg backend (CUDA candidate)
             io.ouroboros.build.fingerprint=${{ needs.prepare.outputs.cuda_fingerprint }}
             io.ouroboros.build.variant=cuda
-          cache-from: |
-            type=registry,ref=${{ env.CANONICAL_CACHE }}
+          cache-from: ${{ steps.dependency-cache.outputs.cache-from }}
           cache-to: type=registry,ref=${{ env.CANONICAL_CACHE }},mode=max,image-manifest=true,oci-mediatypes=true
 
       - name: Build CUDA candidate without publishing
@@ -300,6 +325,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./backend
+          platforms: ${{ steps.dependency-cache.outputs.platform }}
           file: ./backend/Dockerfile
           target: cuda-runtime
           push: false
@@ -307,11 +333,20 @@ jobs:
           provenance: false
           tags: ouroboros-autoseg-backend:cuda-${{ needs.prepare.outputs.cuda_fingerprint }}
           build-args: |
+            BACKEND_CACHE_NAMESPACE=${{ steps.dependency-cache.outputs.namespace }}
             CUDA_BUILDER_IMAGE=${{ env.CUDA_BUILDER_IMAGE }}
             CUDA_RUNTIME_IMAGE=${{ env.CUDA_RUNTIME_IMAGE }}
-            CANDLE_FEATURES=${{ env.CUDA_CANDLE_FEATURES }}
-          cache-from: |
-            type=registry,ref=${{ env.CANONICAL_CACHE }}
+          cache-from: ${{ steps.dependency-cache.outputs.cache-from }}
+
+      - name: Save CUDA dependency archive
+        if: steps.dependency-cache.outputs.save == 'true'
+        uses: ./.github/actions/backend-dependency-cache
+        with:
+          phase: save
+          variant: cuda
+          builder: ${{ steps.builder.outputs.name }}
+          can-publish: ${{ needs.prepare.outputs.can_publish }}
+          cache-from: ${{ steps.dependency-cache.outputs.cache-from }}
 
       - name: Resolve CUDA candidate digest
         id: resolve

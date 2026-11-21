@@ -1,0 +1,193 @@
+name: Backend dependency cache
+description: Restore mounts only on a BuildKit dependency miss; save the built snapshot after verification.
+inputs:
+  phase:
+    description: restore before the build, save after the verified runtime build
+    required: true
+  variant:
+    description: cpu or cuda
+    required: true
+  builder:
+    description: Buildx builder used by the candidate build
+    required: true
+  candidate-exists:
+    description: Whether the verified content-addressed candidate already exists
+    default: 'false'
+  can-publish:
+    description: Same-repository runs may save archives; forks only restore
+    default: 'false'
+  is-main:
+    description: Populate default-branch archives after merges without recompiling
+    default: 'false'
+  cache-from:
+    description: Immutable registry cache reference returned by the restore phase
+    default: ''
+outputs:
+  platform:
+    description: Platform from the canonical build record
+    value: ${{ steps.identity.outputs.platform }}
+  namespace:
+    description: Native environment namespace for BuildKit mount IDs
+    value: ${{ steps.identity.outputs.namespace }}
+  cache-from:
+    description: Registry cache pinned for both the probe and candidate build
+    value: ${{ steps.probe.outputs.cache_from }}
+  save:
+    description: Whether this run has a new dependency snapshot to archive
+    value: ${{ steps.decision.outputs.save }}
+runs:
+  using: composite
+  steps:
+    - name: Download canonical build records
+      if: inputs.phase == 'restore'
+      uses: actions/download-artifact@v8
+      with:
+        name: backend-build-fingerprints-${{ github.run_id }}
+        path: ${{ runner.temp }}/backend-fingerprints
+
+    - name: Read dependency cache identity
+      id: identity
+      shell: bash
+      env:
+        VARIANT: ${{ inputs.variant }}
+      run: |
+        node --input-type=module <<'NODE'
+        import { readFile, appendFile } from 'node:fs/promises'
+        import { join } from 'node:path'
+        const record = join(process.env.RUNNER_TEMP, 'backend-fingerprints', `${process.env.VARIANT}.json`)
+        const { dependencyCache: cache, platform } = JSON.parse(await readFile(record, 'utf8'))
+        const archive = join(process.env.RUNNER_TEMP, `backend-cargo-${process.env.VARIANT}`)
+        const targets = { target: '/build/plugin/backend/target', registry: `${cache.cargoHome}/registry`, git: `${cache.cargoHome}/git` }
+        const map = Object.fromEntries(Object.entries(targets).map(([name, target]) => [
+          join(archive, target), { target, id: `${cache.namespace}-${name}`, sharing: 'locked' }
+        ]))
+        const values = { record, platform, archive, namespace: cache.namespace, key: cache.key, prefix: cache.restorePrefix, map: JSON.stringify(map) }
+        await appendFile(process.env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''))
+        NODE
+
+    # PR archives are merge-ref scoped. A cache-only merge must populate main's
+    # archive from the existing registry snapshot so future PRs can restore it.
+    - name: Look up the default-branch dependency archive
+      id: lookup
+      if: inputs.phase == 'restore' && inputs.is-main == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.identity.outputs.archive }}
+        key: ${{ steps.identity.outputs.key }}
+        lookup-only: true
+
+    - name: Probe the registry dependency layer before restoring mounts
+      id: probe
+      if: inputs.phase == 'restore' && (inputs.candidate-exists != 'true' || (inputs.is-main == 'true' && steps.lookup.outputs.cache-hit != 'true'))
+      shell: bash
+      env:
+        BUILDER: ${{ inputs.builder }}
+        RECORD: ${{ steps.identity.outputs.record }}
+        ARCHIVE: ${{ steps.identity.outputs.archive }}
+        CANDIDATE_EXISTS: ${{ inputs.candidate-exists }}
+      run: |
+        if ! node scripts/backend-dependency-cache.mjs probe "${RECORD}" "${ARCHIVE}"; then
+          if [[ "${CANDIDATE_EXISTS}" != true ]]; then exit 1; fi
+          echo '::warning::Could not populate the main Cargo archive; reusing the verified candidate.'
+        fi
+
+    - name: Restore compatible Cargo output
+      id: restore
+      if: inputs.phase == 'restore' && inputs.candidate-exists != 'true' && steps.probe.outputs.dependency_miss == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.identity.outputs.archive }}
+        key: ${{ steps.identity.outputs.key }}
+        restore-keys: ${{ steps.identity.outputs.prefix }}
+
+    - name: Check out the released mount transport
+      if: steps.restore.outputs.cache-matched-key != ''
+      uses: actions/checkout@v7
+      with:
+        repository: reproducible-containers/buildkit-cache-dance
+        ref: 5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0; bundled CLI
+        path: .backend-cache-dance
+        persist-credentials: false
+
+    - name: Inject restored Cargo mounts
+      if: steps.restore.outputs.cache-matched-key != ''
+      shell: bash
+      env:
+        BUILDER: ${{ inputs.builder }}
+        CACHE_MAP: ${{ steps.identity.outputs.map }}
+      run: |
+        node .backend-cache-dance/dist/index.js --builder "${BUILDER}" \
+          --cache-map "${CACHE_MAP}" --scratch-dir "${RUNNER_TEMP}/backend-cache-dance"
+
+    - name: Decide whether a snapshot needs saving
+      id: decision
+      if: inputs.phase == 'restore'
+      shell: bash
+      env:
+        CAN_PUBLISH: ${{ inputs.can-publish }}
+        CANDIDATE_EXISTS: ${{ inputs.candidate-exists }}
+        IS_MAIN: ${{ inputs.is-main }}
+        DEPENDENCY_MISS: ${{ steps.probe.outputs.dependency_miss }}
+        RESTORE_EXACT: ${{ steps.restore.outputs.cache-hit }}
+        MAIN_ARCHIVE_EXISTS: ${{ steps.lookup.outputs.cache-hit }}
+      run: |
+        save=false
+        if [[ "${CAN_PUBLISH}" == true ]]; then
+          if [[ "${CANDIDATE_EXISTS}" != true && "${DEPENDENCY_MISS}" == true && "${RESTORE_EXACT}" != true ]]; then
+            save=true
+          elif [[ "${IS_MAIN}" == true && "${MAIN_ARCHIVE_EXISTS}" != true && "${DEPENDENCY_MISS}" == false ]]; then
+            save=true
+          fi
+        fi
+        echo "save=${save}" >> "${GITHUB_OUTPUT}"
+
+    - name: Export the existing dependency snapshot
+      id: export
+      if: inputs.phase == 'save' && inputs.can-publish == 'true'
+      shell: bash
+      env:
+        BUILDER: ${{ inputs.builder }}
+        CACHE_FROM: ${{ inputs.cache-from }}
+        RECORD: ${{ steps.identity.outputs.record }}
+        ARCHIVE: ${{ steps.identity.outputs.archive }}
+      run: |
+        if node scripts/backend-dependency-cache.mjs export "${RECORD}" "${ARCHIVE}"; then
+          echo 'available=true' >> "${GITHUB_OUTPUT}"
+        else
+          echo '::warning::Cargo snapshot export failed; the verified candidate is unaffected.'
+        fi
+
+    - name: Check archive budget
+      id: budget
+      if: steps.export.outputs.available == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ARCHIVE: ${{ steps.identity.outputs.archive }}
+      run: |
+        set -euo pipefail
+        bytes="$(du -sb "${ARCHIVE}" | cut -f1)"
+        if ! gh api --paginate "/repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
+          --jq '.actions_caches[].size_in_bytes' > "${RUNNER_TEMP}/existing-cache-bytes.txt"; then
+          echo '::warning::Cache capacity unavailable; skipping Cargo archive save.'
+          exit 0
+        fi
+        used="$(awk '{sum += $1} END {printf "%.0f", sum}' "${RUNNER_TEMP}/existing-cache-bytes.txt")"
+        # The spike's raw archives were < 1.2 GB. Reserve 2 GB for the parallel
+        # peer and 1 GB for other cache writers; never delete unrelated caches.
+        allowed=false
+        if (( bytes <= 2000000000 && used + bytes + 2000000000 <= 9000000000 )); then
+          allowed=true
+        else
+          echo '::warning::Skipping Cargo archive save to stay within the repository cache budget.'
+        fi
+        echo "allowed=${allowed}" >> "${GITHUB_OUTPUT}"
+        printf 'Cargo archive: %s raw bytes; existing Actions caches: %s bytes; save: %s\n' \
+          "${bytes}" "${used}" "${allowed}" >> "${GITHUB_STEP_SUMMARY}"
+
+    - name: Save dependency snapshot
+      if: steps.budget.outputs.allowed == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.identity.outputs.archive }}
+        key: ${{ steps.identity.outputs.key }}
