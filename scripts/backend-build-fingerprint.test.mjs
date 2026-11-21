@@ -21,6 +21,7 @@ FROM \${CPU_BUILDER_IMAGE} AS builder
 RUN cpu-build
 
 FROM builder AS test
+COPY tests/ tests/
 RUN cpu-test
 
 # CUDA builder stage
@@ -30,9 +31,11 @@ RUN cuda-build
 
 FROM \${CPU_RUNTIME_IMAGE} AS runtime
 COPY --from=builder /backend /backend
+COPY licenses/LICENSE licenses/LICENSE-SAM /licenses/
 
 FROM \${CUDA_RUNTIME_IMAGE} AS cuda-runtime
 COPY --from=cuda-builder /backend /backend
+COPY licenses/ /licenses/
 `
 
 describe('backend build fingerprints', () => {
@@ -42,7 +45,7 @@ describe('backend build fingerprints', () => {
 		root = await mkdtemp(join(tmpdir(), 'backend-fingerprint-'))
 		await mkdir(join(root, 'backend', 'src'), { recursive: true })
 		await mkdir(join(root, 'backend', 'tests'), { recursive: true })
-		await mkdir(join(root, 'backend', 'licenses'), { recursive: true })
+		await mkdir(join(root, 'backend', 'licenses', 'vendored'), { recursive: true })
 		await mkdir(join(root, 'scripts'), { recursive: true })
 		await Promise.all([
 			writeFile(join(root, 'backend', '.dockerignore'), 'target\n'),
@@ -52,7 +55,9 @@ describe('backend build fingerprints', () => {
 			writeFile(join(root, 'backend', 'Dockerfile'), DOCKERFILE),
 			writeFile(join(root, 'backend', 'about.hbs'), 'template-v1\n'),
 			writeFile(join(root, 'backend', 'about.toml'), 'about-v1\n'),
+			writeFile(join(root, 'backend', 'licenses', 'LICENSE'), 'plugin-licence-v1\n'),
 			writeFile(join(root, 'backend', 'licenses', 'LICENSE-SAM'), 'licence-v1\n'),
+			writeFile(join(root, 'backend', 'licenses', 'vendored', 'CUTLASS-LICENSE.txt'), 'cuda-licence-v1\n'),
 			writeFile(join(root, 'backend', 'src', 'lib.rs'), 'source-v1\n'),
 			writeFile(join(root, 'backend', 'tests', 'smoke.rs'), 'test-v1\n'),
 			writeFile(join(root, 'scripts', 'backend-build-fingerprint.mjs'), 'fingerprint-code-v1\n')
@@ -120,6 +125,7 @@ describe('backend build fingerprints', () => {
 		['build-script', ['build.rs']],
 		['lockfile', ['Cargo.lock']],
 		['licence-notice', ['about.toml']],
+		['plugin licence', ['licenses', 'LICENSE']],
 		['shipped licence', ['licenses', 'LICENSE-SAM']]
 	])('changes both variants for shared %s inputs', async (_label, path) => {
 		const cpuBefore = await fingerprint('cpu')
@@ -129,6 +135,28 @@ describe('backend build fingerprints', () => {
 		const cpuAfter = await fingerprint('cpu')
 		const cudaAfter = await fingerprint('cuda')
 		expect(cpuAfter.fingerprint).not.toBe(cpuBefore.fingerprint)
+		expect(cudaAfter.fingerprint).not.toBe(cudaBefore.fingerprint)
+	})
+
+	it('changes only CPU when backend tests change', async () => {
+		const cpuBefore = await fingerprint('cpu')
+		const cudaBefore = await fingerprint('cuda')
+		await writeFile(join(root, 'backend', 'tests', 'smoke.rs'), 'test-v2\n')
+
+		const cpuAfter = await fingerprint('cpu')
+		const cudaAfter = await fingerprint('cuda')
+		expect(cpuAfter.fingerprint).not.toBe(cpuBefore.fingerprint)
+		expect(cudaAfter.fingerprint).toBe(cudaBefore.fingerprint)
+	})
+
+	it('changes only CUDA when vendored licences change', async () => {
+		const cpuBefore = await fingerprint('cpu')
+		const cudaBefore = await fingerprint('cuda')
+		await writeFile(join(root, 'backend', 'licenses', 'vendored', 'CUTLASS-LICENSE.txt'), 'cuda-licence-v2\n')
+
+		const cpuAfter = await fingerprint('cpu')
+		const cudaAfter = await fingerprint('cuda')
+		expect(cpuAfter.fingerprint).toBe(cpuBefore.fingerprint)
 		expect(cudaAfter.fingerprint).not.toBe(cudaBefore.fingerprint)
 	})
 

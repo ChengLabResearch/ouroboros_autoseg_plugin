@@ -8,11 +8,13 @@ const FINGERPRINT_SCHEMA_VERSION = 2
 const VARIANTS = {
 	cpu: {
 		baseStages: ['builder', 'runtime'],
-		targetStages: ['test', 'runtime']
+		targetStages: ['test', 'runtime'],
+		inputPaths: ['tests', 'licenses/LICENSE', 'licenses/LICENSE-SAM']
 	},
 	cuda: {
 		baseStages: ['cuda-builder', 'cuda-runtime'],
-		targetStages: ['cuda-runtime']
+		targetStages: ['cuda-runtime'],
+		inputPaths: ['licenses']
 	}
 }
 
@@ -82,9 +84,8 @@ export async function buildFingerprint({
 		join(backendRoot, 'build.rs'),
 		join(backendRoot, 'about.hbs'),
 		join(backendRoot, 'about.toml'),
-		join(backendRoot, 'licenses'),
 		join(backendRoot, 'src'),
-		join(backendRoot, 'tests'),
+		...variantConfig.inputPaths.map((path) => join(backendRoot, path)),
 		join(root, 'scripts', 'backend-build-fingerprint.mjs')
 	]
 	const inputFiles = []
