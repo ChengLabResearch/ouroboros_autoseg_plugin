@@ -31,8 +31,19 @@ checkpoint is downloaded and loaded.
 
 | Selector value | Display label | Checkpoint source | Stored checkpoint | Token required | Prompt support |
 | --- | --- | --- | --- | --- | --- |
-| `sam3` | SAM3 | Hugging Face `facebook/sam3`, file `sam3.pt` | `sam3.pt` | Yes | Image points, video points |
-| `medical_sam3` | Medical SAM3 | Hugging Face `ChongCong/Medical-SAM3`, file `checkpoint_3D.pt` at revision `716c9e1fb70edbdbbe65526b781e3a60f382d6cc` | `medical_sam3.pt` | No | Image points, video points |
+| `sam3` | SAM3 | Hugging Face `facebook/sam3`, file `sam3.pt` | `/ouroboros-volume/persist/auto-segmentation/chkpts/sam3.pt` | Yes | Image points, video points |
+| `medical_sam3` | Medical SAM3 | Hugging Face `ChongCong/Medical-SAM3`, file `checkpoint_3D.pt` at revision `716c9e1fb70edbdbbe65526b781e3a60f382d6cc` | `/ouroboros-volume/persist/auto-segmentation/chkpts/medical_sam3.pt` | No | Image points, video points |
+
+These paths are inside the backend container. Downloaded checkpoints are reused
+across sessions when Ouroboros preserves the volume's `persist` directory.
+This currently requires an unreleased Ouroboros build containing the
+[shutdown-cleanup fix](https://github.com/ChengLabResearch/ouroboros/commit/94087e698d79e5c21ac3b2df884f503a1d377787)
+for [#257](https://github.com/ChengLabResearch/ouroboros/pull/257); the minimum
+released version is pending. The plugin can be released first for inclusion in
+the next compatible host release. Older Ouroboros versions still work, but remove
+these files on application shutdown, requiring another download next session.
+The backend migrates existing checkpoints from the old location at startup;
+see [checkpoint storage and migration](backend/docs/checkpoints.md#storage-and-migration).
 
 The production Rust model catalog pins Medical SAM3 to the previously tested
 stage-1 checkpoint 5. Upstream removed `checkpoint_3D.pt` from `main` on

@@ -268,25 +268,12 @@ docker run --rm \
   || die "CUDA image does not prove the canonical cuda,cudnn build and resolved cuDNN runtime"
 
 docker volume create "${VOLUME_NAME}" >/dev/null
-if [[ "${REUSE_STAGED_CHECKPOINT}" == "1" ]]; then
-  CHECKPOINT_SHA256="$(
-    docker run --rm \
-      --entrypoint /bin/sh \
-      -v "${VOLUME_NAME}:/volume" \
-      "${BACKEND_IMAGE}" \
-      -ceu 'sha256sum /volume/sam3-segmentation/chkpts/medical_sam3.pt' \
-      | awk '{print $1}'
-  )"
-else
-  CHECKPOINT_SHA256="$(sha256sum "${CHECKPOINT_PATH}" | awk '{print $1}')"
-fi
 
 cat >"${ARTIFACT_DIR}/revisions.env" <<EOF
 plugin_sha=${PLUGIN_GIT_SHA}
 plugin_dirty=${PLUGIN_DIRTY}
 candle_sha=${CANDLE_SAM3_COMMIT}
 input_sha256=$(sha256sum "${INPUT_STACK}" | awk '{print $1}')
-checkpoint_sha256=${CHECKPOINT_SHA256}
 image_reference=${BACKEND_IMAGE}
 image_id=$(docker image inspect --format '{{.Id}}' "${BACKEND_IMAGE}")
 compiled_features=$(docker run --rm --entrypoint /bin/sh "${BACKEND_IMAGE}" -c 'printf %s "${OUROBOROS_COMPILED_FEATURES:-unknown}"')
@@ -309,40 +296,20 @@ if [[ "${SKIP_GPU_CHECK:-0}" != "1" ]]; then
   docker run --rm --gpus all --entrypoint nvidia-smi "${BACKEND_IMAGE}" >/dev/null
 fi
 
-log "Staging checkpoint and clearing previous input/output in Docker volume: ${VOLUME_NAME}"
-if [[ "${REUSE_STAGED_CHECKPOINT}" == "1" ]]; then
-  docker run --rm \
-    --entrypoint /bin/sh \
-    -v "${VOLUME_NAME}:/volume" \
-    -e INPUT_NAME="${INPUT_NAME}" \
-    -e OUTPUT_NAME="${OUTPUT_NAME}" \
-    -e OUTPUT_OVERLAY_NAME="${OUTPUT_OVERLAY_NAME}" \
-    "${BACKEND_IMAGE}" \
-    -ceu '
-      plugin_root=/volume/sam3-segmentation
-      test -s "${plugin_root}/chkpts/medical_sam3.pt"
-      mkdir -p "${plugin_root}/Segmentation"
-      rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}" \
-        "${plugin_root}/Segmentation/${OUTPUT_OVERLAY_NAME}"
-    '
-else
-  docker run --rm \
-    --entrypoint /bin/sh \
-    -v "${VOLUME_NAME}:/volume" \
-    -v "${CHECKPOINT_DIR}:/checkpoint:ro" \
-    -e INPUT_NAME="${INPUT_NAME}" \
-    -e CHECKPOINT_NAME="${CHECKPOINT_NAME}" \
-    -e OUTPUT_NAME="${OUTPUT_NAME}" \
-    -e OUTPUT_OVERLAY_NAME="${OUTPUT_OVERLAY_NAME}" \
-    "${BACKEND_IMAGE}" \
-    -ceu '
-      plugin_root=/volume/sam3-segmentation
-      mkdir -p "${plugin_root}/chkpts" "${plugin_root}/Segmentation"
-      rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}" \
-        "${plugin_root}/Segmentation/${OUTPUT_OVERLAY_NAME}"
-      cp "/checkpoint/${CHECKPOINT_NAME}" "${plugin_root}/chkpts/medical_sam3.pt"
-    '
-fi
+log "Clearing previous input/output in Docker volume: ${VOLUME_NAME}"
+docker run --rm \
+  --entrypoint /bin/sh \
+  -v "${VOLUME_NAME}:/volume" \
+  -e INPUT_NAME="${INPUT_NAME}" \
+  -e OUTPUT_NAME="${OUTPUT_NAME}" \
+  -e OUTPUT_OVERLAY_NAME="${OUTPUT_OVERLAY_NAME}" \
+  "${BACKEND_IMAGE}" \
+  -ceu '
+    plugin_root=/volume/sam3-segmentation
+    mkdir -p "${plugin_root}/Segmentation"
+    rm -f "${plugin_root}/${INPUT_NAME}" "${plugin_root}/Segmentation/${OUTPUT_NAME}" \
+      "${plugin_root}/Segmentation/${OUTPUT_OVERLAY_NAME}"
+  '
 
 VALIDATION_DIR="$(mktemp -d)"
 trap cleanup EXIT
@@ -395,10 +362,6 @@ docker run -d \
   --add-host host.docker.internal:host-gateway \
   "${BACKEND_IMAGE}" >/dev/null
 
-RUN_START_EPOCH="$(date +%s)"
-telemetry_loop "${RUN_START_EPOCH}" &
-TELEMETRY_PID=$!
-
 log "Waiting for backend on http://127.0.0.1:${HOST_PORT}"
 for _ in $(seq 1 60); do
   if curl -fs "http://127.0.0.1:${HOST_PORT}/" >/dev/null 2>&1; then
@@ -411,6 +374,42 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 curl -fsS "http://127.0.0.1:${HOST_PORT}/" >/dev/null || die "Backend did not become ready"
+
+# Startup owns migration of legacy staged checkpoints. Derive the staging
+# destination from its status response so prebuilt images also use their own path.
+MODEL_STATUS="$(curl -fsS "http://127.0.0.1:${HOST_PORT}/model-status")"
+STAGED_CHECKPOINT_DIR="$(json_value "${MODEL_STATUS}" checkpoint_dir)"
+log "Using backend checkpoint directory: ${STAGED_CHECKPOINT_DIR}"
+if [[ "${REUSE_STAGED_CHECKPOINT}" != "1" ]]; then
+  docker run --rm \
+    --entrypoint /bin/sh \
+    -v "${VOLUME_NAME}:/ouroboros-volume" \
+    -v "${CHECKPOINT_DIR}:/checkpoint:ro" \
+    -e CHECKPOINT_NAME="${CHECKPOINT_NAME}" \
+    -e STAGED_CHECKPOINT_DIR="${STAGED_CHECKPOINT_DIR}" \
+    "${BACKEND_IMAGE}" \
+    -ceu '
+      mkdir -p "${STAGED_CHECKPOINT_DIR}"
+      cp "/checkpoint/${CHECKPOINT_NAME}" "${STAGED_CHECKPOINT_DIR}/medical_sam3.pt"
+    '
+fi
+CHECKPOINT_SHA256="$(
+  docker run --rm \
+    --entrypoint /bin/sh \
+    -v "${VOLUME_NAME}:/ouroboros-volume" \
+    -e STAGED_CHECKPOINT_DIR="${STAGED_CHECKPOINT_DIR}" \
+    "${BACKEND_IMAGE}" \
+    -ceu '
+      test -s "${STAGED_CHECKPOINT_DIR}/medical_sam3.pt"
+      sha256sum "${STAGED_CHECKPOINT_DIR}/medical_sam3.pt"
+    ' \
+    | awk '{print $1}'
+)" || die "Unable to verify staged Medical SAM3 checkpoint in ${STAGED_CHECKPOINT_DIR}"
+printf 'checkpoint_sha256=%s\n' "${CHECKPOINT_SHA256}" >>"${ARTIFACT_DIR}/revisions.env"
+
+RUN_START_EPOCH="$(date +%s)"
+telemetry_loop "${RUN_START_EPOCH}" &
+TELEMETRY_PID=$!
 
 log "Submitting VideoPredictor smoke job"
 REQUEST_BODY="$(

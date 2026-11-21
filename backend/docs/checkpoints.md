@@ -3,6 +3,40 @@
 The production Rust backend loads SAM3 checkpoints through
 `candle_sam3::Sam3CheckpointSource::upstream_pth`.
 
+## Storage and migration
+
+The backend stores checkpoints under
+`<volume>/persist/auto-segmentation/chkpts/`, using the plugin package ID.
+Inside the backend container, `<volume>` is `/ouroboros-volume`; native runs
+use `VOLUME_MOUNT_PATH` (default `/tmp/ouroboros-volume`). Downloads, model
+availability, and model loading all use this checkpoint directory. Input and
+output staging remains under
+`<volume>/sam3-segmentation/` and is not persistent checkpoint storage.
+
+On startup after upgrading, the backend moves existing final checkpoint files
+(regular `.pt` files) from `<volume>/sam3-segmentation/chkpts/` into the new
+directory. This is a one-time migration of each file: an existing destination
+takes precedence and is never overwritten, and incomplete `.part` downloads
+are not migrated. A migration I/O error stops startup and reports the affected
+locations, rather than treating the legacy checkpoint as missing and downloading
+it again.
+
+Migration only rescues legacy files that are still present, for example during
+an upgrade in the same session or when reusing a smoke-test volume or native
+backend directory. It cannot recover checkpoints already deleted by an older
+host's shutdown cleanup.
+
+Persistence across Ouroboros application sessions requires the host to preserve
+`persist` during shutdown cleanup. The upstream fix for
+[#257](https://github.com/ChengLabResearch/ouroboros/pull/257) is merged as
+[`94087e698d79e5c21ac3b2df884f503a1d377787`](https://github.com/ChengLabResearch/ouroboros/commit/94087e698d79e5c21ac3b2df884f503a1d377787),
+but is not yet released. An unreleased build containing that fix preserves the
+checkpoints; the minimum released version is pending. The plugin can be released
+first so the next compatible host release can bundle it. Older host versions
+remain compatible with the plugin but remove checkpoints at application
+shutdown, so the next session requires another download. A native backend's
+storage lifetime instead depends on its configured volume directory.
+
 ## Download status
 
 The checkpoint service owns each model's download lifecycle and writes its
@@ -47,10 +81,14 @@ run concurrently. Disconnecting the POST caller or closing the panel does not
 cancel a service-owned download; a lost client response must not be treated as
 a backend download failure.
 
-Snapshots and failures live for the backend process lifetime. After a backend
-restart, final files are rediscovered and incomplete `.part` files remain
-unavailable; the next attempt replaces the partial file rather than resuming
-its bytes. Download authorization is held only by the active request/worker;
+Snapshots and failures live for the backend process lifetime. On backend startup,
+final files are rediscovered and stale `.part` entries in the checkpoint directory
+are removed before the checkpoint service starts. Partial files and directories
+are removed; symlinks are unlinked without following their targets. Completed
+checkpoints are retained, and a missing checkpoint directory is not created by
+this cleanup. A cleanup error prevents startup. The next download starts from
+the beginning rather than resuming partial bytes.
+Download authorization is held only by the active request/worker;
 status responses do not retain tokens or arbitrary upstream response bodies.
 The existing one-hour download timeout and model catalog remain in effect.
 
