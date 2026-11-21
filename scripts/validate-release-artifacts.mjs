@@ -43,7 +43,10 @@ for (const variant of variants) {
 		'plugin-release.json',
 		'index.html',
 		'icon.svg',
-		'compose.yml'
+		'compose.yml',
+		'LICENSE',
+		'LICENSE-SAM',
+		'THIRD_PARTY_NOTICES.txt'
 	]) {
 		assert(existsSync(join(artifactRoot, required)), `${variant.name} layout missing ${required}`)
 	}
@@ -52,8 +55,11 @@ for (const variant of variants) {
 		'Cargo.toml',
 		'Dockerfile',
 		'RUST_SCAFFOLD.md',
+		'about.hbs',
+		'about.toml',
 		'app',
 		'docs',
+		'licenses',
 		'pyproject.toml',
 		'poetry.lock',
 		'scripts',
@@ -113,6 +119,13 @@ for (const variant of variants) {
 		assert(!compose.includes('capabilities: [gpu]'), 'CPU compose should not reserve a GPU')
 	}
 }
+
+// The backend image ships its own copy of the plugin licence; it must match the repository's.
+assert(
+	(await readFile(join(root, 'backend', 'licenses', 'LICENSE'), 'utf8')) ===
+		(await readFile(join(root, 'LICENSE'), 'utf8')),
+	'backend/licenses/LICENSE differs from LICENSE'
+)
 
 console.log(`Validated ${variants.length} release artifact layouts for ${releaseTag}.`)
 

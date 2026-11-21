@@ -1,0 +1,30 @@
+accepted = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "LicenseRef-SAM",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# cargo-about 0.9.3 omits LicenseRef texts from its output, so the image ships
+# this text separately as licenses/LICENSE-SAM.
+[candle-sam3.clarify]
+license = "LicenseRef-SAM"
+
+[[candle-sam3.clarify.files]]
+path = "LICENSE-SAM"
+license = "LicenseRef-SAM"
+checksum = "4dea99bfaa016e21bc860d73f344236bd1e5c4977d1a9a8fd32f822b500ae1be"
+
+[candle-kernels.clarify]
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause"
+
+[[candle-kernels.clarify.files]]
+path = "src/ATen/native/transformers/cuda/mem_eff_attention/LICENSE"
+license = "BSD-3-Clause"
+checksum = "a8a2c6b67cf8a597ffaa5c82380a6bd1b82629c0417e00673d8013d662eb500a"
