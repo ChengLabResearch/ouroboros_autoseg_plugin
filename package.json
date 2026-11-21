@@ -6,7 +6,7 @@
 	"dockerCompose": "./compose.yml",
 	"private": true,
 	"license": "MIT",
-	"version": "0.4.0-beta.7",
+	"version": "0.4.0-beta.8",
 	"packageManager": "npm@11.19.0",
 	"engines": {
 		"node": ">=24",
