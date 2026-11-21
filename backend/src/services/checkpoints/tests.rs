@@ -29,6 +29,68 @@ fn test_config(base_url: &str, root: PathBuf) -> AppConfig {
     }
 }
 
+#[test]
+fn service_startup_removes_only_partial_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let config = test_config("https://huggingface.co", root.path().to_path_buf());
+    std::fs::create_dir_all(&config.checkpoint_dir).unwrap();
+    let partial_file = config.checkpoint_dir.join("sam3.pt.part");
+    let partial_dir = config.checkpoint_dir.join("medical_sam3.pt.part");
+    std::fs::write(&partial_file, b"interrupted download").unwrap();
+    std::fs::create_dir(&partial_dir).unwrap();
+    std::fs::write(partial_dir.join("piece"), b"unfinished").unwrap();
+    let complete = config.checkpoint_dir.join("complete.pt");
+    let notes = config.checkpoint_dir.join("notes.txt");
+    std::fs::write(&complete, b"completed weights").unwrap();
+    std::fs::write(&notes, b"keep these notes").unwrap();
+
+    #[cfg(unix)]
+    let linked_target = {
+        let target = root.path().join("unrelated-data");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep"), b"outside checkpoint storage").unwrap();
+        std::os::unix::fs::symlink(&target, config.checkpoint_dir.join("link.part")).unwrap();
+        target
+    };
+
+    let _service = service(&config);
+    assert!(!partial_file.exists());
+    assert!(!partial_dir.exists());
+    assert_eq!(std::fs::read(complete).unwrap(), b"completed weights");
+    assert_eq!(std::fs::read(notes).unwrap(), b"keep these notes");
+    #[cfg(unix)]
+    {
+        assert!(config
+            .checkpoint_dir
+            .join("link.part")
+            .symlink_metadata()
+            .is_err());
+        assert_eq!(
+            std::fs::read(linked_target.join("keep")).unwrap(),
+            b"outside checkpoint storage"
+        );
+    }
+}
+
+#[test]
+fn service_startup_reports_checkpoint_directory_cleanup_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let config = test_config("https://huggingface.co", root.path().to_path_buf());
+    std::fs::create_dir_all(config.checkpoint_dir.parent().unwrap()).unwrap();
+    std::fs::write(&config.checkpoint_dir, b"not a directory").unwrap();
+    let error = match CheckpointService::new(Arc::new(config.clone()), reqwest::Client::new()) {
+        Ok(_) => panic!("must not start with inaccessible partial entries"),
+        Err(error) => error,
+    };
+    assert!(error
+        .to_string()
+        .contains(&config.checkpoint_dir.display().to_string()));
+    assert_eq!(
+        std::fs::read(&config.checkpoint_dir).unwrap(),
+        b"not a directory"
+    );
+}
+
 #[tokio::test]
 async fn model_status_reports_existing_checkpoints() {
     let root = tempfile::tempdir().unwrap();
@@ -180,6 +242,7 @@ fn service(config: &AppConfig) -> CheckpointService {
             .build()
             .unwrap(),
     )
+    .expect("checkpoint service startup")
 }
 
 struct HttpFixture {

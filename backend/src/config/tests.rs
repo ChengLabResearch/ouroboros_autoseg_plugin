@@ -22,7 +22,7 @@ fn checkpoint_path_uses_persistent_plugin_storage() {
             config.checkpoint_path(model),
             config
                 .internal_volume_path
-                .join("persist/sam3-segmentation/chkpts")
+                .join("persist/auto-segmentation/chkpts")
                 .join(format!("{model}.pt"))
         );
     }

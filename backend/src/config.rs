@@ -125,7 +125,9 @@ impl AppConfig {
         };
         let checkpoint_dir = internal_volume_path
             .join("persist")
-            .join(&plugin_name)
+            // The manifest plugin ID owns persistent storage; plugin_name is
+            // the existing scratch namespace used by volume transfers.
+            .join("auto-segmentation")
             .join("chkpts");
         let fallback_annotation_interval = std::env::var("FALLBACK_ANNOTATION_INTERVAL")
             .ok()

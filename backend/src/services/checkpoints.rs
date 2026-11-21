@@ -35,12 +35,36 @@ pub struct CheckpointService {
 }
 
 impl CheckpointService {
-    pub fn new(config: Arc<AppConfig>, client: reqwest::Client) -> Self {
-        Self {
+    pub fn new(config: Arc<AppConfig>, client: reqwest::Client) -> Result<Self, AppError> {
+        // Before this owner exists, no download can be using a partial file.
+        // Interrupted downloads must not occupy persistent storage indefinitely.
+        let entries = match std::fs::read_dir(&config.checkpoint_dir) {
+            Ok(entries) => Some(entries),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(AppError::internal(format!(
+                    "Failed to inspect checkpoint directory {} for stale downloads: {error}",
+                    config.checkpoint_dir.display()
+                )))
+            }
+        };
+        if let Some(entries) = entries {
+            for entry in entries {
+                let path = entry?.path();
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "part")
+                {
+                    remove_partial_entry(&path)?;
+                }
+            }
+        }
+
+        Ok(Self {
             config,
             client,
             downloads: Arc::new(Mutex::new(HashMap::new())),
-        }
+        })
     }
 
     pub async fn model_status(&self) -> Result<ModelStatusResponse, AppError> {
@@ -148,7 +172,7 @@ impl CheckpointService {
         // install has returned (or unwound), so its file handle is closed
         // before cleanup, including on Windows where open files cannot unlink.
         if result.is_err() {
-            let _ = tokio::fs::remove_file(partial_download_path(target_path)).await;
+            let _ = remove_partial_entry_async(partial_download_path(target_path)).await;
         }
         let mut records = self.downloads.lock().await;
         let status = records.get_mut(model_name).expect("reserved model");
@@ -272,19 +296,31 @@ async fn prepare_download_target(target_path: &Path) -> Result<PathBuf, AppError
     }
 
     let partial_path = partial_download_path(target_path);
-    match tokio::fs::metadata(&partial_path).await {
-        Ok(metadata) if metadata.is_file() => {
-            tokio::fs::remove_file(&partial_path).await?;
-        }
-        Ok(metadata) if metadata.is_dir() => {
-            tokio::fs::remove_dir_all(&partial_path).await?;
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(AppError::Io(error)),
-    }
-
+    remove_partial_entry_async(partial_path.clone()).await?;
     Ok(partial_path)
+}
+
+// Startup, retry preparation, and failed downloads share one disposal rule.
+// Inspect the entry itself so a partial symlink never deletes its target.
+fn remove_partial_entry(path: &Path) -> Result<(), AppError> {
+    let result = match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path),
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    };
+    result.map_err(|error| {
+        AppError::internal(format!(
+            "Failed to remove partial checkpoint {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+async fn remove_partial_entry_async(path: PathBuf) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || remove_partial_entry(&path))
+        .await
+        .map_err(|error| AppError::internal(format!("Checkpoint cleanup worker failed: {error}")))?
 }
 
 fn download_failure_message(status: reqwest::StatusCode) -> String {

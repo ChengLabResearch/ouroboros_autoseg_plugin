@@ -18,11 +18,13 @@ const CHECKPOINT_BYTES: &[u8] = b"checkpoint fixture";
 
 fn fixture_config(root: &Path, upstream: &Server) -> AppConfig {
     let mut config = AppConfig::from_env().expect("environment config");
+    config.checkpoint_dir = root.join(
+        config
+            .checkpoint_dir
+            .strip_prefix(&config.internal_volume_path)
+            .expect("checkpoint directory inside configured volume"),
+    );
     config.internal_volume_path = root.to_path_buf();
-    config.checkpoint_dir = root
-        .join("persist")
-        .join(&config.plugin_name)
-        .join("chkpts");
     config.huggingface_base_url = upstream.url.clone();
     config
 }
@@ -139,7 +141,13 @@ async fn startup_migration_survives_host_cleanup_and_restart_without_downloading
     assert!(!config.checkpoint_path("sam3").exists());
     drop(backend);
 
+    let interrupted = config.checkpoint_dir.join("sam3.pt.part");
+    std::fs::write(&interrupted, b"interrupted persistent download").expect("persistent partial");
     simulate_host_cleanup(root.path(), true);
+    assert!(
+        interrupted.exists(),
+        "host preserves unfinished persistent downloads"
+    );
     assert!(
         !config.plugin_root().exists(),
         "host removed transient plugin storage"
@@ -149,6 +157,14 @@ async fn startup_migration_survives_host_cleanup_and_restart_without_downloading
         CHECKPOINT_BYTES
     );
     let restarted = Server::start(api::router(AppState::new(config.clone()).expect("restart")));
+    assert!(
+        !interrupted.exists(),
+        "backend startup removes the stale partial"
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("checkpoint after restart"),
+        CHECKPOINT_BYTES
+    );
     let status = model_status(&client, &restarted).await;
     assert_eq!(
         status["checkpoint_dir"],

@@ -40,7 +40,7 @@ impl AppState {
             .timeout(Duration::from_secs(30))
             .build()?;
         let config = Arc::new(config);
-        let checkpoints = CheckpointService::new(config.clone(), http_client.clone());
+        let checkpoints = CheckpointService::new(config.clone(), http_client.clone())?;
 
         Ok(Self {
             config,
