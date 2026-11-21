@@ -7,11 +7,19 @@ import { pathToFileURL } from 'node:url'
 const FINGERPRINT_SCHEMA_VERSION = 2
 const VARIANTS = {
 	cpu: {
+		nativeStage: 'builder-base',
+		dependencyStage: 'builder-dependency-layer',
+		exportStage: 'cpu-cache-export',
+		cargoHome: '/usr/local/cargo',
 		baseStages: ['builder', 'runtime'],
 		targetStages: ['test', 'runtime'],
 		inputPaths: ['tests', 'licenses/LICENSE', 'licenses/LICENSE-SAM']
 	},
 	cuda: {
+		nativeStage: 'cuda-builder-base',
+		dependencyStage: 'cuda-builder-dependency-layer',
+		exportStage: 'cuda-cache-export',
+		cargoHome: '/root/.cargo',
 		baseStages: ['cuda-builder', 'cuda-runtime'],
 		targetStages: ['cuda-runtime'],
 		inputPaths: ['licenses']
@@ -121,7 +129,43 @@ export async function buildFingerprint({
 	return {
 		...inputs,
 		fingerprint,
+		dependencyCache: await dependencyCacheIdentity({
+			backendRoot, parsedDockerfile, variant, variantConfig, platform, builderImage: baseImages[0]
+		}),
 		createdBy: 'scripts/backend-build-fingerprint.mjs'
+	}
+}
+
+// This is cache compatibility, not a claim that BuildKit has a cached layer.
+// Keep the native namespace stable across lockfile and cargo-about changes;
+// immutable archives use a dependency generation with a native restore prefix.
+async function dependencyCacheIdentity({
+	backendRoot, parsedDockerfile, variant, variantConfig, platform, builderImage
+}) {
+	const hash = (value) => createHash('sha256').update(stableJson(value)).digest('hex')
+	const native = hash({
+		platform,
+		variant,
+		builderImage,
+		dockerfile: dockerfileTargetInput(parsedDockerfile, [variantConfig.nativeStage])
+	})
+	const manifestInputs = {}
+	for (const path of ['.dockerignore', 'Cargo.toml', 'Cargo.lock']) {
+		manifestInputs[path] = await readFile(join(backendRoot, path), 'utf8')
+	}
+	const generation = hash({
+		native,
+		manifestInputs,
+		dockerfile: dockerfileTargetInput(parsedDockerfile, [variantConfig.dependencyStage])
+	})
+	const namespace = `backend-cargo-v1-${variant}-${native}`
+	return {
+		namespace,
+		key: `${namespace}-${generation}`,
+		restorePrefix: `${namespace}-`,
+		dependencyStage: variantConfig.dependencyStage,
+		exportStage: variantConfig.exportStage,
+		cargoHome: variantConfig.cargoHome
 	}
 }
 
@@ -189,7 +233,8 @@ export function parseDockerfile(text) {
 function dockerfileStageImages(parsedDockerfile) {
 	const stages = new Map()
 	for (const stage of parsedDockerfile.stages) {
-		const image = stage.source.replace(/\$\{([^}]+)\}/gu, (_, name) => {
+		const sourceStage = localStage(parsedDockerfile, stage.source)
+		const image = sourceStage ? stages.get(sourceStage) : stage.source.replace(/\$\{([^}]+)\}/gu, (_, name) => {
 			const value = parsedDockerfile.globalArgs.get(name)
 			if (!value) throw new Error(`Dockerfile ARG ${name} has no default image value`)
 			return value
@@ -199,27 +244,27 @@ function dockerfileStageImages(parsedDockerfile) {
 	return stages
 }
 
+function localStage(parsedDockerfile, reference) {
+	if (parsedDockerfile.stages.some(({ name }) => name === reference)) return reference
+	if (!/^\d+$/u.test(reference)) return null
+	return parsedDockerfile.stages[Number.parseInt(reference, 10)]?.name ?? null
+}
+
 export function dockerfileTargetInput(parsedDockerfile, targetStages) {
 	const stagesByName = new Map(parsedDockerfile.stages.map((stage) => [stage.name, stage]))
 	const selectedStages = new Set()
-
-	const resolveLocalStage = (reference) => {
-		if (stagesByName.has(reference)) return reference
-		if (!/^\d+$/u.test(reference)) return null
-		return parsedDockerfile.stages[Number.parseInt(reference, 10)]?.name ?? null
-	}
 
 	const visit = (stageName) => {
 		if (selectedStages.has(stageName)) return
 		const stage = stagesByName.get(stageName)
 		if (!stage) throw new Error(`Dockerfile does not define target stage "${stageName}"`)
 
-		const sourceStage = resolveLocalStage(stage.source)
+		const sourceStage = localStage(parsedDockerfile, stage.source)
 		if (sourceStage) visit(sourceStage)
 
 		const definition = stage.lines.join('\n')
 		for (const match of definition.matchAll(/--from=(?:"([^"]+)"|'([^']+)'|([^\s\\]+))/gu)) {
-			const referencedStage = resolveLocalStage(match[1] ?? match[2] ?? match[3])
+			const referencedStage = localStage(parsedDockerfile, match[1] ?? match[2] ?? match[3])
 			if (referencedStage) visit(referencedStage)
 		}
 

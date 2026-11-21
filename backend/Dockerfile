@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 ARG CPU_BUILDER_IMAGE=rust:1.88-slim-bookworm@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89
 ARG CPU_RUNTIME_IMAGE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 ARG CUDA_BUILDER_IMAGE=nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04@sha256:622e78a1d02c0f90ed900e3985d6c975d8e2dc9ee5e61643aed587dcf9129f42
@@ -5,42 +7,75 @@ ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04@sha256:2fcc4
 
 # ── Stage 1: build the Rust backend for CPU runtimes ─────────────────────────
 # Rust 1.88+ is required by the locked image dependency; it also supports edition 2024 manifests.
-FROM ${CPU_BUILDER_IMAGE} AS builder
+# The optional probe secret stops an uncached dependency ancestor before any
+# installation or compilation. Normal builds omit it.
+FROM ${CPU_BUILDER_IMAGE} AS builder-base
 
-RUN apt-get update && apt-get install -y \
+RUN --mount=type=secret,id=backend-dependency-probe \
+    if [ -f /run/secrets/backend-dependency-probe ]; then \
+        printf 'OUROBOROS_DEPENDENCY_CACHE_MISS\n' >&2; \
+        exit 83; \
+    fi; \
+    apt-get update && apt-get install -y \
     git \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Candle and candle-sam3 are git dependencies pinned in Cargo.toml and Cargo.lock;
-# Cargo fetches them during the dependency build below.
-# build.rs derives the logged engine revision from the resolved Cargo.lock source.
-
-# Compile the stable dependency graph before copying plugin source. The dummy
-# package is replaced below, while its target artifacts remain reusable when
-# ordinary plugin source changes.
 WORKDIR /build/plugin/backend
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src \
+
+# Tool installation is independent of the plugin dependency graph. Both build
+# branches inherit identical dummy targets, including the build dependencies.
+FROM builder-base AS builder-tools
+ARG CARGO_ABOUT_VERSION=0.9.3
+RUN --mount=type=secret,id=backend-dependency-probe \
+    if [ -f /run/secrets/backend-dependency-probe ]; then \
+        printf 'OUROBOROS_DEPENDENCY_CACHE_MISS\n' >&2; \
+        exit 83; \
+    fi; \
+    cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli \
+    && mkdir -p src \
     && printf 'fn main() {}\n' > src/main.rs \
     && printf '' > src/lib.rs \
-    && cargo build --release --locked --bin ouroboros-autoseg-plugin-backend \
-    && rm -rf src
+    && printf 'fn main() {}\n' > build.rs
 
-# cargo-about generates the third-party licence notices shipped in the runtime
-# image. It is installed after the dependency build so that layer's cache is
-# unaffected, and before the plugin source so source edits do not reinstall it.
-ARG CARGO_ABOUT_VERSION=0.9.3
-RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
+# Mutable Cargo caches are used only for dependency changes. The snapshot
+# preserves their canonical paths and mtimes for the ordinary builder layers.
+FROM builder-tools AS builder-dependencies
+COPY Cargo.toml Cargo.lock ./
+ARG BACKEND_CACHE_NAMESPACE=cpu-default
+RUN --mount=type=cache,id=${BACKEND_CACHE_NAMESPACE}-target,target=/build/plugin/backend/target,sharing=locked \
+    --mount=type=cache,id=${BACKEND_CACHE_NAMESPACE}-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=${BACKEND_CACHE_NAMESPACE}-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=secret,id=backend-dependency-probe \
+    set -eu; \
+    if [ -f /run/secrets/backend-dependency-probe ]; then \
+        printf 'OUROBOROS_DEPENDENCY_CACHE_MISS\n' >&2; \
+        exit 83; \
+    fi; \
+    cargo build --release --locked --bin ouroboros-autoseg-plugin-backend; \
+    cargo test --release --locked --no-run; \
+    mkdir -p /cache-snapshot; \
+    cd /; \
+    cp -a --parents build/plugin/backend/target usr/local/cargo/registry usr/local/cargo/git /cache-snapshot/
 
-COPY build.rs ./
-COPY src/ src/
-RUN touch src/lib.rs src/main.rs \
-    && cargo build --release --locked --bin ouroboros-autoseg-plugin-backend
+FROM builder-tools AS builder-dependency-layer
+COPY Cargo.toml Cargo.lock ./
+COPY --from=builder-dependencies /cache-snapshot/ /
 
+FROM builder-dependency-layer AS builder
+
+# Notices depend on the manifest, lockfile and licensing configuration, so
+# source-only changes can reuse them. Dummy targets keep Cargo metadata valid.
 COPY about.toml about.hbs ./
 RUN cargo about generate --locked --fail about.hbs -o THIRD_PARTY_LICENSES.txt
+
+# The real build script derives engine provenance from Cargo.lock. Touch all
+# replaced targets so restored Cargo artifacts cannot hide source changes.
+COPY build.rs ./
+COPY src/ src/
+RUN touch build.rs src/lib.rs src/main.rs \
+    && cargo build --release --locked --bin ouroboros-autoseg-plugin-backend
 
 # ── CPU tests gate its candidate; main/release promotion requires both jobs ──
 FROM builder AS test
@@ -48,13 +83,22 @@ FROM builder AS test
 COPY tests/ tests/
 RUN cargo test --release --locked
 
+# Export the same dependency snapshot used by the builder for archive saves.
+FROM scratch AS cpu-cache-export
+COPY --from=builder-dependencies /cache-snapshot/ /
+
 # ── Stage 2: build the Rust backend for CUDA runtimes ────────────────────────
-FROM ${CUDA_BUILDER_IMAGE} AS cuda-builder
+FROM ${CUDA_BUILDER_IMAGE} AS cuda-builder-base
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 ARG RUST_VERSION=1.88.0
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=secret,id=backend-dependency-probe \
+    if [ -f /run/secrets/backend-dependency-probe ]; then \
+        printf 'OUROBOROS_DEPENDENCY_CACHE_MISS\n' >&2; \
+        exit 83; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
@@ -63,35 +107,70 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+RUN --mount=type=secret,id=backend-dependency-probe \
+    if [ -f /run/secrets/backend-dependency-probe ]; then \
+        printf 'OUROBOROS_DEPENDENCY_CACHE_MISS\n' >&2; \
+        exit 83; \
+    fi; \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
 
 WORKDIR /build/plugin/backend
 ARG CANDLE_FEATURES=cuda,cudnn
 ARG CUDA_COMPUTE_CAP=75
 ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
-COPY Cargo.toml Cargo.lock ./
-RUN test "${CANDLE_FEATURES}" = "cuda,cudnn" \
-    || { echo "CANDLE_FEATURES must equal the canonical cuda,cudnn feature set" >&2; exit 1; } \
+
+FROM cuda-builder-base AS cuda-builder-tools
+ARG CARGO_ABOUT_VERSION=0.9.3
+RUN --mount=type=secret,id=backend-dependency-probe \
+    if [ -f /run/secrets/backend-dependency-probe ]; then \
+        printf 'OUROBOROS_DEPENDENCY_CACHE_MISS\n' >&2; \
+        exit 83; \
+    fi; \
+    cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli \
     && mkdir -p src \
     && printf 'fn main() {}\n' > src/main.rs \
     && printf '' > src/lib.rs \
-    && cargo build --release --locked --features "${CANDLE_FEATURES}" \
-        --bin ouroboros-autoseg-plugin-backend \
-    && rm -rf src
+    && printf 'fn main() {}\n' > build.rs
 
-ARG CARGO_ABOUT_VERSION=0.9.3
-RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
+FROM cuda-builder-tools AS cuda-builder-dependencies
+COPY Cargo.toml Cargo.lock ./
+ARG BACKEND_CACHE_NAMESPACE=cuda-default
+RUN --mount=type=cache,id=${BACKEND_CACHE_NAMESPACE}-target,target=/build/plugin/backend/target,sharing=locked \
+    --mount=type=cache,id=${BACKEND_CACHE_NAMESPACE}-registry,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,id=${BACKEND_CACHE_NAMESPACE}-git,target=/root/.cargo/git,sharing=locked \
+    --mount=type=secret,id=backend-dependency-probe \
+    set -eu; \
+    if [ -f /run/secrets/backend-dependency-probe ]; then \
+        printf 'OUROBOROS_DEPENDENCY_CACHE_MISS\n' >&2; \
+        exit 83; \
+    fi; \
+    test "${CANDLE_FEATURES}" = "cuda,cudnn" \
+        || { echo "CANDLE_FEATURES must equal the canonical cuda,cudnn feature set" >&2; exit 1; }; \
+    cargo build --release --locked --features "${CANDLE_FEATURES}" \
+        --bin ouroboros-autoseg-plugin-backend; \
+    mkdir -p /cache-snapshot; \
+    cd /; \
+    cp -a --parents build/plugin/backend/target root/.cargo/registry root/.cargo/git /cache-snapshot/
 
-COPY build.rs ./
-COPY src/ src/
-RUN touch src/lib.rs src/main.rs \
-    && cargo build --release --locked --features "${CANDLE_FEATURES}" \
-    --bin ouroboros-autoseg-plugin-backend
+FROM cuda-builder-tools AS cuda-builder-dependency-layer
+COPY Cargo.toml Cargo.lock ./
+COPY --from=cuda-builder-dependencies /cache-snapshot/ /
+
+FROM cuda-builder-dependency-layer AS cuda-builder
 
 COPY about.toml about.hbs ./
 RUN cargo about generate --locked --fail --features "${CANDLE_FEATURES}" \
     about.hbs -o THIRD_PARTY_LICENSES.txt
+
+COPY build.rs ./
+COPY src/ src/
+RUN touch build.rs src/lib.rs src/main.rs \
+    && cargo build --release --locked --features "${CANDLE_FEATURES}" \
+    --bin ouroboros-autoseg-plugin-backend
+
+FROM scratch AS cuda-cache-export
+COPY --from=cuda-builder-dependencies /cache-snapshot/ /
 
 # ── Stage 3: minimal CPU runtime image ───────────────────────────────────────
 FROM ${CPU_RUNTIME_IMAGE} AS runtime
@@ -105,7 +184,7 @@ COPY --from=builder \
     /build/plugin/backend/target/release/ouroboros-autoseg-plugin-backend \
     /usr/local/bin/ouroboros-autoseg-plugin-backend
 COPY licenses/LICENSE licenses/LICENSE-SAM /usr/share/licenses/ouroboros-autoseg-plugin-backend/
-COPY --from=builder \
+COPY --from=test \
     /build/plugin/backend/THIRD_PARTY_LICENSES.txt \
     /usr/share/licenses/ouroboros-autoseg-plugin-backend/
 

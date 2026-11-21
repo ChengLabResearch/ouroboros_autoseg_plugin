@@ -343,6 +343,26 @@ Successful `main` builds wait for both jobs and publish commit tags:
 - `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>`
 - `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:sha-<commit>-cuda`
 
+Dependency caching uses a hybrid of registry layers and Cargo cache mounts.
+BuildKit probes the pinned registry cache first, stopping before any uncached
+setup or compilation. A cached dependency layer needs no Actions archive
+transfer. On a miss, the workflow restores compatible Cargo output using
+`buildkit-cache-dance`, compiles the locked dependencies, then snapshots the
+mounts into ordinary builder paths. CPU dependency precompilation includes
+development and build dependencies; the runtime's dependency on the test stage
+retains compiled tests in the single final registry cache export.
+
+The fingerprint script owns separate CPU/CUDA native cache identities, including
+the builder image, Rust toolchain, platform, features and CUDA architecture.
+Archive generations may change with the lockfile while their compatible restore
+prefix remains stable. Archives are saved only after verification. Since GitHub
+scopes PR archives to the PR, `main` can populate its shared archive from an
+already-built registry snapshot after a merge; it does not compile to populate
+that archive. Forks only restore. Saves are skipped when the archive or repository
+budget would be exceeded; the budget check reserves space for the parallel job
+but cannot serialize unrelated concurrent cache writers. Cargo remains responsible
+for deciding which restored crates and CUDA outputs are reusable.
+
 Version-tag jobs verify those exact commit images, promote their manifests to
 the release tags, and build plugin archives containing the verified digests;
 they do not rebuild the Rust backend. The unsuffixed tags use the CPU runtime
