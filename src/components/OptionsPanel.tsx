@@ -443,6 +443,11 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                         hold the last accepted window; prompted frames recenter it at the same size.
                     </p>
                     {inputWindowEnabled && <>
+                        <p>
+                            Recommended starting settings: margin 8 px, maximum growth 5 px per edge
+                            per frame, and blank initial size for unrestricted startup. Smaller margins
+                            or growth limits can exclude parts of a changing structure.
+                        </p>
                         <div className={styles.row}>
                             <label className={styles.label} htmlFor="input-window-margin">Window Margin (px)</label>
                             <div className={styles.inputContainer}>
@@ -503,6 +508,11 @@ export default function OptionsPanel({ onSubmit, isRunning }: Props) {
                             Leave blank for unrestricted input until a component is accepted. Enter a
                             positive whole number to use a trace-centred square during startup.
                             After startup, the window follows accepted components and can change size.
+                        </p>
+                        <p>
+                            Small accepted components can shrink the window enough to miss part of the
+                            structure. Flag holds keep that window; prompt recentering moves it without
+                            enlarging it. Review the output for missed regions as well as leakage.
                         </p>
                         {!validInputWindow && <p role="alert">
                             Margin and growth must be nonnegative whole numbers. Window size must be

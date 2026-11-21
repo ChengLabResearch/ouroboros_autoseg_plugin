@@ -45,7 +45,7 @@ for API and restart behavior.
 
 ### Input window
 
-**Input Window** is optional and off by default. It applies to both predictors
+**Restrict Input Window** is optional and off by default. It applies to both predictors
 and both model choices. Before model resizing and encoding, it replaces pixels
 outside a native-coordinate window with background. Frame dimensions, trace
 prompts, and output coordinates stay unchanged; output masks are not clipped.
@@ -54,6 +54,12 @@ The API accepts `input_window: { "margin": 8, "max_growth": 5,
 "window_size": null }`. Omitted or `null` disables it; `{}` uses those defaults.
 Margin and maximum outward growth are nonnegative integers. A supplied window
 size is a positive integer, in pixels.
+
+When enabling windowing, start with the defaults: margin **8 px**, maximum
+outward growth **5 px per edge per frame**, and unrestricted startup. A smaller
+margin leaves less room around the selected component; a lower growth limit
+can delay expansion when the structure grows or tracking recovers. Neither
+setting is a maximum object size.
 
 By default, startup frames remain unwindowed until the classifier accepts a
 trace-selected component. A supplied `window_size` instead limits those startup
@@ -77,6 +83,13 @@ inside the image. Image prediction prompts every frame, so every frame after
 startup uses this recentering rule. The component-derived window, rather than
 the unrestricted input that produced the first accepted component, is the
 basis for subsequent holds and recentering.
+
+A small component can pass the acceptance checks and shrink the next window
+enough to exclude part of the structure. Subsequent flags hold that window,
+and prompt recentering translates it without restoring its previous dimensions.
+Neither guarantees recovery of the missing region. Review the saved masks for
+missed regions as well as leakage; classifier acceptance does not establish
+segmentation accuracy.
 
 The background is the current frame's median outside the previous raw mask,
 calculated independently for each colour channel. Even-sized samples use the
