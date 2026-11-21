@@ -56,7 +56,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check out the released cache-mount transport
-        if: inputs.method == 'mounts'
+        if: steps.prepare.outputs.restore_mounts == 'true' || steps.prepare.outputs.extract_mounts == 'true'
         uses: actions/checkout@v7
         with:
           repository: reproducible-containers/buildkit-cache-dance
@@ -65,7 +65,7 @@ jobs:
           persist-credentials: false
 
       - name: Restore seed mount archive
-        if: inputs.method == 'mounts' && inputs.scenario != 'seed'
+        if: steps.prepare.outputs.restore_mounts == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.prepare.outputs.cache_path }}
@@ -73,7 +73,7 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Inject restored mounts
-        if: inputs.method == 'mounts' && inputs.scenario != 'seed'
+        if: steps.prepare.outputs.restore_mounts == 'true'
         env:
           BUILDER: ${{ steps.builder.outputs.name }}
           CACHE_MAP: ${{ steps.prepare.outputs.cache_map }}
@@ -112,8 +112,20 @@ jobs:
           "${build[@]}" --target "${RUNTIME}" "${export_cache[@]}" backend 2>&1 | tee "${MEASUREMENTS}/runtime.log"
           df -B1 . /var/lib/docker | tee "${MEASUREMENTS}/disk-after-build.txt"
 
+      - name: Measure hybrid cache layers
+        if: inputs.method == 'hybrid'
+        env:
+          BUILDER: ${{ steps.builder.outputs.name }}
+          REGISTRY_CACHE: ${{ steps.prepare.outputs.registry_cache }}
+        run: |
+          set -euo pipefail
+          docker buildx du --builder "${BUILDER}" --format=json > "${MEASUREMENTS}/buildkit-du.json"
+          if [[ "${SCENARIO}" == seed ]]; then
+            docker buildx imagetools inspect --raw "${REGISTRY_CACHE}" > "${MEASUREMENTS}/registry-manifest.json"
+          fi
+
       - name: Extract mounts and measure their size
-        if: inputs.method == 'mounts'
+        if: steps.prepare.outputs.extract_mounts == 'true'
         env:
           BUILDER: ${{ steps.builder.outputs.name }}
           CACHE_MAP: ${{ steps.prepare.outputs.cache_map }}
@@ -124,11 +136,12 @@ jobs:
             --builder "${BUILDER}" --cache-map "${CACHE_MAP}" \
             --scratch-dir "${MEASUREMENTS}/dance" 2>&1 | tee "${MEASUREMENTS}/extract.log"
           test -d "${CACHE_PATH}/target/release/.fingerprint"
-          du -sb "${CACHE_PATH}"/* "${CACHE_PATH}" | tee "${MEASUREMENTS}/extracted-bytes.txt"
+          du -sb "${CACHE_PATH}"/* | tee "${MEASUREMENTS}/extracted-bytes.txt"
+          du -sb "${CACHE_PATH}" | tee -a "${MEASUREMENTS}/extracted-bytes.txt"
           df -B1 . /var/lib/docker | tee "${MEASUREMENTS}/disk-after-extract.txt"
 
       - name: Check repository cache capacity before saving
-        if: inputs.method == 'mounts' && inputs.scenario == 'seed'
+        if: steps.prepare.outputs.save_mounts == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CACHE_PATH: ${{ steps.prepare.outputs.cache_path }}
@@ -138,17 +151,20 @@ jobs:
           gh api --paginate "/repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
             --jq '.actions_caches[].size_in_bytes' > "${MEASUREMENTS}/existing-cache-bytes.txt"
           used="$(awk '{sum += $1} END {printf "%.0f", sum}' "${MEASUREMENTS}/existing-cache-bytes.txt")"
-          # Conservatively use uncompressed size and retain 1 GB of the default
-          # 10 GB allowance. Seed saves are serialized by the calling workflow.
-          printf 'existing=%s raw-new=%s ceiling=10000000000 reserve=1000000000\n' \
-            "${used}" "${bytes}" | tee "${MEASUREMENTS}/cache-budget.txt"
-          (( used + bytes <= 9000000000 )) || {
+          # The measured CPU/CUDA seeds were 1.44/1.67 GB raw. Cap each at 2 GB
+          # and reserve that cap for the parallel peer, so both cannot spend
+          # the same headroom. If already listed, the peer is counted twice.
+          # Keep the existing 1 GB reserve within the default 10 GB allowance.
+          seed_limit=2000000000
+          printf 'existing=%s raw-new=%s seed-raw-limit=%s peer-reserve=%s ceiling=10000000000 reserve=1000000000\n' \
+            "${used}" "${bytes}" "${seed_limit}" "${seed_limit}" | tee "${MEASUREMENTS}/cache-budget.txt"
+          (( bytes <= seed_limit && used + bytes + seed_limit <= 9000000000 )) || {
             echo 'Mount cache exceeds the spike budget; refusing to evict unrelated caches.' >&2
             exit 1
           }
 
       - name: Save seed mount archive
-        if: inputs.method == 'mounts' && inputs.scenario == 'seed'
+        if: steps.prepare.outputs.save_mounts == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.prepare.outputs.cache_path }}

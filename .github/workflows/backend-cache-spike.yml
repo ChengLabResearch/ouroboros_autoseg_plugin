@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  registry-seed:
+  seed:
     if: github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
@@ -24,38 +24,20 @@ jobs:
         variant: [cpu, cuda]
     uses: ./.github/workflows/backend-cache-spike-run.yml
     with:
-      method: registry
+      method: &spike-method hybrid
       variant: ${{ matrix.variant }}
       scenario: seed
 
-  mount-cpu-seed:
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    uses: ./.github/workflows/backend-cache-spike-run.yml
-    with:
-      method: mounts
-      variant: cpu
-      scenario: seed
-
-  mount-cuda-seed:
-    # Serialize the two large Actions-cache saves so the budget check sees both.
-    needs: mount-cpu-seed
-    uses: ./.github/workflows/backend-cache-spike-run.yml
-    with:
-      method: mounts
-      variant: cuda
-      scenario: seed
-
   probe:
-    needs: [registry-seed, mount-cpu-seed, mount-cuda-seed]
+    needs: seed
     strategy:
       fail-fast: false
       max-parallel: 4
       matrix:
-        method: [registry, mounts]
         variant: [cpu, cuda]
         scenario: [source, dependency]
     uses: ./.github/workflows/backend-cache-spike-run.yml
     with:
-      method: ${{ matrix.method }}
+      method: *spike-method
       variant: ${{ matrix.variant }}
       scenario: ${{ matrix.scenario }}

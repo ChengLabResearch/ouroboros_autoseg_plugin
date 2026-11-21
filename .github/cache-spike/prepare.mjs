@@ -1,4 +1,4 @@
-// Branch-only #103 experiment. Derive both arms from the production Dockerfile.
+// Branch-only #103 experiment. Derive each arm from the production Dockerfile.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { parseDockerfile } from '../../scripts/backend-build-fingerprint.mjs'
 
 const [method, variant, scenario] = process.argv.slice(2)
-assert(['registry', 'mounts'].includes(method), 'Expected registry or mounts')
+assert(['registry', 'mounts', 'hybrid'].includes(method), 'Expected registry, mounts or hybrid')
 assert(['cpu', 'cuda'].includes(variant), 'Expected cpu or cuda')
 assert(['seed', 'source', 'dependency'].includes(scenario), 'Unknown spike scenario')
 assert(process.env.RUNNER_TEMP && process.env.GITHUB_OUTPUT && process.env.GITHUB_RUN_ID)
@@ -38,8 +38,48 @@ const mounts = Object.values(cacheMap).map(({ target, id, sharing }) =>
 	`--mount=type=cache,target=${target},id=${id},sharing=${sharing}`).join(' ')
 const binary = 'ouroboros-autoseg-plugin-backend'
 
+if (method === 'hybrid') {
+	const start = dependencyCopy + 1
+	assert(stage.lines[start].startsWith('RUN '), 'Expected dependency RUN after manifests')
+	let end = start
+	while (stage.lines[end].endsWith('\\')) end += 1
+	const environmentStage = `${builder}-environment`
+	const dependencyStage = `${builder}-dependencies`
+	const prefix = stage.lines.slice(0, dependencyCopy).join('\n')
+		.replace(`FROM ${stage.source} AS ${builder}`, `FROM ${stage.source} AS ${environmentStage}`)
+	// A mount hides its underlying image path. Snapshot into a separate stage,
+	// then restore canonical paths without retaining that stage in the builder.
+	const dependencyRun = stage.lines.slice(start, end + 1).join('\n')
+		.replace('RUN ', `RUN ${mounts} `)
+		.replaceAll('cargo build --release', 'cargo build --verbose --release')
+		+ ` \\\n    && snapshot_started="$(date +%s%N)" \\\n    && mkdir -p /cache-spike-snapshot \\\n    && cp -a --parents ${Object.values(targets).join(' ')} /cache-spike-snapshot/ \\\n    && printf 'hybrid-copy-ns=%s\\n' "$(( $(date +%s%N) - snapshot_started ))" \\\n    && du -sb /cache-spike-snapshot`
+	const replacement = [
+		prefix,
+		`FROM ${environmentStage} AS ${dependencyStage}`,
+		stage.lines[dependencyCopy], dependencyRun, '',
+		`FROM ${environmentStage} AS ${builder}`,
+		stage.lines[dependencyCopy],
+		`COPY --from=${dependencyStage} /cache-spike-snapshot/ /`,
+		...stage.lines.slice(end + 1)
+	].join('\n')
+	dockerfile = dockerfile.replace(stage.lines.join('\n'), replacement)
+}
+
+if (method !== 'registry') {
+	// Keep instrumentation and real-source invalidation identical in both arms.
+	for (const current of parseDockerfile(dockerfile).stages.filter(({ name }) =>
+		name === builder || (variant === 'cpu' && name === 'test'))) {
+		const original = current.lines.join('\n')
+		const instrumented = original
+			.replaceAll('cargo build --release', 'cargo build --verbose --release')
+			.replaceAll('cargo test --release', 'cargo test --verbose --release')
+			.replace('touch src/lib.rs src/main.rs', 'touch build.rs src/lib.rs src/main.rs')
+		dockerfile = dockerfile.replace(original, instrumented)
+	}
+}
+
 if (method === 'mounts') {
-	for (const current of parsed.stages.filter(({ name }) => name === builder || (variant === 'cpu' && name === 'test'))) {
+	for (const current of parseDockerfile(dockerfile).stages.filter(({ name }) => name === builder || (variant === 'cpu' && name === 'test'))) {
 		const lines = [...current.lines]
 		for (let start = 0; start < lines.length; start += 1) {
 			if (!lines[start].startsWith('RUN ')) continue
@@ -48,11 +88,7 @@ if (method === 'mounts') {
 			let instruction = lines.slice(start, end + 1).join('\n')
 			if (!instruction.includes('cargo ')) continue
 			instruction = instruction.replace('RUN ', `RUN ${mounts} `)
-			instruction = instruction.replaceAll('cargo build --release', 'cargo build --verbose --release')
-			instruction = instruction.replaceAll('cargo test --release', 'cargo test --verbose --release')
-			if (instruction.includes('touch src/lib.rs src/main.rs')) {
-				// Restored target artifacts can be newer than checked-out sources.
-				instruction = instruction.replace('touch src/lib.rs src/main.rs', 'touch build.rs src/lib.rs src/main.rs')
+			if (instruction.includes('touch build.rs src/lib.rs src/main.rs')) {
 				instruction += ` \\\n    && mkdir -p /out && cp target/release/${binary} /out/${binary}`
 			}
 			lines.splice(start, end - start + 1, instruction)
@@ -83,6 +119,9 @@ await writeFile(join(output, 'config.json'), `${JSON.stringify({ method, variant
 const values = {
 	dockerfile: join(output, 'Dockerfile'), runtime, cache_path: cachePath,
 	cache_key: namespace, cache_map: JSON.stringify(cacheMap),
+	restore_mounts: (method === 'mounts' && scenario !== 'seed') || (method === 'hybrid' && scenario === 'dependency'),
+	extract_mounts: method === 'mounts' || (method === 'hybrid' && scenario === 'seed'),
+	save_mounts: method !== 'registry' && scenario === 'seed',
 	registry_cache: `ghcr.io/chenglabresearch/ouroboros-autoseg-backend:spike-103-${process.env.GITHUB_RUN_ID}-${variant}-${method}`
 }
 await appendFile(process.env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''))
