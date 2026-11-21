@@ -40,8 +40,13 @@ The backend uses two git dependencies, both pinned by commit in `Cargo.toml` and
 
 `candle-sam3` pins the same fork commit, so both use one set of Candle types. When
 updating either pin, keep the fork `rev` here equal to the one in `candle-sam3`'s
-`Cargo.toml`, and keep the Dockerfile's `CANDLE_SAM3_COMMIT` equal to the
-`candle-sam3` `rev`.
+`Cargo.toml`, then regenerate `Cargo.lock`.
+
+`build.rs` derives the logged `candle_sha` from the resolved `candle-sam3` git
+source in `Cargo.lock`. Both backend log sites use that compiled value. There
+is no Docker `CANDLE_SAM3_COMMIT` build argument or environment override for
+relabeling it. A missing package, ambiguous resolution, or unresolved git
+source fails the build instead of producing an unknown or supplied revision.
 
 No sibling checkout is needed:
 
@@ -53,4 +58,12 @@ cargo test
 
 To build against local checkouts of either repository, use a
 [`[patch]`](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html)
-section in an uncommitted `.cargo/config.toml`.
+section in an uncommitted `.cargo/config.toml`. When `candle-sam3` resolves to a
+local path, the backend logs `candle_sha=local`; there is no locked git commit
+to report for those sources. Cargo's `paths` overrides leave the lockfile source
+unchanged and are not supported for revision checks; use `[patch]` instead.
+
+The biological GPU smoke requires a git-pinned `candle-sam3` in `Cargo.lock`.
+Its Python helper independently reads the lockfile and rejects a mismatching
+backend log. The helper uses standard-library `tomllib` on Python 3.11 or
+newer, or the `tomli` backport on Python 3.10.

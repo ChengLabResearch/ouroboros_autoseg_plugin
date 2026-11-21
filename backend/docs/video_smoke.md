@@ -88,8 +88,14 @@ Each run writes a `revisions.env`, bounded `backend.log`, `transfers.jsonl`,
 `OUTPUT_DIR` when set). The telemetry
 rows record elapsed time, GPU utilization, GPU memory, and container memory.
 The harness also verifies that the model-load log contains the requested CUDA
-ordinal plus the exact plugin and Candle revisions, and that every output TIFF
-page is `uint8` with binary values only.
+ordinal and exact plugin revision. The expected `candle_sha` is the resolved
+`candle-sam3` Git commit in this checkout's `Cargo.lock`, including when using a
+prebuilt image; every captured `candle_sha` must match it. To compare engine
+revisions, change the Cargo pin and regenerate the lockfile before building.
+The lockfile helper uses Python 3.11+'s `tomllib`, or `tomli` on Python 3.10
+(`python3 -m pip install tomli`). Local path patches have no Git commit and
+cannot pass this provenance check. Every output TIFF page must also be `uint8`
+with binary values only.
 
 Use a separate run with `overlay_annotation_points` enabled when generating
 prompt-marker figure artifacts.

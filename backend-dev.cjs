@@ -15,6 +15,7 @@ const dependencyPaths = [
     'Dockerfile',
     'about.hbs',
     'about.toml',
+    'build.rs',
     'compose.dev.yml',
     'compose.gpu.dev.yml',
     'compose.gpu.yml',
