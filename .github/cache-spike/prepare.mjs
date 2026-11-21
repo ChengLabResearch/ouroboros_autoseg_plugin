@@ -49,10 +49,11 @@ if (method === 'hybrid') {
 		.replace(`FROM ${stage.source} AS ${builder}`, `FROM ${stage.source} AS ${environmentStage}`)
 	// A mount hides its underlying image path. Snapshot into a separate stage,
 	// then restore canonical paths without retaining that stage in the builder.
+	// Relative sources from / avoid coreutils 9.1's absolute --parents bug.
 	const dependencyRun = stage.lines.slice(start, end + 1).join('\n')
 		.replace('RUN ', `RUN ${mounts} `)
 		.replaceAll('cargo build --release', 'cargo build --verbose --release')
-		+ ` \\\n    && snapshot_started="$(date +%s%N)" \\\n    && mkdir -p /cache-spike-snapshot \\\n    && cp -a --parents ${Object.values(targets).join(' ')} /cache-spike-snapshot/ \\\n    && printf 'hybrid-copy-ns=%s\\n' "$(( $(date +%s%N) - snapshot_started ))" \\\n    && du -sb /cache-spike-snapshot`
+		+ ` \\\n    && snapshot_started="$(date +%s%N)" \\\n    && mkdir -p /cache-spike-snapshot \\\n    && (cd / && cp -a --parents ${Object.values(targets).map(path => path.slice(1)).join(' ')} /cache-spike-snapshot/) \\\n    && printf 'hybrid-copy-ns=%s\\n' "$(( $(date +%s%N) - snapshot_started ))" \\\n    && du -sb /cache-spike-snapshot`
 	const replacement = [
 		prefix,
 		`FROM ${environmentStage} AS ${dependencyStage}`,
