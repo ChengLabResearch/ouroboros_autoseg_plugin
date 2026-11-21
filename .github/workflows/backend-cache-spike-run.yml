@@ -1,0 +1,184 @@
+name: Backend Cache Spike Measurement
+
+on:
+  workflow_call:
+    inputs:
+      method:
+        required: true
+        type: string
+      variant:
+        required: true
+        type: string
+      scenario:
+        required: true
+        type: string
+
+jobs:
+  measure:
+    name: ${{ inputs.method }} / ${{ inputs.variant }} / ${{ inputs.scenario }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    env:
+      METHOD: ${{ inputs.method }}
+      VARIANT: ${{ inputs.variant }}
+      SCENARIO: ${{ inputs.scenario }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Apply the resolver-generated dependency probe
+        if: inputs.scenario == 'dependency'
+        run: git apply .github/cache-spike/pin-project-lite.patch
+
+      - name: Derive the experiment from the production Dockerfile
+        id: prepare
+        run: |
+          set -euo pipefail
+          MEASUREMENTS="${RUNNER_TEMP}/cache-spike"
+          echo "MEASUREMENTS=${MEASUREMENTS}" >> "${GITHUB_ENV}"
+          node .github/cache-spike/prepare.mjs "${METHOD}" "${VARIANT}" "${SCENARIO}"
+          df -B1 . /var/lib/docker | tee "${MEASUREMENTS}/disk-before.txt"
+          git diff -- backend/Cargo.lock backend/src/main.rs > "${MEASUREMENTS}/input-change.txt"
+
+      - name: Set up Docker Buildx
+        id: builder
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in for isolated registry-cache exports
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check out the released cache-mount transport
+        if: steps.prepare.outputs.restore_mounts == 'true' || steps.prepare.outputs.extract_mounts == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: reproducible-containers/buildkit-cache-dance
+          ref: 5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0; bundled CLI, no npm install
+          path: .cache-spike-dance
+          persist-credentials: false
+
+      - name: Restore seed mount archive
+        if: steps.prepare.outputs.restore_mounts == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.prepare.outputs.cache_path }}
+          key: ${{ steps.prepare.outputs.cache_key }}
+          fail-on-cache-miss: true
+
+      - name: Inject restored mounts
+        if: steps.prepare.outputs.restore_mounts == 'true'
+        env:
+          BUILDER: ${{ steps.builder.outputs.name }}
+          CACHE_MAP: ${{ steps.prepare.outputs.cache_map }}
+          CACHE_PATH: ${{ steps.prepare.outputs.cache_path }}
+        run: |
+          set -euo pipefail
+          test -d "${CACHE_PATH}/target/release/.fingerprint"
+          du -sb "${CACHE_PATH}"/* | tee "${MEASUREMENTS}/restored-bytes.txt"
+          node .cache-spike-dance/dist/index.js \
+            --builder "${BUILDER}" --cache-map "${CACHE_MAP}" \
+            --scratch-dir "${MEASUREMENTS}/dance" 2>&1 | tee "${MEASUREMENTS}/inject.log"
+
+      - name: Build with the selected cache path
+        env:
+          BUILDER: ${{ steps.builder.outputs.name }}
+          DOCKERFILE: ${{ steps.prepare.outputs.dockerfile }}
+          RUNTIME: ${{ steps.prepare.outputs.runtime }}
+          REGISTRY_CACHE: ${{ steps.prepare.outputs.registry_cache }}
+        run: |
+          set -euo pipefail
+          if [[ "${SCENARIO}" == seed ]]; then
+            cache_from="ghcr.io/chenglabresearch/ouroboros-autoseg-backend:buildcache-${VARIANT}"
+          else
+            cache_from="${REGISTRY_CACHE}"
+          fi
+          build=(docker buildx build --builder "${BUILDER}" --platform linux/amd64
+            --file "${DOCKERFILE}" --progress plain --output type=cacheonly
+            --cache-from "type=registry,ref=${cache_from}")
+          if [[ "${VARIANT}" == cpu ]]; then
+            "${build[@]}" --target test backend 2>&1 | tee "${MEASUREMENTS}/tests.log"
+          fi
+          export_cache=()
+          if [[ "${SCENARIO}" == seed ]]; then
+            export_cache=(--cache-to "type=registry,ref=${REGISTRY_CACHE},mode=max,image-manifest=true,oci-mediatypes=true")
+          fi
+          "${build[@]}" --target "${RUNTIME}" "${export_cache[@]}" backend 2>&1 | tee "${MEASUREMENTS}/runtime.log"
+          df -B1 . /var/lib/docker | tee "${MEASUREMENTS}/disk-after-build.txt"
+
+      - name: Measure hybrid cache layers
+        if: inputs.method == 'hybrid'
+        env:
+          BUILDER: ${{ steps.builder.outputs.name }}
+          REGISTRY_CACHE: ${{ steps.prepare.outputs.registry_cache }}
+        run: |
+          set -euo pipefail
+          docker buildx du --builder "${BUILDER}" --format=json > "${MEASUREMENTS}/buildkit-du.json"
+          if [[ "${SCENARIO}" == seed ]]; then
+            docker buildx imagetools inspect --raw "${REGISTRY_CACHE}" > "${MEASUREMENTS}/registry-manifest.json"
+          fi
+
+      - name: Extract mounts and measure their size
+        if: steps.prepare.outputs.extract_mounts == 'true'
+        env:
+          BUILDER: ${{ steps.builder.outputs.name }}
+          CACHE_MAP: ${{ steps.prepare.outputs.cache_map }}
+          CACHE_PATH: ${{ steps.prepare.outputs.cache_path }}
+        run: |
+          set -euo pipefail
+          node .cache-spike-dance/dist/index.js --extract \
+            --builder "${BUILDER}" --cache-map "${CACHE_MAP}" \
+            --scratch-dir "${MEASUREMENTS}/dance" 2>&1 | tee "${MEASUREMENTS}/extract.log"
+          test -d "${CACHE_PATH}/target/release/.fingerprint"
+          du -sb "${CACHE_PATH}"/* | tee "${MEASUREMENTS}/extracted-bytes.txt"
+          du -sb "${CACHE_PATH}" | tee -a "${MEASUREMENTS}/extracted-bytes.txt"
+          df -B1 . /var/lib/docker | tee "${MEASUREMENTS}/disk-after-extract.txt"
+
+      - name: Check repository cache capacity before saving
+        if: steps.prepare.outputs.save_mounts == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_PATH: ${{ steps.prepare.outputs.cache_path }}
+        run: |
+          set -euo pipefail
+          bytes="$(du -sb "${CACHE_PATH}" | cut -f1)"
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
+            --jq '.actions_caches[].size_in_bytes' > "${MEASUREMENTS}/existing-cache-bytes.txt"
+          used="$(awk '{sum += $1} END {printf "%.0f", sum}' "${MEASUREMENTS}/existing-cache-bytes.txt")"
+          # The measured CPU/CUDA seeds were 1.44/1.67 GB raw. Cap each at 2 GB
+          # and reserve that cap for the parallel peer, so both cannot spend
+          # the same headroom. If already listed, the peer is counted twice.
+          # Keep the existing 1 GB reserve within the default 10 GB allowance.
+          seed_limit=2000000000
+          printf 'existing=%s raw-new=%s seed-raw-limit=%s peer-reserve=%s ceiling=10000000000 reserve=1000000000\n' \
+            "${used}" "${bytes}" "${seed_limit}" "${seed_limit}" | tee "${MEASUREMENTS}/cache-budget.txt"
+          (( bytes <= seed_limit && used + bytes + seed_limit <= 9000000000 )) || {
+            echo 'Mount cache exceeds the spike budget; refusing to evict unrelated caches.' >&2
+            exit 1
+          }
+
+      - name: Save seed mount archive
+        if: steps.prepare.outputs.save_mounts == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.prepare.outputs.cache_path }}
+          key: ${{ steps.prepare.outputs.cache_key }}
+
+      - name: Upload measurements (not cache contents)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cache-spike-${{ inputs.method }}-${{ inputs.variant }}-${{ inputs.scenario }}
+          path: |
+            ${{ runner.temp }}/cache-spike/*.log
+            ${{ runner.temp }}/cache-spike/*.txt
+            ${{ runner.temp }}/cache-spike/*.json
+            ${{ runner.temp }}/cache-spike/Dockerfile
+          retention-days: 14
+          if-no-files-found: warn
