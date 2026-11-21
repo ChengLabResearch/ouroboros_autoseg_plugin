@@ -15,10 +15,7 @@ RUN apt-get update && apt-get install -y \
 
 # Candle and candle-sam3 are git dependencies pinned in Cargo.toml and Cargo.lock;
 # Cargo fetches them during the dependency build below.
-# CANDLE_SAM3_COMMIT is reported in the backend log as candle_sha and must equal
-# the candle-sam3 `rev` in Cargo.toml.
-ARG CANDLE_SAM3_COMMIT=8d762350304f683a35215aa1d2c8d71d845f3be3
-ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
+# build.rs derives the logged engine revision from the resolved Cargo.lock source.
 
 # Compile the stable dependency graph before copying plugin source. The dummy
 # package is replaced below, while its target artifacts remain reusable when
@@ -37,6 +34,7 @@ RUN mkdir -p src \
 ARG CARGO_ABOUT_VERSION=0.9.3
 RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
 
+COPY build.rs ./
 COPY src/ src/
 RUN touch src/lib.rs src/main.rs \
     && cargo build --release --locked --bin ouroboros-autoseg-plugin-backend
@@ -68,9 +66,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
 
-ARG CANDLE_SAM3_COMMIT=8d762350304f683a35215aa1d2c8d71d845f3be3
-ENV CANDLE_SAM3_GIT_SHA=${CANDLE_SAM3_COMMIT}
-
 WORKDIR /build/plugin/backend
 ARG CANDLE_FEATURES=cuda,cudnn
 ARG CUDA_COMPUTE_CAP=75
@@ -88,6 +83,7 @@ RUN test "${CANDLE_FEATURES}" = "cuda,cudnn" \
 ARG CARGO_ABOUT_VERSION=0.9.3
 RUN cargo install cargo-about --version "${CARGO_ABOUT_VERSION}" --locked --features cli
 
+COPY build.rs ./
 COPY src/ src/
 RUN touch src/lib.rs src/main.rs \
     && cargo build --release --locked --features "${CANDLE_FEATURES}" \

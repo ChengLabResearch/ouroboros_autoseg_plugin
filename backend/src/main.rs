@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let bind_address = state.config().bind_address;
     let app = api::router(state);
     let plugin_sha = std::env::var("PLUGIN_GIT_SHA").unwrap_or_else(|_| "unknown".to_string());
-    let candle_sha = option_env!("CANDLE_SAM3_GIT_SHA").unwrap_or("unknown");
+    let candle_sha = env!("CANDLE_SAM3_GIT_SHA");
 
     info!(plugin_sha = %plugin_sha, candle_sha = %candle_sha, "backend revision metadata");
     info!(address = %bind_address, "Rust backend scaffold listening");

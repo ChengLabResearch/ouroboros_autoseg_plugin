@@ -43,6 +43,7 @@ The script builds/runs the CUDA Docker target with --gpus all and stages the
 Medical SAM3 3D checkpoint. A bounded diagnostic volume service copies input and
 output through the backend's production HTTP transfer protocol. The script
 submits a VideoPredictor job and validates the TIFF returned to the host.
+Python 3.10 requires tomli for Cargo.lock parsing: python3 -m pip install tomli.
 USAGE
 }
 
@@ -152,6 +153,9 @@ require_command docker
 require_command curl
 require_command python3
 
+EXPECTED_CANDLE_SHA="$(python3 "${SCRIPT_DIR}/candle_revision.py" "${BACKEND_DIR}/Cargo.lock")" \
+  || die "Unable to determine Candle revision from Cargo.lock"
+
 INPUT_STACK="$(resolve_path "${INPUT_STACK}")"
 [[ -f "${INPUT_STACK}" ]] || die "Input stack does not exist: ${INPUT_STACK}"
 
@@ -159,7 +163,6 @@ BACKEND_IMAGE="${BACKEND_IMAGE:-${DEFAULT_IMAGE}}"
 BUILD_IMAGE="${BUILD_IMAGE:-1}"
 REQUIRE_IMAGE_DIGEST="${REQUIRE_IMAGE_DIGEST:-0}"
 CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP:-75}"
-CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT:-8d762350304f683a35215aa1d2c8d71d845f3be3}"
 PLUGIN_GIT_SHA="${PLUGIN_GIT_SHA:-$(git -C "${BACKEND_DIR}/.." rev-parse HEAD)}"
 PLUGIN_DIRTY="$(git -C "${BACKEND_DIR}/.." status --porcelain | awk 'NF { found=1 } END { print found ? "true" : "false" }')"
 CHECKPOINT_URL="${CHECKPOINT_URL:-${DEFAULT_CHECKPOINT_URL}}"
@@ -238,7 +241,6 @@ if [[ "${BUILD_IMAGE}" != "0" ]]; then
     --target cuda-runtime \
     --build-arg CANDLE_FEATURES=cuda,cudnn \
     --build-arg CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
-    --build-arg CANDLE_SAM3_COMMIT="${CANDLE_SAM3_COMMIT}" \
     -t "${BACKEND_IMAGE}" \
     "${BACKEND_DIR}"
 else
@@ -272,7 +274,7 @@ docker volume create "${VOLUME_NAME}" >/dev/null
 cat >"${ARTIFACT_DIR}/revisions.env" <<EOF
 plugin_sha=${PLUGIN_GIT_SHA}
 plugin_dirty=${PLUGIN_DIRTY}
-candle_sha=${CANDLE_SAM3_COMMIT}
+candle_sha=${EXPECTED_CANDLE_SHA}
 input_sha256=$(sha256sum "${INPUT_STACK}" | awk '{print $1}')
 image_reference=${BACKEND_IMAGE}
 image_id=$(docker image inspect --format '{{.Id}}' "${BACKEND_IMAGE}")
@@ -467,8 +469,8 @@ grep -F "cuda_ordinal=${CUDA_DEVICE_ORDINAL}" "${ARTIFACT_DIR}/backend.log" >/de
   || die "Backend log does not prove the requested CUDA ordinal"
 grep -F "plugin_sha=${PLUGIN_GIT_SHA}" "${ARTIFACT_DIR}/backend.log" >/dev/null \
   || die "Backend log does not contain the expected plugin SHA"
-grep -F "candle_sha=${CANDLE_SAM3_COMMIT}" "${ARTIFACT_DIR}/backend.log" >/dev/null \
-  || die "Backend log does not contain the expected Candle SHA"
+python3 "${SCRIPT_DIR}/candle_revision.py" "${BACKEND_DIR}/Cargo.lock" "${ARTIFACT_DIR}/backend.log" \
+  || die "Backend Candle revision does not match Cargo.lock"
 grep -F 'backend compiled capabilities: cuda=true cudnn=true features=cuda,cudnn' \
   "${ARTIFACT_DIR}/backend.log" >/dev/null \
   || die "Backend log does not report the compiled CUDA/cuDNN capabilities"

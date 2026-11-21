@@ -43,7 +43,7 @@ pub fn load_sam3_handle(
         .then(|| configured_cuda_ordinal().to_string())
         .unwrap_or_else(|| "n/a".to_string());
     let plugin_sha = std::env::var("PLUGIN_GIT_SHA").unwrap_or_else(|_| "unknown".to_string());
-    let candle_sha = option_env!("CANDLE_SAM3_GIT_SHA").unwrap_or("unknown");
+    let candle_sha = env!("CANDLE_SAM3_GIT_SHA");
     info!(
         model = %model_name,
         checkpoint = %checkpoint_path.display(),

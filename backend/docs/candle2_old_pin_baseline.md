@@ -49,5 +49,22 @@ historical log exactly) `PLUGIN_GIT_SHA=c8d3c0218acde2c31f77f9a37d630368c83667cc
 set. Plugin revision metadata is supplied to the container at runtime so it
 does not invalidate dependency compilation. The script records
 `revisions.env`, synchronized `telemetry.csv`, a bounded `backend.log`, and the
-validated output TIFF. Use the same fixture and settings with only
-`CANDLE_SAM3_COMMIT` changed for the CANDLE-2.2 comparison.
+validated output TIFF. At that recorded plugin revision, changing
+`CANDLE_SAM3_COMMIT` selected the Candle checkout for the CANDLE-2.2 comparison.
+
+## Comparisons with the current backend
+
+The historical command above is not a current revision override. Current
+builds resolve the separate `candle-sam3` dependency through `Cargo.toml` and
+`Cargo.lock`; `770d20ca8db4f834ba4c89c845bca196fbfc97ea` belongs to the older,
+pre-split Candle repository and is not an interchangeable `candle-sam3`
+revision.
+
+For a current comparison, change the `sam3` dependency's `rev` in `Cargo.toml`,
+keep the `candle-core` and `candle-nn` fork pins aligned with that engine's
+underlying Candle dependency, and regenerate `Cargo.lock`. Keep the fixture
+and experiment settings fixed. The build derives `candle_sha` from the resolved
+lockfile source; Docker arguments or environment variables cannot relabel it.
+The smoke independently reads that same lockfile and fails if the logged
+revision differs. A local path patch reports `candle_sha=local` and cannot
+satisfy this smoke's git-pinned revision check.

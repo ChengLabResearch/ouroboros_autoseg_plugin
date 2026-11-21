@@ -18,7 +18,6 @@ ARG CUDA_BUILDER_IMAGE=example/cuda-builder:1
 ARG CUDA_RUNTIME_IMAGE=example/cuda-runtime:1
 
 FROM \${CPU_BUILDER_IMAGE} AS builder
-ARG CANDLE_SAM3_COMMIT=shared-pin
 RUN cpu-build
 
 FROM builder AS test
@@ -26,7 +25,6 @@ RUN cpu-test
 
 # CUDA builder stage
 FROM \${CUDA_BUILDER_IMAGE} AS cuda-builder
-ARG CANDLE_SAM3_COMMIT=shared-pin
 ARG CANDLE_FEATURES=cuda
 RUN cuda-build
 
@@ -50,6 +48,7 @@ describe('backend build fingerprints', () => {
 			writeFile(join(root, 'backend', '.dockerignore'), 'target\n'),
 			writeFile(join(root, 'backend', 'Cargo.lock'), 'lock-v1\n'),
 			writeFile(join(root, 'backend', 'Cargo.toml'), 'manifest-v1\n'),
+			writeFile(join(root, 'backend', 'build.rs'), 'build-script-v1\n'),
 			writeFile(join(root, 'backend', 'Dockerfile'), DOCKERFILE),
 			writeFile(join(root, 'backend', 'about.hbs'), 'template-v1\n'),
 			writeFile(join(root, 'backend', 'about.toml'), 'about-v1\n'),
@@ -118,6 +117,8 @@ describe('backend build fingerprints', () => {
 
 	it.each([
 		['source', ['src', 'lib.rs']],
+		['build-script', ['build.rs']],
+		['lockfile', ['Cargo.lock']],
 		['licence-notice', ['about.toml']],
 		['shipped licence', ['licenses', 'LICENSE-SAM']]
 	])('changes both variants for shared %s inputs', async (_label, path) => {
